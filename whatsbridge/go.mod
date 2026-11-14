@@ -3,7 +3,7 @@ module whatsbridge
 go 1.26.0
 
 require (
-	github.com/mattn/go-sqlite3 v1.14.52
+	github.com/mattn/go-sqlite3 v1.14.53
 	go.mau.fi/whatsmeow v0.0.0-20261113153213-1956f9683795
 	google.golang.org/protobuf v1.36.12
 )
