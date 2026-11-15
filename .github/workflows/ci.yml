@@ -57,7 +57,7 @@ jobs:
           cd whatsbridge
           gomobile bind -javapkg=com.wa.bridge -target=android/arm64,android/arm,android/amd64 -androidapi 26 -o ../app/libs/whatsbridge.aar .
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "9.6.1"
 
