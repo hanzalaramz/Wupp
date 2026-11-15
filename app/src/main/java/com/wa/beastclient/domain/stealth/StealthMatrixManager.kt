@@ -30,6 +30,9 @@ data class GlobalStealthConfig(
     val viewOnceVaultEnabled: Boolean = true,
     val disappearingImmunity: Boolean = true,
     val themeMode: WuppThemeMode = WuppThemeMode.DARK,
+    val chatWallpaperUri: String = "",
+    val chatWallpaperDim: Float = 0.28f,
+    val chatWallpaperShowDoodle: Boolean = true,
     val autoDownloadEnabled: Boolean = true,
     val autoDownloadMobileMask: Int = StealthMatrixManager.MEDIA_ALL,
     val autoDownloadWifiMask: Int = StealthMatrixManager.MEDIA_ALL,
@@ -78,6 +81,9 @@ object StealthMatrixManager {
     private const val KEY_DISAPPEARING_IMMUNITY = "disappearing_immunity"
     private const val KEY_DARK_THEME = "dark_theme"
     private const val KEY_THEME_MODE = "app_theme_mode"
+    private const val KEY_CHAT_WALLPAPER_URI = "chat_wallpaper_uri"
+    private const val KEY_CHAT_WALLPAPER_DIM = "chat_wallpaper_dim"
+    private const val KEY_CHAT_WALLPAPER_DOODLE = "chat_wallpaper_doodle"
     private const val KEY_AUTO_DL_ENABLED = "auto_download_enabled"
     private const val KEY_AUTO_DL_MOBILE = "auto_download_mobile_mask"
     private const val KEY_AUTO_DL_WIFI = "auto_download_wifi_mask"
@@ -118,6 +124,9 @@ object StealthMatrixManager {
                     prefs.getString(KEY_THEME_MODE, null),
                     prefs.getBoolean(KEY_DARK_THEME, true)
                 ),
+                chatWallpaperUri = prefs.getString(KEY_CHAT_WALLPAPER_URI, "") ?: "",
+                chatWallpaperDim = prefs.getFloat(KEY_CHAT_WALLPAPER_DIM, 0.28f),
+                chatWallpaperShowDoodle = prefs.getBoolean(KEY_CHAT_WALLPAPER_DOODLE, true),
                 autoDownloadEnabled = prefs.getBoolean(KEY_AUTO_DL_ENABLED, true),
                 autoDownloadMobileMask = prefs.getInt(KEY_AUTO_DL_MOBILE, MEDIA_ALL),
                 autoDownloadWifiMask = prefs.getInt(KEY_AUTO_DL_WIFI, MEDIA_ALL),
@@ -145,6 +154,9 @@ object StealthMatrixManager {
                 .putBoolean(KEY_DISAPPEARING_IMMUNITY, updated.disappearingImmunity)
                 .putString(KEY_THEME_MODE, updated.themeMode.storageKey)
                 .putBoolean(KEY_DARK_THEME, updated.themeMode != WuppThemeMode.LIGHT)
+                .putString(KEY_CHAT_WALLPAPER_URI, updated.chatWallpaperUri)
+                .putFloat(KEY_CHAT_WALLPAPER_DIM, updated.chatWallpaperDim)
+                .putBoolean(KEY_CHAT_WALLPAPER_DOODLE, updated.chatWallpaperShowDoodle)
                 .putBoolean(KEY_AUTO_DL_ENABLED, updated.autoDownloadEnabled)
                 .putInt(KEY_AUTO_DL_MOBILE, updated.autoDownloadMobileMask)
                 .putInt(KEY_AUTO_DL_WIFI, updated.autoDownloadWifiMask)

@@ -13,7 +13,7 @@ on:
       prerelease:
         description: "Mark as pre-release"
         required: false
-        default: false
+        default: true
         type: boolean
 
 permissions:
@@ -64,9 +64,15 @@ jobs:
             PRE_NUM=99
           fi
           VER_CODE=$((BASE_CODE + PRE_NUM))
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event.inputs.prerelease }}" = "true" ] || [[ "$TAG" == *"-"* ]]; then
+            IS_PRE="true"
+          else
+            IS_PRE="false"
+          fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version_name=${CLEAN_VER}" >> "$GITHUB_OUTPUT"
           echo "version_code=${VER_CODE}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${IS_PRE}" >> "$GITHUB_OUTPUT"
 
       - name: Build multi-ABI whatsbridge.aar via gomobile
         env:
@@ -167,7 +173,7 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: "Wupp ${{ steps.meta.outputs.tag }}"
           body_path: release_notes.md
-          prerelease: ${{ github.event.inputs.prerelease == 'true' || contains(steps.meta.outputs.tag, '-') }}
+          prerelease: ${{ steps.meta.outputs.is_prerelease == 'true' }}
           files: |
             dist/*.apk
             dist/SHA256SUMS.txt
@@ -179,7 +185,7 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: "Wupp ${{ steps.meta.outputs.tag }}"
           generate_release_notes: true
-          prerelease: ${{ github.event.inputs.prerelease == 'true' || contains(steps.meta.outputs.tag, '-') }}
+          prerelease: ${{ steps.meta.outputs.is_prerelease == 'true' }}
           files: |
             dist/*.apk
             dist/SHA256SUMS.txt

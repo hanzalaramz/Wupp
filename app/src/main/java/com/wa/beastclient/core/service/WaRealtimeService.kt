@@ -17,6 +17,7 @@ import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -83,6 +84,42 @@ class WaRealtimeService : Service() {
     private val pushnameCache = ConcurrentHashMap<String, String>()
     private val requestedAvatarJids = ConcurrentHashMap.newKeySet<String>()
     private val typingExpiryJobs = ConcurrentHashMap<String, Job>()
+    private val pendingReactions = ConcurrentHashMap<String, MutableList<JSONObject>>()
+    private val chatAliasToCanonical = ConcurrentHashMap<String, String>()
+
+    private suspend fun canonicalizeAndMergeAlias(rawJid: String, rawAltJid: String): String {
+        val jid = rawJid.trim()
+        val alt = rawAltJid.trim()
+        if (jid.isBlank()) return jid
+        if (jid.endsWith("@g.us") || jid.endsWith("@newsletter") || jid == "status@broadcast") {
+            return jid
+        }
+        val mapped = when {
+            jid.endsWith("@lid") && alt.endsWith("@s.whatsapp.net") -> {
+                chatAliasToCanonical[jid] = alt
+                dao.mergeDuplicateChatAlias(canonicalJid = alt, duplicateJid = jid)
+                pushnameCache[jid]?.let { n -> pushnameCache.putIfAbsent(alt, n) }
+                if (activeChatJid.value == jid) activeChatJid.value = alt
+                alt
+            }
+            jid.endsWith("@s.whatsapp.net") && alt.endsWith("@lid") -> {
+                chatAliasToCanonical[alt] = jid
+                dao.mergeDuplicateChatAlias(canonicalJid = jid, duplicateJid = alt)
+                pushnameCache[alt]?.let { n -> pushnameCache.putIfAbsent(jid, n) }
+                if (activeChatJid.value == alt) activeChatJid.value = jid
+                jid
+            }
+            else -> chatAliasToCanonical[jid] ?: jid
+        }
+        return mapped
+    }
+
+    private suspend fun drainPendingReactions(messageId: String) {
+        val queued = pendingReactions.remove(messageId) ?: return
+        for (rx in queued) {
+            handleReaction(rx)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -436,9 +473,14 @@ class WaRealtimeService : Service() {
                     val jid = item.optString("jid")
                     val altJid = item.optString("altJid")
                     val name = item.optString("name").trim()
-                    if (jid.isNotBlank() && name.isNotBlank() && name != jid && name != jid.substringBefore("@")) {
+                    val canonicalJid = if (altJid.isNotBlank()) canonicalizeAndMergeAlias(jid, altJid) else (chatAliasToCanonical[jid] ?: jid)
+                    if (canonicalJid.isNotBlank() && name.isNotBlank() && name != canonicalJid && name != canonicalJid.substringBefore("@")) {
+                        pushnameCache[canonicalJid] = name
+                        dao.updateChatName(canonicalJid, name, overwrite = false)
+                        dao.updateSenderNameForJid(canonicalJid, canonicalJid.substringBefore("@"), name)
+                    }
+                    if (jid != canonicalJid && jid.isNotBlank() && name.isNotBlank() && name != jid && name != jid.substringBefore("@")) {
                         pushnameCache[jid] = name
-                        dao.updateChatName(jid, name, overwrite = false)
                         dao.updateSenderNameForJid(jid, jid.substringBefore("@"), name)
                     }
                     if (altJid.isNotBlank() && name.isNotBlank() && name != altJid && name != altJid.substringBefore("@")) {
@@ -449,20 +491,21 @@ class WaRealtimeService : Service() {
                 }
             }
 
-            val chatsList = mutableListOf<ChatEntity>()
+            val chatsMap = LinkedHashMap<String, ChatEntity>()
             val unreadByChat = mutableMapOf<String, Int>()
             val chatsArr = json.optJSONArray("chats")
             if (chatsArr != null) {
                 for (i in 0 until chatsArr.length()) {
                     val c = chatsArr.optJSONObject(i) ?: continue
-                    val jid = c.optString("jid")
-                    if (jid.isBlank()) continue
-                    val unread = c.optInt("unreadCount", 0)
-                    unreadByChat[jid] = unread
-                    val name = c.optString("name").ifBlank {
-                        pushnameCache[jid] ?: jid.substringBefore("@")
-                    }
+                    val rawJid = c.optString("jid")
+                    if (rawJid.isBlank()) continue
                     val altJid = c.optString("altJid")
+                    val jid = canonicalizeAndMergeAlias(rawJid, altJid)
+                    val unread = c.optInt("unreadCount", 0)
+                    unreadByChat[jid] = maxOf(unreadByChat[jid] ?: 0, unread)
+                    val name = c.optString("name").ifBlank {
+                        pushnameCache[jid] ?: altJid.takeIf { it.isNotBlank() }?.let { pushnameCache[it] } ?: jid.substringBefore("@")
+                    }
                     val incomingIsReal = name.isNotBlank() &&
                         name != jid &&
                         name != jid.substringBefore("@") &&
@@ -484,26 +527,25 @@ class WaRealtimeService : Service() {
                     if (altJid.isNotBlank() && resolvedIsReal) {
                         dao.updateChatName(altJid, resolvedChatName, overwrite = false)
                     }
-                    chatsList.add(
-                        ChatEntity(
-                            jid = jid,
-                            name = resolvedChatName,
-                            isGroup = c.optBoolean("isGroup", jid.endsWith("@g.us")),
-                            unreadCount = unread,
-                            isArchived = c.optBoolean("archived", false),
-                            isPinned = c.optLong("pinned", 0L) > 0L,
-                            pinOrder = c.optLong("pinned", 0L),
-                            isMuted = c.optLong("muteEndTime", 0L) > 0L,
-                            muteEndTime = c.optLong("muteEndTime", 0L),
-                            lastMessageTimestamp = c.optLong("lastTimestampMs", 0L),
-                            ephemeralDuration = c.optInt("ephemeralSec", 0),
-                            isCommunityParent = c.optBoolean("isCommunityParent", false),
-                            parentGroupJid = c.optString("parentGroupJid", ""),
-                            isDefaultSubgroup = c.optBoolean("isDefaultSubgroup", false)
-                        )
+                    chatsMap[jid] = ChatEntity(
+                        jid = jid,
+                        name = resolvedChatName,
+                        isGroup = c.optBoolean("isGroup", jid.endsWith("@g.us")),
+                        unreadCount = unreadByChat[jid] ?: unread,
+                        isArchived = c.optBoolean("archived", false),
+                        isPinned = c.optLong("pinned", 0L) > 0L,
+                        pinOrder = c.optLong("pinned", 0L),
+                        isMuted = c.optLong("muteEndTime", 0L) > 0L,
+                        muteEndTime = c.optLong("muteEndTime", 0L),
+                        lastMessageTimestamp = c.optLong("lastTimestampMs", 0L),
+                        ephemeralDuration = c.optInt("ephemeralSec", 0),
+                        isCommunityParent = c.optBoolean("isCommunityParent", false),
+                        parentGroupJid = c.optString("parentGroupJid", ""),
+                        isDefaultSubgroup = c.optBoolean("isDefaultSubgroup", false)
                     )
                 }
             }
+            val chatsList = chatsMap.values.toList()
 
             val msgList = mutableListOf<MessageEntity>()
             val msgsArr = json.optJSONArray("messages")
@@ -511,6 +553,10 @@ class WaRealtimeService : Service() {
                 for (i in 0 until msgsArr.length()) {
                     val m = msgsArr.optJSONObject(i) ?: continue
                     var entity = parseNormalizedMessage(m)
+                    val canonMsgChat = canonicalizeAndMergeAlias(entity.chatJid, m.optString("altChatJid"))
+                    if (canonMsgChat != entity.chatJid) {
+                        entity = entity.copy(chatJid = canonMsgChat)
+                    }
                     if (!entity.isFromMe && (unreadByChat[entity.chatJid] ?: 0) == 0 && entity.deliveryStatus != "PLAYED") {
                         entity = entity.copy(deliveryStatus = "READ")
                     }
@@ -519,6 +565,18 @@ class WaRealtimeService : Service() {
             }
 
             dao.insertHistorySyncBatch(chatsList, msgList)
+            val rxArr = json.optJSONArray("reactions")
+            if (rxArr != null) {
+                for (i in 0 until rxArr.length()) {
+                    val rxObj = rxArr.optJSONObject(i) ?: continue
+                    handleReaction(rxObj)
+                }
+            }
+            for (entity in msgList) {
+                if (pendingReactions.containsKey(entity.id)) {
+                    drainPendingReactions(entity.id)
+                }
+            }
         } finally {
             if (isFinal) {
                 releaseSyncWakeLock()
@@ -549,6 +607,10 @@ class WaRealtimeService : Service() {
         if (msg.msgType == "UNKNOWN" && msg.body.isBlank() && !msg.isViewOnce) {
             return
         }
+        val canonicalChat = canonicalizeAndMergeAlias(msg.chatJid, json.optString("altChatJid"))
+        if (canonicalChat != msg.chatJid) {
+            msg = msg.copy(chatJid = canonicalChat)
+        }
         val isSync = json.optBoolean("isSync", false)
         val isGrp = json.optBoolean("isGroup", msg.chatJid.endsWith("@g.us"))
         val isActiveChat = activeChatJid.value == msg.chatJid
@@ -568,6 +630,7 @@ class WaRealtimeService : Service() {
             isGroup = isGrp,
             incrementUnread = !isSync && !isActiveChat
         )
+        drainPendingReactions(msg.id)
         if (dao.getChat(msg.chatJid)?.avatarPath.isNullOrBlank()) {
             requestSingleAvatarIfNeeded(msg.chatJid)
         }
@@ -724,13 +787,30 @@ class WaRealtimeService : Service() {
 
     private suspend fun handleReaction(json: JSONObject) {
         val targetId = json.optString("targetMessageId")
+        if (targetId.isBlank()) return
         val summary = json.optString("reactionSummary").trim()
         val emoji = json.optString("emoji")
         val senderJid = json.optString("senderJid")
         val senderNameHint = json.optString("senderName").trim()
         val isFromMe = json.optBoolean("isFromMe", false)
         val ts = json.optLong("timestamp", System.currentTimeMillis())
-        val existing = dao.getMessage(targetId) ?: return
+        val rawChat = json.optString("chatJid")
+        val rawAlt = json.optString("altChatJid")
+        if (rawChat.isNotBlank() && rawAlt.isNotBlank()) {
+            canonicalizeAndMergeAlias(rawChat, rawAlt)
+        }
+        val existing = dao.getMessage(targetId)
+        if (existing == null) {
+            if (pendingReactions.size > 500) {
+                pendingReactions.clear()
+            }
+            pendingReactions.compute(targetId) { _, list ->
+                (list ?: mutableListOf()).apply {
+                    if (size < 16) add(json)
+                }
+            }
+            return
+        }
         val updated = when {
             summary.isNotBlank() -> summary
             emoji.isBlank() -> ""
@@ -956,7 +1036,9 @@ class WaRealtimeService : Service() {
     }
 
     private suspend fun handlePresence(json: JSONObject) {
-        val jid = json.optString("jid")
+        val rawJid = json.optString("jid")
+        val altJid = json.optString("altJid")
+        val jid = if (altJid.isNotBlank()) canonicalizeAndMergeAlias(rawJid, altJid) else (chatAliasToCanonical[rawJid] ?: rawJid)
         val isOnline = json.optBoolean("isOnline", false)
         val lastSeen = json.optLong("lastSeen", 0L)
         val ts = json.optLong("timestamp", System.currentTimeMillis())
@@ -974,7 +1056,9 @@ class WaRealtimeService : Service() {
     }
 
     private suspend fun handleChatPresence(json: JSONObject) {
-        val chatJid = json.optString("chatJid")
+        val rawChat = json.optString("chatJid")
+        val altChat = json.optString("altChatJid")
+        val chatJid = if (altChat.isNotBlank()) canonicalizeAndMergeAlias(rawChat, altChat) else (chatAliasToCanonical[rawChat] ?: rawChat)
         val state = json.optString("state")
         val media = json.optString("media")
         val text = when {
@@ -997,15 +1081,16 @@ class WaRealtimeService : Service() {
         val arr = json.optJSONArray("contacts") ?: return
         for (i in 0 until arr.length()) {
             val item = arr.optJSONObject(i) ?: continue
-            val jid = item.optString("jid")
+            val rawJid = item.optString("jid")
             val altJid = item.optString("altJid")
             val name = item.optString("name").trim()
             val isCustom = item.optBoolean("isCustom", false)
+            val canonicalJid = if (altJid.isNotBlank()) canonicalizeAndMergeAlias(rawJid, altJid) else (chatAliasToCanonical[rawJid] ?: rawJid)
             if (name.isBlank()) continue
-            if (jid.isNotBlank() && name != jid && name != jid.substringBefore("@")) {
-                pushnameCache[jid] = name
-                dao.updateChatName(jid, name, overwrite = isCustom)
-                dao.updateSenderNameForJid(jid, jid.substringBefore("@"), name)
+            if (canonicalJid.isNotBlank() && name != canonicalJid && name != canonicalJid.substringBefore("@")) {
+                pushnameCache[canonicalJid] = name
+                dao.updateChatName(canonicalJid, name, overwrite = isCustom)
+                dao.updateSenderNameForJid(canonicalJid, canonicalJid.substringBefore("@"), name)
             }
             if (altJid.isNotBlank() && name != altJid && name != altJid.substringBefore("@")) {
                 pushnameCache[altJid] = name
@@ -1085,9 +1170,10 @@ class WaRealtimeService : Service() {
 
     private suspend fun handleChatMetaUpdate(json: JSONObject) {
         val kind = json.optString("kind")
-        val jid = json.optString("jid")
+        val rawJid = json.optString("jid")
         val altJid = json.optString("altJid")
-        if (jid.isBlank()) return
+        if (rawJid.isBlank()) return
+        val jid = if (altJid.isNotBlank()) canonicalizeAndMergeAlias(rawJid, altJid) else (chatAliasToCanonical[rawJid] ?: rawJid)
         when (kind) {
             "CONTACT" -> {
                 val name = json.optString("name").trim()
@@ -1127,9 +1213,10 @@ class WaRealtimeService : Service() {
     }
 
     private suspend fun handleProfileUpdate(json: JSONObject) {
-        val jid = json.optString("jid")
+        val rawJid = json.optString("jid")
         val altJid = json.optString("altJid")
-        if (jid.isBlank()) return
+        if (rawJid.isBlank()) return
+        val jid = if (altJid.isNotBlank()) canonicalizeAndMergeAlias(rawJid, altJid) else (chatAliasToCanonical[rawJid] ?: rawJid)
         val avatarPath = json.optString("avatarPath")
         val aboutText = json.optString("aboutText")
         val ts = json.optLong("timestamp", System.currentTimeMillis())
@@ -1187,11 +1274,42 @@ class WaRealtimeService : Service() {
 
     companion object {
         private const val TAG = "WaRealtimeService"
-        private const val CHANNEL_ID = "wa_realtime_channel"
-        private const val MESSAGES_CHANNEL_ID = "wa_messages_channel"
+        const val CHANNEL_ID = "wa_realtime_channel"
+        const val MESSAGES_CHANNEL_ID = "wa_messages_channel"
         private const val NOTIF_ID = 1042
         const val ACTION_RECONNECT = "com.wupp.app.action.RECONNECT"
         const val ACTION_DISCONNECT = "com.wupp.app.action.DISCONNECT"
+
+        fun isRealtimeStatusNotificationHidden(context: Context): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+            val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                ?: return false
+            val ch = mgr.getNotificationChannel(CHANNEL_ID) ?: return false
+            return ch.importance == NotificationManager.IMPORTANCE_NONE
+        }
+
+        fun openNotificationChannelSettings(context: Context, channelId: String) {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    putExtra(Settings.EXTRA_CHANNEL_ID, channelId)
+                }
+            } else {
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra("app_package", context.packageName)
+                    putExtra("app_uid", context.applicationInfo.uid)
+                }
+            }.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching { context.startActivity(intent) }.onFailure {
+                val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = android.net.Uri.fromParts("package", context.packageName, null)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                runCatching { context.startActivity(fallback) }
+            }
+        }
 
         @Volatile
         var isUiForeground: Boolean = false

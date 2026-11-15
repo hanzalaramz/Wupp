@@ -1,36 +1,185 @@
 package com.wa.beastclient.ui.components
 
+import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.media.ExifInterface
+import android.net.Uri
 import androidx.compose.foundation.Canvas as ComposeCanvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.ContentScale
+import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.theme.LocalWaColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.max
 import kotlin.math.sin
 
+data class ChatWallpaperPreset(
+    val id: String,
+    val label: String,
+    val topColor: Color,
+    val bottomColor: Color
+) {
+    val storageUri: String get() = "preset:$id"
+}
+
+val ChatWallpaperPresets: List<ChatWallpaperPreset> = listOf(
+    ChatWallpaperPreset("midnight_slate", "Midnight", Color(0xFF0D1520), Color(0xFF172638)),
+    ChatWallpaperPreset("deep_emerald", "Emerald", Color(0xFF071B15), Color(0xFF0F3126)),
+    ChatWallpaperPreset("obsidian", "Obsidian", Color(0xFF050507), Color(0xFF111218)),
+    ChatWallpaperPreset("ocean_teal", "Ocean", Color(0xFF081D24), Color(0xFF103744)),
+    ChatWallpaperPreset("lavender_dusk", "Dusk", Color(0xFF1A1427), Color(0xFF2B2040)),
+    ChatWallpaperPreset("warm_sand", "Sand", Color(0xFFEDE4D7), Color(0xFFDCD0BE))
+)
+
+fun describeChatWallpaper(uri: String): String = when {
+    uri.isBlank() -> "Default doodle"
+    uri.startsWith("file:") -> "Custom photo"
+    uri.startsWith("preset:") -> {
+        val id = uri.removePrefix("preset:")
+        ChatWallpaperPresets.firstOrNull { it.id == id }?.label ?: "Preset"
+    }
+    else -> "Default doodle"
+}
+
+fun copyCustomWallpaperImage(context: Context, sourceUri: Uri): String? {
+    return runCatching {
+        val resolver = context.applicationContext.contentResolver
+        val dir = File(context.applicationContext.filesDir, "wallpapers").apply { mkdirs() }
+        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        resolver.openInputStream(sourceUri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, boundsOpts)
+        }
+        val maxDim = 1920
+        var sampleSize = 1
+        while (boundsOpts.outWidth / sampleSize > maxDim || boundsOpts.outHeight / sampleSize > maxDim) {
+            sampleSize *= 2
+        }
+        val decodeOpts = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        var bitmap = resolver.openInputStream(sourceUri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, decodeOpts)
+        } ?: return null
+
+        val orientation = resolver.openInputStream(sourceUri)?.use { input ->
+            runCatching {
+                ExifInterface(input).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL
+                )
+            }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+        } ?: ExifInterface.ORIENTATION_NORMAL
+
+        val degrees = when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+        if (degrees != 0f) {
+            val matrix = Matrix().apply { postRotate(degrees) }
+            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            if (rotated !== bitmap) bitmap.recycle()
+            bitmap = rotated
+        }
+
+        val scale = max(bitmap.width, bitmap.height).let { largest ->
+            if (largest > maxDim) maxDim.toFloat() / largest.toFloat() else 1f
+        }
+        if (scale < 1f) {
+            val w = (bitmap.width * scale).toInt().coerceAtLeast(1)
+            val h = (bitmap.height * scale).toInt().coerceAtLeast(1)
+            val scaled = Bitmap.createScaledBitmap(bitmap, w, h, true)
+            if (scaled !== bitmap) bitmap.recycle()
+            bitmap = scaled
+        }
+
+        val outFile = File(dir, "chat_bg_${System.currentTimeMillis()}.jpg")
+        FileOutputStream(outFile).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+        }
+        bitmap.recycle()
+
+        dir.listFiles()?.forEach { f ->
+            if (f.name != outFile.name && f.name.startsWith("chat_bg_")) {
+                f.delete()
+            }
+        }
+        "file:${outFile.absolutePath}"
+    }.getOrNull()
+}
+
 /**
- * Renders a crisp fine-line WhatsApp doodle wallpaper tiled with GPU ImageShader repeat tiling.
+ * Renders either the default WhatsApp doodle wallpaper, a curated preset gradient,
+ * or a user-chosen custom background photo with optional dimming overlay.
  */
 @Composable
 fun DoodleBackground(
     modifier: Modifier = Modifier,
+    wallpaperUriOverride: String? = null,
+    wallpaperDimOverride: Float? = null,
+    showDoodleOverride: Boolean? = null,
     content: @Composable () -> Unit
 ) {
     val colors = LocalWaColors.current
+    val stealth by StealthMatrixManager.config.collectAsState()
+    val wallpaperUri = wallpaperUriOverride ?: stealth.chatWallpaperUri
+    val wallpaperDim = (wallpaperDimOverride ?: stealth.chatWallpaperDim).coerceIn(0f, 0.75f)
+    val showDoodle = showDoodleOverride ?: stealth.chatWallpaperShowDoodle
+
+    val customFilePath = remember(wallpaperUri) {
+        if (wallpaperUri.startsWith("file:")) wallpaperUri.removePrefix("file:") else ""
+    }
+    val customBitmap by produceState<ImageBitmap?>(initialValue = null, key1 = customFilePath) {
+        value = if (customFilePath.isBlank()) {
+            null
+        } else {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val f = File(customFilePath)
+                    if (f.exists() && f.length() > 0L) {
+                        BitmapFactory.decodeFile(f.absolutePath)?.asImageBitmap()
+                    } else null
+                }.getOrNull()
+            }
+        }
+    }
+
+    val preset = remember(wallpaperUri) {
+        if (wallpaperUri.startsWith("preset:")) {
+            val id = wallpaperUri.removePrefix("preset:")
+            ChatWallpaperPresets.firstOrNull { it.id == id }
+        } else null
+    }
 
     val shaderBrush = remember(colors.doodleColor) {
         val tilePx = 360
@@ -49,8 +198,39 @@ fun DoodleBackground(
 
     val tileAlpha = colors.doodleTintAlpha
     Box(modifier = modifier.background(colors.chatCanvas)) {
-        ComposeCanvas(modifier = Modifier.fillMaxSize()) {
-            drawRect(brush = shaderBrush, alpha = tileAlpha)
+        when {
+            customBitmap != null -> {
+                Image(
+                    bitmap = customBitmap!!,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+                if (wallpaperDim > 0f) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = wallpaperDim))
+                    )
+                }
+            }
+            preset != null -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Brush.verticalGradient(listOf(preset.topColor, preset.bottomColor)))
+                )
+                if (showDoodle) {
+                    ComposeCanvas(modifier = Modifier.fillMaxSize()) {
+                        drawRect(brush = shaderBrush, alpha = tileAlpha)
+                    }
+                }
+            }
+            else -> {
+                ComposeCanvas(modifier = Modifier.fillMaxSize()) {
+                    drawRect(brush = shaderBrush, alpha = tileAlpha)
+                }
+            }
         }
         content()
     }

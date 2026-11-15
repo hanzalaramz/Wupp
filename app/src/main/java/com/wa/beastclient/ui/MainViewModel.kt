@@ -67,6 +67,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val bridgeStatus: StateFlow<BridgeStatus> = WaRealtimeService.bridgeStatus
     val updateState: StateFlow<UpdateUiState> = WuppUpdater.state
     val autoUpdateEnabled: StateFlow<Boolean> = WuppUpdater.autoCheckEnabled
+    val includePreReleases: StateFlow<Boolean> = WuppUpdater.includePreReleases
     val showUpdatePrompt: StateFlow<Boolean> = WuppUpdater.showPromptDialog
 
     init {
@@ -246,6 +247,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setThemeMode(themeMode: WuppThemeMode) {
         StealthMatrixManager.updateConfig { it.copy(themeMode = themeMode) }
+    }
+
+    fun setChatWallpaper(uri: String) {
+        StealthMatrixManager.updateConfig { it.copy(chatWallpaperUri = uri) }
+    }
+
+    fun setChatWallpaperDim(dim: Float) {
+        StealthMatrixManager.updateConfig { it.copy(chatWallpaperDim = dim.coerceIn(0f, 0.75f)) }
+    }
+
+    fun setChatWallpaperShowDoodle(show: Boolean) {
+        StealthMatrixManager.updateConfig { it.copy(chatWallpaperShowDoodle = show) }
+    }
+
+    fun importChatWallpaperFromUri(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val saved = com.wa.beastclient.ui.components.copyCustomWallpaperImage(appContext, uri)
+            if (!saved.isNullOrBlank()) {
+                StealthMatrixManager.updateConfig { it.copy(chatWallpaperUri = saved) }
+            }
+        }
     }
 
     fun setAutoDownloadEnabled(enabled: Boolean) {
@@ -665,6 +687,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setAutoUpdateEnabled(enabled: Boolean) {
         WuppUpdater.setAutoCheckEnabled(appContext, enabled)
+    }
+
+    fun setIncludePreReleases(enabled: Boolean) {
+        WuppUpdater.setIncludePreReleases(appContext, enabled)
+        viewModelScope.launch {
+            WuppUpdater.checkForUpdates(appContext, silent = !enabled)
+        }
     }
 
     private val _participantMeta = MutableStateFlow<Map<String, ResolvedParticipantUi>>(emptyMap())

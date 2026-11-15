@@ -141,6 +141,7 @@ import com.wa.beastclient.ui.components.MessageMetaCluster
 import com.wa.beastclient.ui.components.ProfilePhotoLightbox
 import com.wa.beastclient.ui.components.SwipeToReplyBox
 import com.wa.beastclient.ui.components.VoiceNoteBubble
+import com.wa.beastclient.ui.components.WallpaperPickerDialog
 import com.wa.beastclient.ui.components.WhatsAppBubbleShape
 import com.wa.beastclient.ui.components.WhatsAppClusterInnerShape
 import com.wa.beastclient.ui.components.formatMessageClock
@@ -239,6 +240,7 @@ fun ChatScreen(
     var mediaLightboxTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var showProfilePhotoLightbox by remember { mutableStateOf(false) }
     var participantAvatarTarget by remember { mutableStateOf<Triple<String, String, String?>?>(null) }
+    var showWallpaperDialog by remember { mutableStateOf(false) }
 
     BackHandler(enabled = actionMenuTarget != null) {
         actionMenuTarget = null
@@ -554,6 +556,13 @@ fun ChatScreen(
                                 onClick = {
                                     showOverflow = false
                                     chat?.let { viewModel.toggleFavoriteChat(it) }
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Chat wallpaper") },
+                                onClick = {
+                                    showOverflow = false
+                                    showWallpaperDialog = true
                                 }
                             )
                         }
@@ -1213,6 +1222,19 @@ fun ChatScreen(
                 }
             }
         }
+    }
+
+    if (showWallpaperDialog) {
+        WallpaperPickerDialog(
+            currentUri = stealthConfig.chatWallpaperUri,
+            currentDim = stealthConfig.chatWallpaperDim,
+            showDoodleOnPresets = stealthConfig.chatWallpaperShowDoodle,
+            onSelectUri = { viewModel.setChatWallpaper(it) },
+            onPickCustomImage = { viewModel.importChatWallpaperFromUri(it) },
+            onDimChange = { viewModel.setChatWallpaperDim(it) },
+            onToggleDoodle = { viewModel.setChatWallpaperShowDoodle(it) },
+            onDismiss = { showWallpaperDialog = false }
+        )
     }
 
     // Unlimited Edit History Bottom Sheet

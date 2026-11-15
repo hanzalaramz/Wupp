@@ -924,6 +924,80 @@ func resolveAlternateChatJID(ctx context.Context, cli *whatsmeow.Client, chat ty
 	return types.EmptyJID
 }
 
+func learnLIDMappingFromMessageInfo(ctx context.Context, cli *whatsmeow.Client, info *types.MessageInfo) {
+	if cli == nil || cli.Store == nil || cli.Store.LIDs == nil || info == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	storePair := func(a, b types.JID) {
+		a = a.ToNonAD()
+		b = b.ToNonAD()
+		if a.IsEmpty() || b.IsEmpty() {
+			return
+		}
+		var lid, pn types.JID
+		switch {
+		case a.Server == types.HiddenUserServer && b.Server == types.DefaultUserServer:
+			lid, pn = a, b
+		case b.Server == types.HiddenUserServer && a.Server == types.DefaultUserServer:
+			lid, pn = b, a
+		default:
+			return
+		}
+		_ = cli.Store.LIDs.PutLIDMapping(ctx, lid, pn)
+	}
+	storePair(info.Sender, info.SenderAlt)
+	if !info.IsGroup {
+		storePair(info.Chat, info.RecipientAlt)
+		if !info.IsFromMe {
+			storePair(info.Chat, info.SenderAlt)
+		}
+	}
+}
+
+func canonicalizeDMChatJID(ctx context.Context, cli *whatsmeow.Client, raw types.JID) (types.JID, types.JID) {
+	if raw.IsEmpty() {
+		return types.EmptyJID, types.EmptyJID
+	}
+	if raw == types.StatusBroadcastJID ||
+		raw.Server == types.GroupServer ||
+		raw.Server == types.NewsletterServer ||
+		raw.Server == types.BroadcastServer {
+		return raw, types.EmptyJID
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	clean := raw.ToNonAD()
+	alt := resolveAlternateChatJID(ctx, cli, clean).ToNonAD()
+	if clean.Server == types.HiddenUserServer && alt.Server == types.DefaultUserServer && !alt.IsEmpty() {
+		return alt, clean
+	}
+	return clean, alt
+}
+
+func formatWebMsgReactions(reactions []*waWeb.Reaction) string {
+	if len(reactions) == 0 {
+		return ""
+	}
+	seen := make(map[string]bool, len(reactions))
+	ordered := make([]string, 0, len(reactions))
+	for _, r := range reactions {
+		if r == nil {
+			continue
+		}
+		txt := strings.TrimSpace(r.GetText())
+		if txt == "" || seen[txt] {
+			continue
+		}
+		seen[txt] = true
+		ordered = append(ordered, txt)
+	}
+	return strings.Join(ordered, " ")
+}
+
 func resolveBestContactName(ctx context.Context, cli *whatsmeow.Client, jid types.JID) (string, bool, types.JID) {
 	if cli == nil || cli.Store == nil || cli.Store.Contacts == nil || jid.IsEmpty() {
 		return "", false, types.EmptyJID
@@ -1445,7 +1519,8 @@ func SyncContactsAndAvatars(jidsCsv string) {
 			}
 			enqueueAvatarFetch(parsed)
 			if parsed.Server != types.GroupServer && parsed.Server != types.NewsletterServer {
-				if name, isCustom, alt := resolveBestContactName(ctx, cli, parsed); name != "" {
+				name, isCustom, alt := resolveBestContactName(ctx, cli, parsed)
+				if name != "" || !alt.IsEmpty() {
 					resolved = append(resolved, map[string]any{
 						"jid":      parsed.String(),
 						"altJid":   alt.String(),
@@ -2216,17 +2291,20 @@ func handleWhatsmeowEvent(rawEvt any) {
 		rCli := client
 		rCtx := baseCtx
 		mu.Unlock()
-		chatStr := normalizeUserJID(rCli, evt.Chat.String())
+		canonChat, altChat := canonicalizeDMChatJID(rCtx, rCli, evt.Chat)
+		chatStr := canonChat.String()
+		if chatStr == "" {
+			chatStr = normalizeUserJID(rCli, evt.Chat.String())
+		}
 		if chatStr == "" {
 			chatStr = evt.Chat.String()
 		}
-		altChatStr := ""
-		if rCli != nil && evt.Chat.Server != types.GroupServer && evt.Chat.Server != types.NewsletterServer {
-			if alt := resolveAlternateChatJID(rCtx, rCli, evt.Chat.ToNonAD()); !alt.IsEmpty() {
-				altChatStr = alt.String()
-			}
+		altChatStr := altChat.String()
+		canonSender, _ := canonicalizeDMChatJID(rCtx, rCli, evt.Sender)
+		senderStr := canonSender.String()
+		if senderStr == "" {
+			senderStr = normalizeUserJID(rCli, evt.Sender.String())
 		}
-		senderStr := normalizeUserJID(rCli, evt.Sender.String())
 		if senderStr == "" {
 			senderStr = evt.Sender.String()
 		}
@@ -2314,20 +2392,45 @@ func handleWhatsmeowEvent(rawEvt any) {
 		}
 
 	case *events.Presence:
+		mu.Lock()
+		prCli := client
+		prCtx := baseCtx
+		mu.Unlock()
+		canonFrom, altFrom := canonicalizeDMChatJID(prCtx, prCli, evt.From)
+		jidStr := canonFrom.String()
+		if jidStr == "" {
+			jidStr = evt.From.String()
+		}
 		emitJSON("PRESENCE", map[string]any{
-			"jid":       evt.From.String(),
+			"jid":       jidStr,
+			"altJid":    altFrom.String(),
 			"isOnline":  !evt.Unavailable,
 			"lastSeen":  evt.LastSeen.UnixMilli(),
 			"timestamp": time.Now().UnixMilli(),
 		})
 
 	case *events.ChatPresence:
+		mu.Lock()
+		cpCli := client
+		cpCtx := baseCtx
+		mu.Unlock()
+		canonCPChat, altCPChat := canonicalizeDMChatJID(cpCtx, cpCli, evt.Chat)
+		cpChatStr := canonCPChat.String()
+		if cpChatStr == "" {
+			cpChatStr = evt.Chat.String()
+		}
+		canonCPSender, _ := canonicalizeDMChatJID(cpCtx, cpCli, evt.Sender)
+		cpSenderStr := canonCPSender.String()
+		if cpSenderStr == "" {
+			cpSenderStr = evt.Sender.String()
+		}
 		emitJSON("CHAT_PRESENCE", map[string]any{
-			"chatJid":   evt.Chat.String(),
-			"senderJid": evt.Sender.String(),
-			"state":     string(evt.State),
-			"media":     string(evt.Media),
-			"timestamp": time.Now().UnixMilli(),
+			"chatJid":    cpChatStr,
+			"altChatJid": altCPChat.String(),
+			"senderJid":  cpSenderStr,
+			"state":      string(evt.State),
+			"media":      string(evt.Media),
+			"timestamp":  time.Now().UnixMilli(),
 		})
 
 	case *events.Contact:
@@ -2582,32 +2685,53 @@ func handlePictureUpdate(evt *events.Picture) {
 }
 
 func processUndecryptable(evt *events.UndecryptableMessage) {
+	if evt == nil {
+		return
+	}
 	msgID := string(evt.Info.ID)
 	val, _ := retryCounts.LoadOrStore(msgID, 0)
 	cnt := val.(int) + 1
 	retryCounts.Store(msgID, cnt)
 
+	mu.Lock()
+	uCli := client
+	uCtx := baseCtx
+	mu.Unlock()
+	learnLIDMappingFromMessageInfo(uCtx, uCli, &evt.Info)
+	canonChat, altChat := canonicalizeDMChatJID(uCtx, uCli, evt.Info.Chat)
+	chatStr := canonChat.String()
+	if chatStr == "" {
+		chatStr = evt.Info.Chat.String()
+	}
+	canonSender, _ := canonicalizeDMChatJID(uCtx, uCli, evt.Info.Sender)
+	senderStr := canonSender.String()
+	if senderStr == "" {
+		senderStr = evt.Info.Sender.String()
+	}
+
 	if evt.IsUnavailable && evt.UnavailableType == events.UnavailableTypeViewOnce {
 		emitJSON("VIEW_ONCE_STRIPPED", map[string]any{
-			"id":        msgID,
-			"chatJid":   evt.Info.Chat.String(),
-			"senderJid": evt.Info.Sender.String(),
-			"pushName":  evt.Info.PushName,
-			"isFromMe":  evt.Info.IsFromMe,
-			"timestamp": evt.Info.Timestamp.UnixMilli(),
-			"reason":    "Key=0B stripped by Meta server on companion session",
+			"id":         msgID,
+			"chatJid":    chatStr,
+			"altChatJid": altChat.String(),
+			"senderJid":  senderStr,
+			"pushName":   evt.Info.PushName,
+			"isFromMe":   evt.Info.IsFromMe,
+			"timestamp":  evt.Info.Timestamp.UnixMilli(),
+			"reason":     "Key=0B stripped by Meta server on companion session",
 		})
 		return
 	}
 
 	if cnt > maxDecryptRetries || evt.IsUnavailable {
 		emitJSON("UNDECRYPTABLE_STUB", map[string]any{
-			"id":        msgID,
-			"chatJid":   evt.Info.Chat.String(),
-			"senderJid": evt.Info.Sender.String(),
-			"pushName":  evt.Info.PushName,
-			"retries":   cnt,
-			"timestamp": evt.Info.Timestamp.UnixMilli(),
+			"id":         msgID,
+			"chatJid":    chatStr,
+			"altChatJid": altChat.String(),
+			"senderJid":  senderStr,
+			"pushName":   evt.Info.PushName,
+			"retries":    cnt,
+			"timestamp":  evt.Info.Timestamp.UnixMilli(),
 		})
 	}
 }
@@ -2632,14 +2756,34 @@ func processIncomingMessage(evt *events.Message) {
 	}
 
 	// Intercept ProtocolMessage REVOKE / MESSAGE_EDIT / PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE
+	mu.Lock()
+	msgCli := client
+	msgCtx := baseCtx
+	mu.Unlock()
+	if msgCtx == nil {
+		msgCtx = context.Background()
+	}
+	learnLIDMappingFromMessageInfo(msgCtx, msgCli, &evt.Info)
+	canonEvtChat, altEvtChat := canonicalizeDMChatJID(msgCtx, msgCli, evt.Info.Chat)
+	evtChatStr := canonEvtChat.String()
+	if evtChatStr == "" {
+		evtChatStr = evt.Info.Chat.String()
+	}
+	canonEvtSender, _ := canonicalizeDMChatJID(msgCtx, msgCli, evt.Info.Sender)
+	evtSenderStr := canonEvtSender.String()
+	if evtSenderStr == "" {
+		evtSenderStr = evt.Info.Sender.String()
+	}
+
 	if pm := inner.GetProtocolMessage(); pm != nil {
 		switch pm.GetType() {
 		case waE2E.ProtocolMessage_REVOKE:
 			targetID := pm.GetKey().GetID()
 			emitJSON("MESSAGE_REVOKE", map[string]any{
-				"chatJid":         evt.Info.Chat.String(),
+				"chatJid":         evtChatStr,
+				"altChatJid":      altEvtChat.String(),
 				"targetMessageId": targetID,
-				"senderJid":       evt.Info.Sender.String(),
+				"senderJid":       evtSenderStr,
 				"revokedAt":       evt.Info.Timestamp.UnixMilli(),
 				"isStatus":        evt.Info.Chat == types.StatusBroadcastJID,
 			})
@@ -2654,7 +2798,8 @@ func processIncomingMessage(evt *events.Message) {
 				editedAt = evt.Info.Timestamp.UnixMilli()
 			}
 			emitJSON("MESSAGE_EDIT", map[string]any{
-				"chatJid":         evt.Info.Chat.String(),
+				"chatJid":         evtChatStr,
+				"altChatJid":      altEvtChat.String(),
 				"targetMessageId": targetID,
 				"newBody":         newBody,
 				"editedAt":        editedAt,
@@ -2714,21 +2859,11 @@ func processIncomingMessage(evt *events.Message) {
 
 	// Reaction message
 	if rm := inner.GetReactionMessage(); rm != nil {
-		mu.Lock()
-		cli := client
-		mu.Unlock()
-		chatStr := normalizeUserJID(cli, evt.Info.Chat.String())
-		if chatStr == "" {
-			chatStr = evt.Info.Chat.String()
-		}
-		senderStr := normalizeUserJID(cli, evt.Info.Sender.String())
-		if senderStr == "" {
-			senderStr = evt.Info.Sender.String()
-		}
 		emitJSON("MESSAGE_REACTION", map[string]any{
-			"chatJid":         chatStr,
+			"chatJid":         evtChatStr,
+			"altChatJid":      altEvtChat.String(),
 			"targetMessageId": rm.GetKey().GetID(),
-			"senderJid":       senderStr,
+			"senderJid":       evtSenderStr,
 			"senderName":      evt.Info.PushName,
 			"isFromMe":        evt.Info.IsFromMe,
 			"emoji":           rm.GetText(),
@@ -2741,7 +2876,8 @@ func processIncomingMessage(evt *events.Message) {
 	if isEdit && inner.GetProtocolMessage() == nil {
 		body, _, _, _, _, _ := extractMessageContent(inner)
 		emitJSON("MESSAGE_EDIT", map[string]any{
-			"chatJid":         evt.Info.Chat.String(),
+			"chatJid":         evtChatStr,
+			"altChatJid":      altEvtChat.String(),
 			"targetMessageId": string(evt.Info.ID),
 			"newBody":         body,
 			"editedAt":        evt.Info.Timestamp.UnixMilli(),
@@ -2758,7 +2894,11 @@ func processIncomingMessage(evt *events.Message) {
 	if !isVO && job == nil && msgTypeStr == "UNKNOWN" && strings.TrimSpace(bodyStr) == "" {
 		return
 	}
-	enqueueAvatarFetch(evt.Info.Chat)
+	if !canonEvtChat.IsEmpty() {
+		enqueueAvatarFetch(canonEvtChat)
+	} else {
+		enqueueAvatarFetch(evt.Info.Chat)
+	}
 	if evt.Info.Chat == types.StatusBroadcastJID {
 		enqueueAvatarFetch(evt.Info.Sender)
 		emitJSON("STATUS_UPSERT", payload)
@@ -2829,13 +2969,15 @@ func processHistorySync(evt *events.HistorySync) {
 
 	const batchLimit = 250
 	var chatBatch []chatMeta
+	chatBatchIdx := make(map[string]int)
 	var msgBatch []map[string]any
+	var rxBatch []map[string]any
 	var priorityMediaJobs []*mediaJob
 	var standardMediaJobs []*mediaJob
 	convJIDs := make(map[string]bool)
 
 	flush := func(done bool) {
-		if len(chatBatch) == 0 && len(msgBatch) == 0 && !done {
+		if len(chatBatch) == 0 && len(msgBatch) == 0 && len(rxBatch) == 0 && !done {
 			return
 		}
 		emitJSON("HISTORY_SYNC_BATCH", map[string]any{
@@ -2843,16 +2985,26 @@ func processHistorySync(evt *events.HistorySync) {
 			"progress":  evt.Data.GetProgress(),
 			"chats":     chatBatch,
 			"messages":  msgBatch,
+			"reactions": rxBatch,
 			"pushnames": pushnames,
 			"isFinal":   done,
 		})
 		pushnames = nil
 		chatBatch = nil
+		chatBatchIdx = make(map[string]int)
 		msgBatch = nil
+		rxBatch = nil
+	}
+
+	type histMsgEntry struct {
+		tsMs       int64
+		msgOrderID uint64
+		origIdx    int
+		payload    map[string]any
 	}
 
 	for _, conv := range evt.Data.GetConversations() {
-		chatJID, err := types.ParseJID(conv.GetID())
+		rawChatJID, err := types.ParseJID(conv.GetID())
 		if err != nil {
 			continue
 		}
@@ -2863,23 +3015,31 @@ func processHistorySync(evt *events.HistorySync) {
 				}
 			}
 		}
+		chatJID, altJID := canonicalizeDMChatJID(baseCtx, cli, rawChatJID)
+		if chatJID.IsEmpty() {
+			chatJID = rawChatJID
+		}
+		if altJID.IsEmpty() {
+			altJID = resolveAlternateChatJID(baseCtx, cli, chatJID)
+		}
 		chatName := conv.GetName()
 		if chatName == "" {
 			chatName = conv.GetDisplayName()
 		}
-		var altJID types.JID
 		if chatName == "" || chatName == chatJID.User {
 			var resolved string
-			resolved, _, altJID = resolveBestContactName(baseCtx, cli, chatJID)
+			var resolvedAlt types.JID
+			resolved, _, resolvedAlt = resolveBestContactName(baseCtx, cli, chatJID)
 			if resolved != "" {
 				chatName = resolved
 			}
-		} else {
-			altJID = resolveAlternateChatJID(baseCtx, cli, chatJID)
+			if altJID.IsEmpty() && !resolvedAlt.IsEmpty() {
+				altJID = resolvedAlt
+			}
 		}
 		enqueueAvatarFetch(chatJID)
 		convJIDs[chatJID.String()] = true
-		chatBatch = append(chatBatch, chatMeta{
+		cm := chatMeta{
 			JID:               chatJID.String(),
 			AltJID:            altJID.String(),
 			Name:              chatName,
@@ -2893,9 +3053,41 @@ func processHistorySync(evt *events.HistorySync) {
 			MuteEndTime:       conv.GetMuteEndTime(),
 			LastTimestampMs:   int64(conv.GetConversationTimestamp()) * 1000,
 			EphemeralSec:      conv.GetEphemeralExpiration(),
-		})
+		}
+		if idx, exists := chatBatchIdx[cm.JID]; exists {
+			prev := chatBatch[idx]
+			if prev.AltJID == "" {
+				prev.AltJID = cm.AltJID
+			}
+			if prev.Name == "" || strings.HasPrefix(prev.Name, "+") || prev.Name == chatJID.User {
+				if cm.Name != "" {
+					prev.Name = cm.Name
+				}
+			}
+			if cm.UnreadCount > prev.UnreadCount {
+				prev.UnreadCount = cm.UnreadCount
+			}
+			if cm.LastTimestampMs > prev.LastTimestampMs {
+				prev.LastTimestampMs = cm.LastTimestampMs
+			}
+			prev.Archived = prev.Archived || cm.Archived
+			if cm.Pinned > prev.Pinned {
+				prev.Pinned = cm.Pinned
+			}
+			if cm.MuteEndTime > prev.MuteEndTime {
+				prev.MuteEndTime = cm.MuteEndTime
+			}
+			if cm.EphemeralSec > prev.EphemeralSec {
+				prev.EphemeralSec = cm.EphemeralSec
+			}
+			chatBatch[idx] = prev
+		} else {
+			chatBatchIdx[cm.JID] = len(chatBatch)
+			chatBatch = append(chatBatch, cm)
+		}
 
-		for _, hMsg := range conv.GetMessages() {
+		convMsgs := make([]histMsgEntry, 0, len(conv.GetMessages()))
+		for origIdx, hMsg := range conv.GetMessages() {
 			webMsg := hMsg.GetMessage()
 			if webMsg == nil {
 				continue
@@ -2917,31 +3109,35 @@ func processHistorySync(evt *events.HistorySync) {
 				if durSec > 0 {
 					stubSub = formatCallDuration(int64(durSec))
 				}
-				msgBatch = append(msgBatch, map[string]any{
-					"id":                callID,
-					"chatJid":           chatJID.String(),
-					"senderJid":         senderStr,
-					"senderName":        webMsg.GetPushName(),
-					"isFromMe":          fromMe,
-					"isGroup":           chatJID.Server == types.GroupServer,
-					"timestamp":         tsMs,
-					"body":              stubTitle + "|" + stubSub,
-					"msgType":           "CALL",
-					"mimeType":          "",
-					"durationSec":       durSec,
-					"fileSize":          0,
-					"isViewOnce":        false,
-					"viewOnceState":     "NONE",
-					"isEphemeral":       false,
-					"ephemeralDuration": 0,
-					"quotedId":          "",
-					"quotedSender":      "",
-					"quotedBody":        "",
-					"mentionsCsv":       "",
+				convMsgs = append(convMsgs, histMsgEntry{
+					tsMs:       tsMs,
+					msgOrderID: hMsg.GetMsgOrderID(),
+					origIdx:    origIdx,
+					payload: map[string]any{
+						"id":                callID,
+						"chatJid":           chatJID.String(),
+						"altChatJid":        altJID.String(),
+						"senderJid":         senderStr,
+						"senderName":        webMsg.GetPushName(),
+						"isFromMe":          fromMe,
+						"isGroup":           chatJID.Server == types.GroupServer,
+						"timestamp":         tsMs,
+						"body":              stubTitle + "|" + stubSub,
+						"msgType":           "CALL",
+						"mimeType":          "",
+						"durationSec":       durSec,
+						"fileSize":          0,
+						"isViewOnce":        false,
+						"viewOnceState":     "NONE",
+						"isEphemeral":       false,
+						"ephemeralDuration": 0,
+						"quotedId":          "",
+						"quotedSender":      "",
+						"quotedBody":        "",
+						"mentionsCsv":       "",
+						"reactionSummary":   "",
+					},
 				})
-				if len(msgBatch) >= batchLimit {
-					flush(false)
-				}
 				continue
 			}
 			if stubText, okGroupStub := groupStubDetails(webMsg); okGroupStub {
@@ -2954,33 +3150,36 @@ func processHistorySync(evt *events.HistorySync) {
 				if senderStr == "" {
 					senderStr = chatJID.String()
 				}
-				msgBatch = append(msgBatch, map[string]any{
-					"id":                stubID,
-					"chatJid":           chatJID.String(),
-					"senderJid":         senderStr,
-					"senderName":        webMsg.GetPushName(),
-					"isFromMe":          webMsg.GetKey().GetFromMe(),
-					"isGroup":           chatJID.Server == types.GroupServer,
-					"timestamp":         tsMs,
-					"body":              stubText,
-					"msgType":           "SYSTEM",
-					"mimeType":          "",
-					"durationSec":       0,
-					"fileSize":          0,
-					"deliveryStatus":    "READ",
-					"isViewOnce":        false,
-					"viewOnceState":     "NONE",
-					"isEphemeral":       false,
-					"ephemeralDuration": 0,
-					"quotedId":          "",
-					"quotedSender":      "",
-					"quotedBody":        "",
-					"mentionsCsv":       "",
-					"reactionSummary":   "",
+				convMsgs = append(convMsgs, histMsgEntry{
+					tsMs:       tsMs,
+					msgOrderID: hMsg.GetMsgOrderID(),
+					origIdx:    origIdx,
+					payload: map[string]any{
+						"id":                stubID,
+						"chatJid":           chatJID.String(),
+						"altChatJid":        altJID.String(),
+						"senderJid":         senderStr,
+						"senderName":        webMsg.GetPushName(),
+						"isFromMe":          webMsg.GetKey().GetFromMe(),
+						"isGroup":           chatJID.Server == types.GroupServer,
+						"timestamp":         tsMs,
+						"body":              stubText,
+						"msgType":           "SYSTEM",
+						"mimeType":          "",
+						"durationSec":       0,
+						"fileSize":          0,
+						"deliveryStatus":    "READ",
+						"isViewOnce":        false,
+						"viewOnceState":     "NONE",
+						"isEphemeral":       false,
+						"ephemeralDuration": 0,
+						"quotedId":          "",
+						"quotedSender":      "",
+						"quotedBody":        "",
+						"mentionsCsv":       "",
+						"reactionSummary":   "",
+					},
 				})
-				if len(msgBatch) >= batchLimit {
-					flush(false)
-				}
 				continue
 			}
 			parsed, pErr := cli.ParseWebMessage(chatJID, webMsg)
@@ -2997,6 +3196,26 @@ func processHistorySync(evt *events.HistorySync) {
 			if inner == nil {
 				continue
 			}
+			if rm := inner.GetReactionMessage(); rm != nil {
+				if tid := rm.GetKey().GetID(); tid != "" {
+					canonRxSender, _ := canonicalizeDMChatJID(baseCtx, cli, parsed.Info.Sender)
+					rxSender := canonRxSender.String()
+					if rxSender == "" {
+						rxSender = parsed.Info.Sender.String()
+					}
+					rxBatch = append(rxBatch, map[string]any{
+						"chatJid":         chatJID.String(),
+						"altChatJid":      altJID.String(),
+						"targetMessageId": tid,
+						"senderJid":       rxSender,
+						"senderName":      parsed.Info.PushName,
+						"isFromMe":        parsed.Info.IsFromMe,
+						"emoji":           rm.GetText(),
+						"timestamp":       parsed.Info.Timestamp.UnixMilli(),
+					})
+				}
+				continue
+			}
 			if pm := inner.GetProtocolMessage(); pm != nil {
 				continue
 			}
@@ -3004,13 +3223,22 @@ func processHistorySync(evt *events.HistorySync) {
 			if v, ok := mPayload["isViewOnce"].(bool); ok && v {
 				isVO = true
 			}
+			if rxSummary := formatWebMsgReactions(webMsg.GetReactions()); rxSummary != "" {
+				mPayload["reactionSummary"] = rxSummary
+			}
 			mPayload["deliveryStatus"] = deliveryStatusFromWebMsg(webMsg, parsed.Info.IsFromMe)
 			mt, _ := mPayload["msgType"].(string)
 			bd, _ := mPayload["body"].(string)
 			if !isVO && job == nil && mt == "UNKNOWN" && strings.TrimSpace(bd) == "" {
 				continue
 			}
-			msgBatch = append(msgBatch, mPayload)
+			tsMs, _ := mPayload["timestamp"].(int64)
+			convMsgs = append(convMsgs, histMsgEntry{
+				tsMs:       tsMs,
+				msgOrderID: hMsg.GetMsgOrderID(),
+				origIdx:    origIdx,
+				payload:    mPayload,
+			})
 			if job != nil {
 				job.IsHistorical = parsed.Info.IsFromMe || time.Since(parsed.Info.Timestamp) > 24*time.Hour
 				saveMediaMeta(job)
@@ -3023,6 +3251,26 @@ func processHistorySync(evt *events.HistorySync) {
 					standardMediaJobs = append(standardMediaJobs, job)
 				}
 			}
+		}
+
+		// Sort messages within this conversation chronologically and assign +1ms tie-breakers for same-second messages
+		sort.SliceStable(convMsgs, func(i, j int) bool {
+			if convMsgs[i].tsMs != convMsgs[j].tsMs {
+				return convMsgs[i].tsMs < convMsgs[j].tsMs
+			}
+			if convMsgs[i].msgOrderID != convMsgs[j].msgOrderID {
+				return convMsgs[i].msgOrderID < convMsgs[j].msgOrderID
+			}
+			return convMsgs[i].origIdx < convMsgs[j].origIdx
+		})
+		var lastTsMs int64
+		for i := range convMsgs {
+			if lastTsMs > 0 && convMsgs[i].tsMs <= lastTsMs && convMsgs[i].tsMs/1000 == lastTsMs/1000 {
+				convMsgs[i].tsMs = lastTsMs + 1
+				convMsgs[i].payload["timestamp"] = convMsgs[i].tsMs
+			}
+			lastTsMs = convMsgs[i].tsMs
+			msgBatch = append(msgBatch, convMsgs[i].payload)
 			if len(msgBatch) >= batchLimit {
 				flush(false)
 			}
@@ -3193,6 +3441,18 @@ func buildNormalizedMessage(
 		ctx = context.Background()
 	}
 
+	learnLIDMappingFromMessageInfo(ctx, cli, info)
+	canonChat, altChat := canonicalizeDMChatJID(ctx, cli, info.Chat)
+	chatStr := canonChat.String()
+	if chatStr == "" {
+		chatStr = info.Chat.String()
+	}
+	canonSender, _ := canonicalizeDMChatJID(ctx, cli, info.Sender)
+	senderStr := canonSender.String()
+	if senderStr == "" {
+		senderStr = info.Sender.String()
+	}
+
 	resolvedSenderName := strings.TrimSpace(info.PushName)
 	if cli != nil && !info.Sender.IsEmpty() {
 		sMeta := resolveLocalParticipantMeta(ctx, cli, "", info.Sender)
@@ -3216,8 +3476,9 @@ func buildNormalizedMessage(
 
 	payload := map[string]any{
 		"id":                string(info.ID),
-		"chatJid":           info.Chat.String(),
-		"senderJid":         info.Sender.String(),
+		"chatJid":           chatStr,
+		"altChatJid":        altChat.String(),
+		"senderJid":         senderStr,
 		"senderName":        resolvedSenderName,
 		"isFromMe":          info.IsFromMe,
 		"isGroup":           info.IsGroup,
@@ -3243,8 +3504,8 @@ func buildNormalizedMessage(
 		isHist := !info.Timestamp.IsZero() && time.Since(info.Timestamp) > 24*time.Hour
 		job = &mediaJob{
 			MessageID:     string(info.ID),
-			ChatJID:       info.Chat.String(),
-			SenderJID:     info.Sender.String(),
+			ChatJID:       chatStr,
+			SenderJID:     senderStr,
 			MediaType:     msgType,
 			MimeType:      mimeType,
 			DirectPath:    dlMsg.GetDirectPath(),

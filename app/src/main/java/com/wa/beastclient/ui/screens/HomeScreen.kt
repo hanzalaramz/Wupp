@@ -50,6 +50,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Flight
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MoreVert
@@ -90,6 +91,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -119,6 +121,7 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 import com.wa.beastclient.BuildConfig
 import com.wa.beastclient.R
+import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.core.update.UpdateUiState
 import com.wa.beastclient.data.db.ChatEntity
 import com.wa.beastclient.data.db.MessageEntity
@@ -138,9 +141,14 @@ import com.wa.beastclient.ui.components.DeliveryTickIcon
 import com.wa.beastclient.ui.components.QuickContactDialog
 import com.wa.beastclient.ui.components.ThemePickerDialog
 import com.wa.beastclient.ui.components.ThemeSelectorGrid
+import com.wa.beastclient.ui.components.WallpaperPickerDialog
+import com.wa.beastclient.ui.components.describeChatWallpaper
 import com.wa.beastclient.ui.components.formatMessageClock
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -2242,8 +2250,24 @@ private fun ToolsVaultTab(
     val allChats by viewModel.allChats.collectAsState()
     val updateState by viewModel.updateState.collectAsState()
     val autoUpdateEnabled by viewModel.autoUpdateEnabled.collectAsState()
+    val includePreReleases by viewModel.includePreReleases.collectAsState()
     var editingAutoDlNetwork by remember { mutableStateOf<AutoDownloadNetwork?>(null) }
     var showGalleryContactsDialog by remember { mutableStateOf(false) }
+    var showWallpaperDialog by remember { mutableStateOf(false) }
+    var isSyncNotifHidden by remember {
+        mutableStateOf(WaRealtimeService.isRealtimeStatusNotificationHidden(context))
+    }
+
+    DisposableEffect(context) {
+        val lifecycleOwner = context as? LifecycleOwner
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                isSyncNotifHidden = WaRealtimeService.isRealtimeStatusNotificationHidden(context)
+            }
+        }
+        lifecycleOwner?.lifecycle?.addObserver(observer)
+        onDispose { lifecycleOwner?.lifecycle?.removeObserver(observer) }
+    }
 
     LazyColumn(
         state = listState,
@@ -2426,6 +2450,46 @@ private fun ToolsVaultTab(
                         onSelectTheme = { viewModel.setThemeMode(it) }
                     )
                 }
+                PatchRowDivider()
+                PatchActionRow(
+                    icon = Icons.Rounded.Image,
+                    title = "Chat Wallpaper",
+                    subtitle = describeChatWallpaper(stealth.chatWallpaperUri),
+                    onClick = { showWallpaperDialog = true }
+                )
+            }
+        }
+
+        item(key = "patch_section_notifications_sync") {
+            PatchSectionCard(title = "Notifications & Background Sync") {
+                PatchActionRow(
+                    icon = if (isSyncNotifHidden) Icons.Rounded.NotificationsOff else Icons.Rounded.Notifications,
+                    title = "Hide Sync Status Notification",
+                    subtitle = if (isSyncNotifHidden) {
+                        "Hidden ('Wupp Realtime Sync' is off) — background sync & message alerts still run 24/7"
+                    } else {
+                        "Android requires a foreground service for background sync. Tap to turn off only the 'Wupp Realtime Sync' channel without breaking sync."
+                    },
+                    badgeText = if (isSyncNotifHidden) "HIDDEN" else "TAP TO HIDE",
+                    onClick = {
+                        WaRealtimeService.openNotificationChannelSettings(
+                            context = context,
+                            channelId = WaRealtimeService.CHANNEL_ID
+                        )
+                    }
+                )
+                PatchRowDivider()
+                PatchActionRow(
+                    icon = Icons.Rounded.Notifications,
+                    title = "Incoming Message Alerts",
+                    subtitle = "Configure sound, vibration, and pop-up banners for new messages",
+                    onClick = {
+                        WaRealtimeService.openNotificationChannelSettings(
+                            context = context,
+                            channelId = WaRealtimeService.MESSAGES_CHANNEL_ID
+                        )
+                    }
+                )
             }
         }
 
@@ -2470,6 +2534,14 @@ private fun ToolsVaultTab(
                     subtitle = "Notify and prompt to download when a new GitHub release ships",
                     checked = autoUpdateEnabled,
                     onCheckedChange = { viewModel.setAutoUpdateEnabled(it) }
+                )
+                PatchRowDivider()
+                PatchToggleRow(
+                    icon = Icons.Rounded.SystemUpdate,
+                    title = "Receive Pre-release Updates",
+                    subtitle = "Tester channel — fetch GitHub pre-releases before public rollout",
+                    checked = includePreReleases,
+                    onCheckedChange = { viewModel.setIncludePreReleases(it) }
                 )
                 PatchRowDivider()
                 PatchActionRow(
@@ -2538,6 +2610,19 @@ private fun ToolsVaultTab(
                 viewModel.setChatMediaVisibility(jid, if (hide) false else null)
             },
             onDismiss = { showGalleryContactsDialog = false }
+        )
+    }
+
+    if (showWallpaperDialog) {
+        WallpaperPickerDialog(
+            currentUri = stealth.chatWallpaperUri,
+            currentDim = stealth.chatWallpaperDim,
+            showDoodleOnPresets = stealth.chatWallpaperShowDoodle,
+            onSelectUri = { viewModel.setChatWallpaper(it) },
+            onPickCustomImage = { viewModel.importChatWallpaperFromUri(it) },
+            onDimChange = { viewModel.setChatWallpaperDim(it) },
+            onToggleDoodle = { viewModel.setChatWallpaperShowDoodle(it) },
+            onDismiss = { showWallpaperDialog = false }
         )
     }
 }

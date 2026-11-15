@@ -1,9 +1,14 @@
 package com.wa.beastclient.ui.components
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,17 +19,26 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.NightlightRound
+import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -305,4 +319,230 @@ private fun ThemePreviewCard(
             )
         }
     }
+}
+
+@Composable
+fun WallpaperPickerDialog(
+    currentUri: String,
+    currentDim: Float,
+    showDoodleOnPresets: Boolean,
+    onSelectUri: (String) -> Unit,
+    onPickCustomImage: (Uri) -> Unit,
+    onDimChange: (Float) -> Unit,
+    onToggleDoodle: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = LocalWaColors.current
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            onPickCustomImage(uri)
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.elevatedBar,
+        title = {
+            Text(
+                text = "Chat Wallpaper",
+                color = colors.textPrimary,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 18.sp
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // Live chat preview banner
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = colors.chatCanvas,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(124.dp)
+                        .border(1.dp, colors.divider, RoundedCornerShape(14.dp))
+                ) {
+                    DoodleBackground(
+                        wallpaperUriOverride = currentUri,
+                        wallpaperDimOverride = currentDim,
+                        showDoodleOverride = showDoodleOnPresets,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = colors.incomingBubble
+                            ) {
+                                Text(
+                                    text = "Custom background preview",
+                                    color = colors.textPrimary,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = colors.outgoingBubble
+                                ) {
+                                    Text(
+                                        text = describeChatWallpaper(currentUri),
+                                        color = colors.textPrimary,
+                                        fontSize = 12.sp,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Gallery + Reset action buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            galleryLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = colors.accentGreen,
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Image,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("From gallery", fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    TextButton(
+                        onClick = { onSelectUri("") }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.RestartAlt,
+                            contentDescription = null,
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Default", color = colors.textSecondary, fontSize = 13.sp)
+                    }
+                }
+
+                // Curated color/gradient presets
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Presets",
+                        color = colors.textSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        ChatWallpaperPresets.forEach { preset ->
+                            val isSelected = currentUri == preset.storageUri
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.clickable { onSelectUri(preset.storageUri) }
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(Brush.verticalGradient(listOf(preset.topColor, preset.bottomColor)))
+                                        .border(
+                                            width = if (isSelected) 2.dp else 1.dp,
+                                            color = if (isSelected) colors.brightGreen else colors.divider,
+                                            shape = CircleShape
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.CheckCircle,
+                                            contentDescription = "Selected",
+                                            tint = colors.brightGreen,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = preset.label,
+                                    color = if (isSelected) colors.textPrimary else colors.textSecondary,
+                                    fontSize = 10.5.sp
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (currentUri.startsWith("file:")) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "Overlay dimness (${(currentDim * 100).toInt()}%)",
+                            color = colors.textSecondary,
+                            fontSize = 12.sp
+                        )
+                        Slider(
+                            value = currentDim.coerceIn(0f, 0.75f),
+                            onValueChange = onDimChange,
+                            valueRange = 0f..0.75f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = colors.brightGreen,
+                                activeTrackColor = colors.accentGreen,
+                                inactiveTrackColor = colors.divider
+                            )
+                        )
+                    }
+                } else if (currentUri.startsWith("preset:")) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Show doodle overlay",
+                            color = colors.textPrimary,
+                            fontSize = 13.5.sp
+                        )
+                        Switch(
+                            checked = showDoodleOnPresets,
+                            onCheckedChange = onToggleDoodle,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = colors.accentGreen
+                            )
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Done", color = colors.brightGreen, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    )
 }

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-15
+
+Bug fixes for chat deduplication, message ordering, reactions, background reliability, custom chat backgrounds, and pre-release update testing.
+
+### What's new
+- Added **Custom Chat Background** picker with built-in wallpapers, gallery image import, dimness slider, and doodle toggle.
+- Added **Notifications & Background Sync** controls in Settings (hide the persistent status notification channel and request unrestricted battery optimization for reliable real-time sync).
+- Added background message notifications, boot restart, and companion app notices (#13).
+- Added opt-in **Receive Pre-release Updates** toggle in Settings so testers can preview GitHub pre-releases in-app before public rollout.
+
+### Fixes & polish
+- Fixed duplicate DM chat threads caused by separate `@lid` and phone JIDs by canonicalizing and merging chat aliases.
+- Fixed same-second message ordering swaps across history sync and live messages.
+- Fixed missing or out-of-order emoji reactions during history sync and live arrival.
+
 ## [0.2.0] - 2026-11-15
 
 Lots of UI fixes, media controls, and day-to-day polish in this update.

@@ -169,7 +169,7 @@ interface WaDao {
     @Query("SELECT * FROM chats WHERE last_message_preview = '' OR last_message_type IN ('UNKNOWN', '')")
     suspend fun getChatsWithBlankPreview(): List<ChatEntity>
 
-    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC LIMIT 1")
+    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, rowid DESC LIMIT 1")
     suspend fun getLatestMessageForChat(chatJid: String): MessageEntity?
 
     @Query("SELECT * FROM messages WHERE chat_jid = :chatJid AND timestamp > :afterTimestamp ORDER BY timestamp ASC LIMIT 1")
@@ -189,7 +189,7 @@ interface WaDao {
               WHEN instr(:chatJid, '@') > 1 THEN substr(:chatJid, 1, instr(:chatJid, '@') - 1)
               ELSE :chatJid
           END
-        ORDER BY timestamp DESC LIMIT 1
+        ORDER BY timestamp DESC, rowid DESC LIMIT 1
         """
     )
     suspend fun getLatestIncomingSenderName(chatJid: String): String?
@@ -206,10 +206,10 @@ interface WaDao {
     @Query("UPDATE chats SET about_text = :aboutText WHERE jid = :jid")
     suspend fun updateChatAbout(jid: String, aboutText: String)
 
-    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC")
+    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, rowid DESC")
     fun pagingMessages(chatJid: String): PagingSource<Int, MessageEntity>
 
-    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC LIMIT :limit")
+    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, rowid DESC LIMIT :limit")
     fun observeRecentMessages(chatJid: String, limit: Int = 200): Flow<List<MessageEntity>>
 
     @Query("SELECT * FROM messages WHERE id = :messageId LIMIT 1")
@@ -222,7 +222,7 @@ interface WaDao {
         """
         SELECT id FROM messages
         WHERE chat_jid = :chatJid AND is_from_me = 0 AND delivery_status != 'READ' AND delivery_status != 'PLAYED'
-        ORDER BY timestamp DESC
+        ORDER BY timestamp DESC, rowid DESC
         LIMIT 25
         """
     )
@@ -232,7 +232,7 @@ interface WaDao {
         """
         SELECT id, sender_jid FROM messages
         WHERE chat_jid = :chatJid AND is_from_me = 0 AND delivery_status != 'READ' AND delivery_status != 'PLAYED'
-        ORDER BY timestamp DESC
+        ORDER BY timestamp DESC, rowid DESC
         LIMIT 25
         """
     )
@@ -242,7 +242,7 @@ interface WaDao {
         """
         SELECT id, sender_jid FROM messages
         WHERE chat_jid = :chatJid AND is_from_me = 0
-        ORDER BY timestamp DESC
+        ORDER BY timestamp DESC, rowid DESC
         LIMIT :limit
         """
     )
@@ -430,6 +430,106 @@ interface WaDao {
     @Query("SELECT * FROM group_receipts WHERE message_id = :messageId ORDER BY timestamp DESC")
     fun observeGroupReceipts(messageId: String): Flow<List<GroupReceiptEntity>>
 
+    @Query("UPDATE messages SET reaction_summary = :summary WHERE id = :messageId AND reaction_summary = ''")
+    suspend fun fillReactionSummaryIfBlank(messageId: String, summary: String)
+
+    @Query("UPDATE messages SET chat_jid = :canonicalJid WHERE chat_jid = :duplicateJid")
+    suspend fun reassignMessagesChatJid(canonicalJid: String, duplicateJid: String): Int
+
+    @Query("UPDATE profile_history SET jid = :canonicalJid WHERE jid = :duplicateJid")
+    suspend fun reassignProfileHistoryJid(canonicalJid: String, duplicateJid: String)
+
+    @Transaction
+    suspend fun mergeDuplicateChatAlias(canonicalJid: String, duplicateJid: String) {
+        if (canonicalJid.isBlank() || duplicateJid.isBlank() || canonicalJid == duplicateJid) return
+        if (canonicalJid.endsWith("@g.us") || canonicalJid.endsWith("@newsletter") || canonicalJid == "status@broadcast") return
+        if (duplicateJid.endsWith("@g.us") || duplicateJid.endsWith("@newsletter") || duplicateJid == "status@broadcast") return
+
+        val duplicate = getChat(duplicateJid)
+        val canonical = getChat(canonicalJid)
+        if (duplicate == null && canonical == null) return
+
+        reassignMessagesChatJid(canonicalJid, duplicateJid)
+        reassignProfileHistoryJid(canonicalJid, duplicateJid)
+
+        val dupPrivacy = getPrivacyRuleOnce(duplicateJid)
+        if (dupPrivacy != null) {
+            if (getPrivacyRuleOnce(canonicalJid) == null) {
+                upsertPrivacyRule(dupPrivacy.copy(jid = canonicalJid))
+            }
+            deletePrivacyRule(duplicateJid)
+        }
+
+        if (duplicate == null) return
+
+        fun isRealName(name: String, jid: String): Boolean {
+            val bare = jid.substringBefore("@")
+            return name.isNotBlank() && name != jid && name != bare && !name.startsWith("+")
+        }
+
+        if (canonical == null) {
+            upsertChat(duplicate.copy(jid = canonicalJid))
+            deleteChatRow(duplicateJid)
+            return
+        }
+
+        val resolvedName = when {
+            isRealName(canonical.name, canonicalJid) -> canonical.name
+            isRealName(duplicate.name, duplicateJid) -> duplicate.name
+            canonical.name.isNotBlank() -> canonical.name
+            else -> duplicate.name
+        }
+        val resolvedAvatar = canonical.avatarPath?.takeIf { it.isNotBlank() }
+            ?: duplicate.avatarPath?.takeIf { it.isNotBlank() }
+        val resolvedAbout = canonical.aboutText.ifBlank { duplicate.aboutText }
+        val dupIsNewer = duplicate.lastMessageTimestamp >= canonical.lastMessageTimestamp &&
+            duplicate.lastMessagePreview.isNotBlank()
+        val latestMsg = getLatestMessageForChat(canonicalJid)
+        val mergedLastId = latestMsg?.id
+            ?: if (dupIsNewer) duplicate.lastMessageId else canonical.lastMessageId
+        val mergedPreview = latestMsg?.let { previewTextFor(it) }
+            ?: if (dupIsNewer) duplicate.lastMessagePreview else canonical.lastMessagePreview
+        val mergedType = latestMsg?.let { if (it.isViewOnce) "VIEW_ONCE_${it.msgType}" else it.msgType }
+            ?: if (dupIsNewer) duplicate.lastMessageType else canonical.lastMessageType
+        val mergedFromMe = latestMsg?.isFromMe
+            ?: if (dupIsNewer) duplicate.lastMessageFromMe else canonical.lastMessageFromMe
+        val mergedStatus = latestMsg?.deliveryStatus
+            ?: if (dupIsNewer) duplicate.lastMessageStatus else canonical.lastMessageStatus
+        val mergedIsDeleted = latestMsg?.isDeletedBySender
+            ?: (canonical.lastMessageIsDeleted || duplicate.lastMessageIsDeleted)
+        val mergedTs = maxOf(
+            canonical.lastMessageTimestamp,
+            duplicate.lastMessageTimestamp,
+            latestMsg?.timestamp ?: 0L
+        )
+        val isOpen = com.wa.beastclient.core.service.WaRealtimeService.activeChatJid.value == canonicalJid
+        upsertChat(
+            canonical.copy(
+                name = resolvedName,
+                avatarPath = resolvedAvatar,
+                aboutText = resolvedAbout,
+                unreadCount = if (isOpen) 0 else (canonical.unreadCount + duplicate.unreadCount),
+                isArchived = canonical.isArchived && duplicate.isArchived,
+                isPinned = canonical.isPinned || duplicate.isPinned,
+                pinOrder = maxOf(canonical.pinOrder, duplicate.pinOrder),
+                isMuted = canonical.isMuted || duplicate.isMuted,
+                muteEndTime = maxOf(canonical.muteEndTime, duplicate.muteEndTime),
+                isFavorite = canonical.isFavorite || duplicate.isFavorite,
+                lastMessageId = mergedLastId,
+                lastMessagePreview = mergedPreview,
+                lastMessageType = mergedType,
+                lastMessageFromMe = mergedFromMe,
+                lastMessageStatus = mergedStatus,
+                lastMessageIsDeleted = mergedIsDeleted,
+                lastMessageTimestamp = mergedTs,
+                hasDeletedMessages = canonical.hasDeletedMessages || duplicate.hasDeletedMessages,
+                hasEditedMessages = canonical.hasEditedMessages || duplicate.hasEditedMessages,
+                ephemeralDuration = maxOf(canonical.ephemeralDuration, duplicate.ephemeralDuration)
+            )
+        )
+        deleteChatRow(duplicateJid)
+    }
+
     @Transaction
     suspend fun insertHistorySyncBatch(chats: List<ChatEntity>, messages: List<MessageEntity>) {
         val openChatJid = com.wa.beastclient.core.service.WaRealtimeService.activeChatJid.value
@@ -473,7 +573,7 @@ interface WaDao {
         messages.chunked(250).forEach { chunk ->
             insertMessagesIgnore(chunk)
         }
-        // Heal / upgrade existing outgoing delivery statuses from newly synced WebMessageInfo
+        // Heal / upgrade existing outgoing delivery statuses & backfill synced reactions from WebMessageInfo
         messages.forEach { m ->
             if (m.isFromMe) {
                 val r = deliveryRank(m.deliveryStatus)
@@ -481,6 +581,9 @@ interface WaDao {
                     updateMessageDeliveryStatusIfHigher(m.id, m.deliveryStatus, r)
                     updateChatLastMessageStatusIfHigher(m.id, m.deliveryStatus, r)
                 }
+            }
+            if (m.reactionSummary.isNotBlank()) {
+                fillReactionSummaryIfBlank(m.id, m.reactionSummary)
             }
         }
         // Ensure chat last message previews are refreshed for any newly inserted latest message
@@ -517,73 +620,84 @@ interface WaDao {
     ): Boolean {
         val existing = getMessage(message.id)
         val isNewMessage = existing == null
+        var effectiveMessage = message
+        if (isNewMessage && message.timestamp > 0L) {
+            val latestInChat = getLatestMessageForChat(message.chatJid)
+            if (latestInChat != null &&
+                message.timestamp <= latestInChat.timestamp &&
+                message.timestamp / 1000L == latestInChat.timestamp / 1000L
+            ) {
+                effectiveMessage = message.copy(timestamp = latestInChat.timestamp + 1L)
+            }
+        }
         if (existing != null) {
             val existingHasFile = !existing.localMediaPath.isNullOrBlank() &&
                 java.io.File(existing.localMediaPath).let { it.exists() && it.length() > 0L }
-            val resolvedVo = message.isViewOnce || existing.isViewOnce
+            val resolvedVo = effectiveMessage.isViewOnce || existing.isViewOnce
             val resolvedVoState = when {
                 existingHasFile && resolvedVo -> "AVAILABLE"
-                message.viewOnceState != "NONE" -> message.viewOnceState
+                effectiveMessage.viewOnceState != "NONE" -> effectiveMessage.viewOnceState
                 else -> existing.viewOnceState
             }
             // Preserve Anti-Delete, Edit History, Local Media, View-Once state, and Transcripts
             upsertMessage(
-                message.copy(
+                effectiveMessage.copy(
+                    timestamp = maxOf(existing.timestamp, effectiveMessage.timestamp),
                     isDeletedBySender = existing.isDeletedBySender,
                     deletedAt = existing.deletedAt,
                     isEdited = existing.isEdited,
                     editedAt = existing.editedAt,
                     isViewOnce = resolvedVo,
                     viewOnceState = resolvedVoState,
-                    localMediaPath = message.localMediaPath ?: existing.localMediaPath,
-                    waveformCsv = message.waveformCsv.ifBlank { existing.waveformCsv },
-                    audioTranscript = message.audioTranscript ?: existing.audioTranscript,
-                    reactionSummary = message.reactionSummary.ifBlank { existing.reactionSummary }
+                    localMediaPath = effectiveMessage.localMediaPath ?: existing.localMediaPath,
+                    waveformCsv = effectiveMessage.waveformCsv.ifBlank { existing.waveformCsv },
+                    audioTranscript = effectiveMessage.audioTranscript ?: existing.audioTranscript,
+                    reactionSummary = effectiveMessage.reactionSummary.ifBlank { existing.reactionSummary }
                 )
             )
         } else {
-            upsertMessage(message)
+            upsertMessage(effectiveMessage)
         }
 
-        val existingChat = getChat(message.chatJid)
-        val preview = previewTextFor(message)
-        val effectiveType = if (message.isViewOnce) "VIEW_ONCE_${message.msgType}" else message.msgType
-        val shouldBumpUnread = incrementUnread && isNewMessage && !message.isFromMe
+        val existingChat = getChat(effectiveMessage.chatJid)
+        val preview = previewTextFor(effectiveMessage)
+        val effectiveType = if (effectiveMessage.isViewOnce) "VIEW_ONCE_${effectiveMessage.msgType}" else effectiveMessage.msgType
+        val shouldBumpUnread = incrementUnread && isNewMessage && !effectiveMessage.isFromMe
         if (existingChat == null) {
             upsertChat(
                 ChatEntity(
-                    jid = message.chatJid,
-                    name = chatNameHint.ifBlank { message.chatJid.substringBefore("@") },
+                    jid = effectiveMessage.chatJid,
+                    name = chatNameHint.ifBlank { effectiveMessage.chatJid.substringBefore("@") },
                     isGroup = isGroup,
                     unreadCount = if (shouldBumpUnread) 1 else 0,
-                    lastMessageId = message.id,
+                    lastMessageId = effectiveMessage.id,
                     lastMessagePreview = preview,
                     lastMessageType = effectiveType,
-                    lastMessageFromMe = message.isFromMe,
-                    lastMessageStatus = message.deliveryStatus,
-                    lastMessageIsDeleted = message.isDeletedBySender,
-                    lastMessageTimestamp = message.timestamp,
-                    hasDeletedMessages = message.isDeletedBySender,
-                    hasEditedMessages = message.isEdited,
-                    ephemeralDuration = message.ephemeralDuration
+                    lastMessageFromMe = effectiveMessage.isFromMe,
+                    lastMessageStatus = effectiveMessage.deliveryStatus,
+                    lastMessageIsDeleted = effectiveMessage.isDeletedBySender,
+                    lastMessageTimestamp = effectiveMessage.timestamp,
+                    hasDeletedMessages = effectiveMessage.isDeletedBySender,
+                    hasEditedMessages = effectiveMessage.isEdited,
+                    ephemeralDuration = effectiveMessage.ephemeralDuration
                 )
             )
         } else {
-            val shouldAdvancePreview = message.timestamp >= existingChat.lastMessageTimestamp
+            val shouldAdvancePreview = effectiveMessage.timestamp >= existingChat.lastMessageTimestamp
             upsertChat(
                 existingChat.copy(
                     name = if (existingChat.name.isBlank() || existingChat.name == existingChat.jid.substringBefore("@")) {
                         chatNameHint.ifBlank { existingChat.name }
                     } else existingChat.name,
                     unreadCount = if (shouldBumpUnread) existingChat.unreadCount + 1 else existingChat.unreadCount,
-                    lastMessageId = if (shouldAdvancePreview) message.id else existingChat.lastMessageId,
+                    lastMessageId = if (shouldAdvancePreview) effectiveMessage.id else existingChat.lastMessageId,
                     lastMessagePreview = if (shouldAdvancePreview) preview else existingChat.lastMessagePreview,
                     lastMessageType = if (shouldAdvancePreview) effectiveType else existingChat.lastMessageType,
-                    lastMessageFromMe = if (shouldAdvancePreview) message.isFromMe else existingChat.lastMessageFromMe,
-                    lastMessageStatus = if (shouldAdvancePreview) message.deliveryStatus else existingChat.lastMessageStatus,
-                    lastMessageIsDeleted = if (shouldAdvancePreview) message.isDeletedBySender else existingChat.lastMessageIsDeleted,
-                    lastMessageTimestamp = maxOf(existingChat.lastMessageTimestamp, message.timestamp),
-                    ephemeralDuration = if (message.ephemeralDuration > 0) message.ephemeralDuration else existingChat.ephemeralDuration
+                    lastMessageFromMe = if (shouldAdvancePreview) effectiveMessage.isFromMe else existingChat.lastMessageFromMe,
+                    lastMessageStatus = if (shouldAdvancePreview) effectiveMessage.deliveryStatus else existingChat.lastMessageStatus,
+                    lastMessageIsDeleted = if (shouldAdvancePreview) effectiveMessage.isDeletedBySender else existingChat.lastMessageIsDeleted,
+                    lastMessageTimestamp = maxOf(existingChat.lastMessageTimestamp, effectiveMessage.timestamp),
+                    ephemeralDuration = if (effectiveMessage.ephemeralDuration > 0) effectiveMessage.ephemeralDuration else existingChat.ephemeralDuration
                 )
             )
         }

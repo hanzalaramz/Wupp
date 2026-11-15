@@ -38,7 +38,8 @@ data class AppReleaseInfo(
     val publishedAt: String,
     val apkDownloadUrl: String?,
     val apkFileName: String?,
-    val apkSizeBytes: Long
+    val apkSizeBytes: Long,
+    val isPreRelease: Boolean = false
 )
 
 sealed interface UpdateUiState {
@@ -59,6 +60,7 @@ sealed interface UpdateUiState {
 object WuppUpdater {
     private const val PREFS_NAME = "wupp_updater_prefs"
     private const val KEY_AUTO_CHECK = "auto_check_enabled"
+    private const val KEY_INCLUDE_PRE_RELEASES = "include_pre_releases"
     private const val KEY_SKIPPED_TAG = "skipped_release_tag"
     private const val KEY_LAST_CHECK_MS = "last_check_ms"
     private const val AUTO_CHECK_INTERVAL_MS = 60_000L
@@ -70,6 +72,9 @@ object WuppUpdater {
 
     private val _autoCheckEnabled = MutableStateFlow(true)
     val autoCheckEnabled: StateFlow<Boolean> = _autoCheckEnabled.asStateFlow()
+
+    private val _includePreReleases = MutableStateFlow(false)
+    val includePreReleases: StateFlow<Boolean> = _includePreReleases.asStateFlow()
 
     private val _showPromptDialog = MutableStateFlow(false)
     val showPromptDialog: StateFlow<Boolean> = _showPromptDialog.asStateFlow()
@@ -87,6 +92,7 @@ object WuppUpdater {
         if (initialized) return
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         _autoCheckEnabled.value = prefs.getBoolean(KEY_AUTO_CHECK, true)
+        _includePreReleases.value = prefs.getBoolean(KEY_INCLUDE_PRE_RELEASES, false)
         initialized = true
     }
 
@@ -97,6 +103,31 @@ object WuppUpdater {
             .putBoolean(KEY_AUTO_CHECK, enabled)
             .apply()
         _autoCheckEnabled.value = enabled
+    }
+
+    fun setIncludePreReleases(context: Context, enabled: Boolean) {
+        init(context)
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_INCLUDE_PRE_RELEASES, enabled)
+            .remove(KEY_LAST_CHECK_MS)
+            .apply()
+        _includePreReleases.value = enabled
+        val cur = _state.value
+        val curRelease = when (cur) {
+            is UpdateUiState.UpdateAvailable -> cur.release
+            is UpdateUiState.ReadyToInstall -> cur.release
+            else -> null
+        }
+        if (cur is UpdateUiState.UpToDate ||
+            cur is UpdateUiState.Error ||
+            (!enabled && curRelease?.isPreRelease == true)
+        ) {
+            _state.value = UpdateUiState.Idle
+            if (!enabled && curRelease?.isPreRelease == true) {
+                _showPromptDialog.value = false
+            }
+        }
     }
 
     fun openPromptDialog() {
@@ -175,9 +206,10 @@ object WuppUpdater {
         try {
             _state.value = UpdateUiState.Checking(silent = silent)
             val repoSlug = BuildConfig.GITHUB_REPO.trim().trim('/')
+            val includePre = _includePreReleases.value
 
             val result = withContext(Dispatchers.IO) {
-                fetchLatestRelease(repoSlug)
+                fetchLatestRelease(repoSlug, includePreReleases = includePre)
             }
 
             prefs.edit().putLong(KEY_LAST_CHECK_MS, System.currentTimeMillis()).apply()
@@ -347,9 +379,15 @@ object WuppUpdater {
         appCtx.startActivity(installIntent)
     }
 
-    private fun fetchLatestRelease(repoSlug: String): Result<AppReleaseInfo?> = runCatching {
+    private fun fetchLatestRelease(
+        repoSlug: String,
+        includePreReleases: Boolean
+    ): Result<AppReleaseInfo?> = runCatching {
         if (!repoSlug.contains("/")) {
             throw IllegalStateException("Invalid GitHub repository: $repoSlug")
+        }
+        if (includePreReleases) {
+            return@runCatching fetchLatestFromReleasesList(repoSlug, includePreReleases = true)
         }
         val latestUrl = "https://api.github.com/repos/$repoSlug/releases/latest"
         val conn = (URL(latestUrl).openConnection() as HttpURLConnection).apply {
@@ -364,11 +402,11 @@ object WuppUpdater {
             when (code) {
                 200 -> {
                     val body = conn.inputStream.bufferedReader().use { it.readText() }
-                    parseReleaseJson(JSONObject(body))
+                    parseReleaseJson(JSONObject(body), allowPreRelease = false)
                 }
                 404 -> {
-                    // Repository might exist with only pre-releases or zero published releases yet.
-                    fetchFirstReleaseFallback(repoSlug)
+                    // No stable /releases/latest found; check list for non-prerelease published releases.
+                    fetchLatestFromReleasesList(repoSlug, includePreReleases = false)
                 }
                 else -> {
                     val errText = conn.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
@@ -383,8 +421,11 @@ object WuppUpdater {
         }
     }
 
-    private fun fetchFirstReleaseFallback(repoSlug: String): AppReleaseInfo? {
-        val listUrl = "https://api.github.com/repos/$repoSlug/releases?per_page=1"
+    private fun fetchLatestFromReleasesList(
+        repoSlug: String,
+        includePreReleases: Boolean
+    ): AppReleaseInfo? {
+        val listUrl = "https://api.github.com/repos/$repoSlug/releases?per_page=10"
         val conn = (URL(listUrl).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 10_000
@@ -393,19 +434,35 @@ object WuppUpdater {
             setRequestProperty("User-Agent", "Wupp-Android/${BuildConfig.VERSION_NAME}")
         }
         try {
-            if (conn.responseCode == 404) return null
-            if (conn.responseCode !in 200..299) return null
+            val code = conn.responseCode
+            if (code == 404) return null
+            if (code !in 200..299) {
+                val errText = conn.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                val apiMsg = runCatching { JSONObject(errText).optString("message") }.getOrDefault("")
+                throw IllegalStateException(
+                    if (apiMsg.isNotBlank()) "GitHub API ($code): $apiMsg" else "GitHub API returned HTTP $code"
+                )
+            }
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             val arr = JSONArray(body)
-            if (arr.length() == 0) return null
-            return parseReleaseJson(arr.getJSONObject(0))
+            var best: AppReleaseInfo? = null
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val candidate = parseReleaseJson(obj, allowPreRelease = includePreReleases) ?: continue
+                if (best == null || isNewerVersion(candidate.versionName, best.versionName)) {
+                    best = candidate
+                }
+            }
+            return best
         } finally {
             conn.disconnect()
         }
     }
 
-    private fun parseReleaseJson(obj: JSONObject): AppReleaseInfo? {
+    private fun parseReleaseJson(obj: JSONObject, allowPreRelease: Boolean = true): AppReleaseInfo? {
         if (obj.optBoolean("draft", false)) return null
+        val isPreRelease = obj.optBoolean("prerelease", false)
+        if (!allowPreRelease && isPreRelease) return null
         val tagName = obj.optString("tag_name").trim()
         if (tagName.isBlank()) return null
         val versionName = tagName.removePrefix("v").removePrefix("V").trim()
@@ -459,7 +516,8 @@ object WuppUpdater {
             publishedAt = publishedAt,
             apkDownloadUrl = bestApkUrl,
             apkFileName = bestApkName,
-            apkSizeBytes = bestApkSize
+            apkSizeBytes = bestApkSize,
+            isPreRelease = isPreRelease
         )
     }
 
@@ -517,7 +575,7 @@ object WuppUpdater {
         )
         val notification = NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_wupp)
-            .setContentTitle("Wupp ${release.tagName} available")
+            .setContentTitle("Wupp ${release.tagName}${if (release.isPreRelease) " (Pre-release)" else ""} available")
             .setContentText("Tap to review changelog and download the update.")
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
