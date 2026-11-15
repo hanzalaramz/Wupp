@@ -16,11 +16,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -30,16 +32,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.core.update.WuppUpdater
 import com.wa.beastclient.ui.MainViewModel
+import com.wa.beastclient.ui.components.AppUpdateDialog
 import com.wa.beastclient.ui.screens.ChatScreen
 import com.wa.beastclient.ui.screens.FirstInstallSetupScreen
 import com.wa.beastclient.ui.screens.HomeScreen
 import com.wa.beastclient.ui.screens.LinkDeviceScreen
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.WhatsAppTheme
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -57,6 +62,8 @@ class MainActivity : ComponentActivity() {
             val vm: MainViewModel = viewModel()
             val stealth by vm.stealthConfig.collectAsState()
             val bridgeStatus by vm.bridgeStatus.collectAsState()
+            val updateState by vm.updateState.collectAsState()
+            val showUpdatePrompt by vm.showUpdatePrompt.collectAsState()
             var setupDone by remember { mutableStateOf(initialSetupDone) }
             var selectedChatJid by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -72,7 +79,7 @@ class MainActivity : ComponentActivity() {
             }
 
             WhatsAppTheme(
-                darkTheme = stealth.darkTheme,
+                themeMode = stealth.themeMode,
                 assetManager = assets
             ) {
                 if (!setupDone) {
@@ -117,11 +124,22 @@ class MainActivity : ComponentActivity() {
                         onRefreshConnection = { vm.reconnectSocket() }
                     )
                 } else {
+                    var homeTab by rememberSaveable { mutableIntStateOf(0) }
+                    val chatsListState = rememberLazyListState()
+                    val updatesListState = rememberLazyListState()
+                    val communitiesListState = rememberLazyListState()
+                    val toolsListState = rememberLazyListState()
                     val activeJid = selectedChatJid
                     if (activeJid == null) {
                         HomeScreen(
                             viewModel = vm,
-                            onOpenChat = { jid -> selectedChatJid = jid }
+                            onOpenChat = { jid -> selectedChatJid = jid },
+                            currentTab = homeTab,
+                            onSelectTab = { homeTab = it },
+                            chatsListState = chatsListState,
+                            updatesListState = updatesListState,
+                            communitiesListState = communitiesListState,
+                            toolsListState = toolsListState
                         )
                     } else {
                         ChatScreen(
@@ -130,6 +148,16 @@ class MainActivity : ComponentActivity() {
                             onBack = { selectedChatJid = null }
                         )
                     }
+                }
+
+                if (showUpdatePrompt && setupDone) {
+                    AppUpdateDialog(
+                        state = updateState,
+                        onDownload = { release -> vm.downloadUpdate(release) },
+                        onInstall = { apkFile -> vm.installDownloadedApk(apkFile) },
+                        onSkipVersion = { vm.dismissUpdatePrompt(skipVersion = false) },
+                        onDismiss = { vm.dismissUpdatePrompt(skipVersion = false) }
+                    )
                 }
             }
         }
@@ -149,6 +177,14 @@ class MainActivity : ComponentActivity() {
             .getBoolean("setup_completed_v1", false)
         if (setupDone) {
             WaRealtimeService.ensureStarted(this)
+            lifecycleScope.launch {
+                WuppUpdater.onAppOpened(this@MainActivity)
+            }
         }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        WuppUpdater.onAppBackgrounded()
     }
 }

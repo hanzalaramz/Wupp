@@ -1,5 +1,6 @@
 package com.wa.beastclient.ui.theme
 
+import android.app.Activity
 import android.content.res.AssetManager
 import android.graphics.Typeface
 import androidx.compose.material3.MaterialTheme
@@ -9,16 +10,38 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+
+enum class WuppThemeMode(
+    val storageKey: String,
+    val label: String,
+    val tagline: String
+) {
+    LIGHT("light", "Light", "Crisp daylight white & emerald"),
+    DARK("dark", "Dark", "Classic WhatsApp slate charcoal"),
+    AMOLED("amoled", "AMOLED", "True #000000 OLED pitch black"),
+    AURORA("aurora", "Velvet Aurora", "Midnight indigo & glowing mint");
+
+    companion object {
+        fun fromStorageKey(key: String?, legacyDarkFallback: Boolean): WuppThemeMode {
+            entries.firstOrNull { it.storageKey.equals(key, ignoreCase = true) }?.let { return it }
+            return if (legacyDarkFallback) DARK else LIGHT
+        }
+    }
+}
 
 @Immutable
 data class WaColors(
+    val themeMode: WuppThemeMode,
     val isDark: Boolean,
     val chatCanvas: Color,
     val appSurface: Color,
@@ -38,10 +61,12 @@ data class WaColors(
     val quotedBg: Color,
     val divider: Color,
     val mediaScrim: Color,
+    val doodleColor: Color,
     val doodleTintAlpha: Float
 )
 
 val WaDarkColors = WaColors(
+    themeMode = WuppThemeMode.DARK,
     isDark = true,
     chatCanvas = Color(0xFF0B141A),
     appSurface = Color(0xFF0B141A),
@@ -61,10 +86,12 @@ val WaDarkColors = WaColors(
     quotedBg = Color(0x28000000),
     divider = Color(0xFF1E2A30),
     mediaScrim = Color(0x66000000),
-    doodleTintAlpha = 0.06f
+    doodleColor = Color.White,
+    doodleTintAlpha = 0.065f
 )
 
 val WaLightColors = WaColors(
+    themeMode = WuppThemeMode.LIGHT,
     isDark = false,
     chatCanvas = Color(0xFFEFEAE2),
     appSurface = Color(0xFFFFFFFF),
@@ -84,28 +111,91 @@ val WaLightColors = WaColors(
     quotedBg = Color(0x14000000),
     divider = Color(0xFFE9EDEF),
     mediaScrim = Color(0x66000000),
-    doodleTintAlpha = 0.40f
+    doodleColor = Color(0xFF8C8275),
+    doodleTintAlpha = 0.18f
 )
+
+val WaAmoledColors = WaColors(
+    themeMode = WuppThemeMode.AMOLED,
+    isDark = true,
+    chatCanvas = Color(0xFF000000),
+    appSurface = Color(0xFF000000),
+    elevatedBar = Color(0xFF0B0F12),
+    outgoingBubble = Color(0xFF004D40),
+    incomingBubble = Color(0xFF12171B),
+    accentGreen = Color(0xFF00C49A),
+    brightGreen = Color(0xFF25D366),
+    blueTick = Color(0xFF53BDEB),
+    textPrimary = Color(0xFFF3F6F8),
+    textSecondary = Color(0xFF82919C),
+    pillActiveBg = Color(0xFF072B24),
+    pillActiveText = Color(0xFF2FE676),
+    pillInactiveBg = Color(0xFF12171B),
+    antiDeleteRed = Color(0xFFFF5C72),
+    warningAmber = Color(0xFFFFB74D),
+    quotedBg = Color(0x38000000),
+    divider = Color(0xFF182026),
+    mediaScrim = Color(0x80000000),
+    doodleColor = Color(0xFFCBD5E1),
+    doodleTintAlpha = 0.045f
+)
+
+val WaAuroraColors = WaColors(
+    themeMode = WuppThemeMode.AURORA,
+    isDark = true,
+    chatCanvas = Color(0xFF0A0D18),
+    appSurface = Color(0xFF0D1120),
+    elevatedBar = Color(0xFF161C32),
+    outgoingBubble = Color(0xFF3E2978),
+    incomingBubble = Color(0xFF1A223B),
+    accentGreen = Color(0xFF00E5B8),
+    brightGreen = Color(0xFF3DF5C8),
+    blueTick = Color(0xFF70D6FF),
+    textPrimary = Color(0xFFF1F4FF),
+    textSecondary = Color(0xFF98A3C7),
+    pillActiveBg = Color(0xFF231E4F),
+    pillActiveText = Color(0xFF3DF5C8),
+    pillInactiveBg = Color(0xFF171E35),
+    antiDeleteRed = Color(0xFFFF6B8B),
+    warningAmber = Color(0xFFFFC86B),
+    quotedBg = Color(0x38000000),
+    divider = Color(0xFF222A48),
+    mediaScrim = Color(0x73050711),
+    doodleColor = Color(0xFF9BB2FF),
+    doodleTintAlpha = 0.075f
+)
+
+fun colorsForTheme(mode: WuppThemeMode): WaColors = when (mode) {
+    WuppThemeMode.LIGHT -> WaLightColors
+    WuppThemeMode.DARK -> WaDarkColors
+    WuppThemeMode.AMOLED -> WaAmoledColors
+    WuppThemeMode.AURORA -> WaAuroraColors
+}
 
 val LocalWaColors = staticCompositionLocalOf { WaDarkColors }
 val LocalWaMonoFamily = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
 
 @Composable
 fun WhatsAppTheme(
-    darkTheme: Boolean,
+    themeMode: WuppThemeMode = WuppThemeMode.DARK,
     assetManager: AssetManager,
     content: @Composable () -> Unit
 ) {
-    val waColors = if (darkTheme) WaDarkColors else WaLightColors
+    val waColors = colorsForTheme(themeMode)
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as? Activity)?.window ?: return@SideEffect
+            val controller = WindowCompat.getInsetsController(window, view)
+            controller.isAppearanceLightStatusBars = !waColors.isDark
+            controller.isAppearanceLightNavigationBars = !waColors.isDark
+        }
+    }
+
     val sansFamily: FontFamily = remember(assetManager) {
         runCatching {
             FontFamily(Typeface.createFromAsset(assetManager, "fonts/Roboto-Medium.ttf"))
         }.getOrDefault(FontFamily.SansSerif)
-    }
-    val monoFamily: FontFamily = remember(assetManager) {
-        runCatching {
-            FontFamily(Typeface.createFromAsset(assetManager, "fonts/RobotoMono-Regular.ttf"))
-        }.getOrDefault(FontFamily.Monospace)
     }
 
     val typography = remember(sansFamily) {
@@ -144,14 +234,15 @@ fun WhatsAppTheme(
         )
     }
 
-    val m3Scheme = if (darkTheme) {
+    val m3Scheme = if (waColors.isDark) {
         darkColorScheme(
             primary = waColors.accentGreen,
-            onPrimary = Color.White,
+            onPrimary = if (waColors.themeMode == WuppThemeMode.AURORA) Color(0xFF06131F) else Color.White,
             secondary = waColors.brightGreen,
             background = waColors.appSurface,
             surface = waColors.appSurface,
             surfaceVariant = waColors.elevatedBar,
+            surfaceContainer = waColors.elevatedBar,
             onBackground = waColors.textPrimary,
             onSurface = waColors.textPrimary,
             onSurfaceVariant = waColors.textSecondary,
@@ -165,6 +256,7 @@ fun WhatsAppTheme(
             background = waColors.appSurface,
             surface = waColors.appSurface,
             surfaceVariant = waColors.elevatedBar,
+            surfaceContainer = waColors.elevatedBar,
             onBackground = waColors.textPrimary,
             onSurface = waColors.textPrimary,
             onSurfaceVariant = waColors.textSecondary,

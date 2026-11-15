@@ -3,11 +3,14 @@ package com.wa.beastclient.ui.screens
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,35 +24,48 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Code
-import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.Collections
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
-import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.Flight
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material.icons.rounded.NotificationsOff
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.SignalCellularAlt
 import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.Unarchive
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -74,6 +90,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -106,15 +123,21 @@ import com.wa.beastclient.core.update.UpdateUiState
 import com.wa.beastclient.data.db.ChatEntity
 import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.data.db.StatusEntity
+import com.wa.beastclient.domain.stealth.AutoDownloadNetwork
+import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.HomeFilterChip
-import com.wa.beastclient.ui.components.AppUpdateDialog
+import com.wa.beastclient.ui.components.AutoDownloadNetworkDialog
 import com.wa.beastclient.ui.components.FullScreenMediaViewer
 import com.wa.beastclient.ui.components.FullScreenStatusViewer
+import com.wa.beastclient.ui.components.GalleryVisibilityContactsDialog
+import com.wa.beastclient.ui.components.StatusGroup
 import com.wa.beastclient.ui.components.GitHubFeedbackDialog
 import com.wa.beastclient.ui.components.GitHubFeedbackType
 import com.wa.beastclient.ui.MainViewModel
 import com.wa.beastclient.ui.components.DeliveryTickIcon
 import com.wa.beastclient.ui.components.QuickContactDialog
+import com.wa.beastclient.ui.components.ThemePickerDialog
+import com.wa.beastclient.ui.components.ThemeSelectorGrid
 import com.wa.beastclient.ui.components.formatMessageClock
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
@@ -127,7 +150,13 @@ import java.util.Locale
 @Composable
 fun HomeScreen(
     viewModel: MainViewModel,
-    onOpenChat: (String) -> Unit
+    onOpenChat: (String) -> Unit,
+    currentTab: Int = 0,
+    onSelectTab: (Int) -> Unit = {},
+    chatsListState: LazyListState = rememberLazyListState(),
+    updatesListState: LazyListState = rememberLazyListState(),
+    communitiesListState: LazyListState = rememberLazyListState(),
+    toolsListState: LazyListState = rememberLazyListState()
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
@@ -147,7 +176,6 @@ fun HomeScreen(
     val profileHistory by viewModel.profileHistory.collectAsState()
     val bulkResult by viewModel.bulkVerifyOutput.collectAsState()
     val updateState by viewModel.updateState.collectAsState()
-    val showUpdatePrompt by viewModel.showUpdatePrompt.collectAsState()
     val context = LocalContext.current
 
     val unreadChatsCount = remember(allChats) {
@@ -159,20 +187,169 @@ fun HomeScreen(
         }
     }
 
-    var currentTab by rememberSaveable { mutableIntStateOf(0) }
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
     var overflowExpanded by remember { mutableStateOf(false) }
     var showPairingDialog by remember { mutableStateOf(false) }
     var showQuickContactPicker by remember { mutableStateOf(false) }
-    var quickContactChat by remember { mutableStateOf<ChatEntity?>(null) }
+    var quickContactTarget by remember { mutableStateOf<ChatEntity?>(null) }
+    val quickContactChat = remember(quickContactTarget, allChats) {
+        quickContactTarget?.let { t -> allChats.firstOrNull { it.jid == t.jid } ?: t }
+    }
     var activeStatusViewer by remember { mutableStateOf<StatusEntity?>(null) }
     var activeVaultViewer by remember { mutableStateOf<MessageEntity?>(null) }
     var activeFeedbackType by remember { mutableStateOf<GitHubFeedbackType?>(null) }
+    var showThemePickerDialog by remember { mutableStateOf(false) }
+    var selectedChatJids by remember { mutableStateOf(setOf<String>()) }
+    var selectionOverflowExpanded by remember { mutableStateOf(false) }
+    var pendingDeleteJids by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    val selectedChats = remember(selectedChatJids, allChats, chats) {
+        val merged = (allChats + chats).associateBy { it.jid }
+        selectedChatJids.mapNotNull { merged[it] }
+    }
+
+    LaunchedEffect(currentTab) {
+        if (currentTab != 0 && selectedChatJids.isNotEmpty()) {
+            selectedChatJids = emptySet()
+            selectionOverflowExpanded = false
+        }
+    }
+
+    BackHandler(enabled = selectedChatJids.isNotEmpty()) {
+        selectedChatJids = emptySet()
+        selectionOverflowExpanded = false
+    }
 
     Scaffold(
         containerColor = colors.appSurface,
         topBar = {
             Column(modifier = Modifier.background(colors.appSurface)) {
+                if (currentTab == 0 && selectedChatJids.isNotEmpty()) {
+                    val allPinned = selectedChats.isNotEmpty() && selectedChats.all { it.isPinned }
+                    val allMuted = selectedChats.isNotEmpty() && selectedChats.all { it.isMuted }
+                    val allArchived = selectedChats.isNotEmpty() && selectedChats.all { it.isArchived }
+                    val allFavorite = selectedChats.isNotEmpty() && selectedChats.all { it.isFavorite }
+                    val anyUnread = selectedChats.any { it.unreadCount > 0 }
+                    val targetJids = selectedChatJids.toList()
+
+                    TopAppBar(
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = colors.elevatedBar,
+                            titleContentColor = colors.textPrimary
+                        ),
+                        navigationIcon = {
+                            IconButton(
+                                onClick = {
+                                    selectedChatJids = emptySet()
+                                    selectionOverflowExpanded = false
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                    contentDescription = "Clear selection",
+                                    tint = colors.textPrimary
+                                )
+                            }
+                        },
+                        title = {
+                            Text(
+                                text = "${selectedChatJids.size}",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.textPrimary
+                            )
+                        },
+                        actions = {
+                            IconButton(
+                                onClick = {
+                                    viewModel.pinChats(targetJids, !allPinned)
+                                    selectedChatJids = emptySet()
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.PushPin,
+                                    contentDescription = if (allPinned) "Unpin" else "Pin",
+                                    tint = if (allPinned) colors.brightGreen else colors.textPrimary
+                                )
+                            }
+                            IconButton(
+                                onClick = { pendingDeleteJids = targetJids }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Delete,
+                                    contentDescription = "Delete locally",
+                                    tint = colors.textPrimary
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    viewModel.muteChats(targetJids, !allMuted)
+                                    selectedChatJids = emptySet()
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = if (allMuted) Icons.Rounded.Notifications else Icons.Rounded.NotificationsOff,
+                                    contentDescription = if (allMuted) "Unmute notifications" else "Mute notifications",
+                                    tint = colors.textPrimary
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    viewModel.archiveChats(targetJids, !allArchived)
+                                    selectedChatJids = emptySet()
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = if (allArchived) Icons.Rounded.Unarchive else Icons.Rounded.Archive,
+                                    contentDescription = if (allArchived) "Unarchive" else "Archive",
+                                    tint = colors.textPrimary
+                                )
+                            }
+                            IconButton(onClick = { selectionOverflowExpanded = true }) {
+                                Icon(Icons.Rounded.MoreVert, "More actions", tint = colors.textPrimary)
+                            }
+                            DropdownMenu(
+                                expanded = selectionOverflowExpanded,
+                                onDismissRequest = { selectionOverflowExpanded = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(if (anyUnread) "Mark as read" else "Mark as unread") },
+                                    onClick = {
+                                        selectionOverflowExpanded = false
+                                        viewModel.setChatsUnreadLocal(targetJids, !anyUnread)
+                                        selectedChatJids = emptySet()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (allFavorite) "Remove from Favorites" else "Add to Favorites") },
+                                    onClick = {
+                                        selectionOverflowExpanded = false
+                                        viewModel.favoriteChats(targetJids, !allFavorite)
+                                        selectedChatJids = emptySet()
+                                    }
+                                )
+                                if (selectedChats.size == 1) {
+                                    val only = selectedChats.first()
+                                    DropdownMenuItem(
+                                        text = { Text("View contact") },
+                                        onClick = {
+                                            selectionOverflowExpanded = false
+                                            selectedChatJids = emptySet()
+                                            quickContactTarget = only
+                                        }
+                                    )
+                                }
+                                DropdownMenuItem(
+                                    text = { Text("Select all") },
+                                    onClick = {
+                                        selectionOverflowExpanded = false
+                                        selectedChatJids = chats.map { it.jid }.toSet()
+                                    }
+                                )
+                            }
+                        }
+                    )
+                } else {
                 TopAppBar(
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = colors.appSurface,
@@ -257,7 +434,7 @@ fun HomeScreen(
                                 onClick = {
                                     overflowExpanded = false
                                     viewModel.selectFilter(HomeFilterChip.FAVORITES)
-                                    currentTab = 0
+                                    onSelectTab(0)
                                 }
                             )
                             DropdownMenuItem(
@@ -272,7 +449,7 @@ fun HomeScreen(
                                 text = { Text("Settings") },
                                 onClick = {
                                     overflowExpanded = false
-                                    currentTab = 3
+                                    onSelectTab(3)
                                 }
                             )
                             DropdownMenuItem(
@@ -292,21 +469,19 @@ fun HomeScreen(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text(if (stealth.darkTheme) "Light mode" else "Dark mode") },
+                                text = { Text("Theme · ${stealth.themeMode.label}") },
                                 leadingIcon = {
-                                    Icon(
-                                        if (stealth.darkTheme) Icons.Rounded.LightMode else Icons.Rounded.DarkMode,
-                                        null
-                                    )
+                                    Icon(Icons.Rounded.Palette, null)
                                 },
                                 onClick = {
                                     overflowExpanded = false
-                                    viewModel.toggleDarkTheme()
+                                    showThemePickerDialog = true
                                 }
                             )
                         }
                     }
                 )
+                }
 
                 AnimatedVisibility(visible = searchExpanded && currentTab != 0) {
                     OutlinedTextField(
@@ -336,7 +511,7 @@ fun HomeScreen(
             ) {
                 NavigationBarItem(
                     selected = currentTab == 0,
-                    onClick = { currentTab = 0 },
+                    onClick = { onSelectTab(0) },
                     icon = {
                         Box(
                             modifier = Modifier.size(width = 40.dp, height = 26.dp),
@@ -372,7 +547,7 @@ fun HomeScreen(
                 )
                 NavigationBarItem(
                     selected = currentTab == 1,
-                    onClick = { currentTab = 1 },
+                    onClick = { onSelectTab(1) },
                     icon = {
                         Icon(
                             painter = painterResource(R.drawable.vec_ic_status),
@@ -385,7 +560,7 @@ fun HomeScreen(
                 )
                 NavigationBarItem(
                     selected = currentTab == 2,
-                    onClick = { currentTab = 2 },
+                    onClick = { onSelectTab(2) },
                     icon = {
                         Icon(
                             painter = painterResource(R.drawable.vec_ic_avatar_community),
@@ -398,7 +573,7 @@ fun HomeScreen(
                 )
                 NavigationBarItem(
                     selected = currentTab == 3,
-                    onClick = { currentTab = 3 },
+                    onClick = { onSelectTab(3) },
                     icon = {
                         Icon(
                             imageVector = Icons.Rounded.Shield,
@@ -474,14 +649,43 @@ fun HomeScreen(
                     selectedChip = selectedChip,
                     ftsHits = ftsHits,
                     searchQuery = searchQuery,
+                    listState = chatsListState,
+                    selectedChatJids = selectedChatJids,
                     onSearchChange = { viewModel.updateHomeSearch(it) },
                     heartbeat = heartbeat,
                     bridgeStatus = bridgeStatus,
                     onSelectChip = { viewModel.selectFilter(it) },
                     onResetHeartbeat = { viewModel.recordPrimaryHeartbeatNow() },
                     onSeedShowcase = { viewModel.seedShowcaseData() },
-                    onAvatarClick = { quickContactChat = it },
-                    onChatClick = { onOpenChat(it.jid) }
+                    onAvatarClick = { chat ->
+                        if (selectedChatJids.isNotEmpty()) {
+                            selectedChatJids = if (chat.jid in selectedChatJids) {
+                                selectedChatJids - chat.jid
+                            } else {
+                                selectedChatJids + chat.jid
+                            }
+                        } else {
+                            quickContactTarget = chat
+                        }
+                    },
+                    onChatClick = { chat ->
+                        if (selectedChatJids.isNotEmpty()) {
+                            selectedChatJids = if (chat.jid in selectedChatJids) {
+                                selectedChatJids - chat.jid
+                            } else {
+                                selectedChatJids + chat.jid
+                            }
+                        } else {
+                            onOpenChat(chat.jid)
+                        }
+                    },
+                    onChatLongClick = { chat ->
+                        selectedChatJids = if (chat.jid in selectedChatJids) {
+                            selectedChatJids - chat.jid
+                        } else {
+                            selectedChatJids + chat.jid
+                        }
+                    }
                 )
 
                 1 -> UpdatesStatusTab(
@@ -489,17 +693,20 @@ fun HomeScreen(
                     channels = channels,
                     allChats = allChats,
                     searchQuery = searchQuery,
+                    listState = updatesListState,
                     onOpenStatus = { activeStatusViewer = it },
                     onOpenChannel = { onOpenChat(it) }
                 )
 
                 2 -> CommunitiesTab(
                     allChats = allChats,
+                    listState = communitiesListState,
                     onOpenGroup = onOpenChat
                 )
 
                 3 -> ToolsVaultTab(
                     viewModel = viewModel,
+                    listState = toolsListState,
                     onOpenFeedback = { activeFeedbackType = it }
                 )
             }
@@ -509,11 +716,16 @@ fun HomeScreen(
     quickContactChat?.let { target ->
         QuickContactDialog(
             chat = target,
-            onDismiss = { quickContactChat = null },
+            onDismiss = { quickContactTarget = null },
             onOpenChat = { onOpenChat(target.jid) },
-            onOpenGhostInfo = { currentTab = 3 },
-            onOpenPresenceLog = { currentTab = 3 },
-            onOpenAvatarHistory = { currentTab = 3 }
+            onOpenGhostInfo = { onSelectTab(3) },
+            onOpenPresenceLog = { onSelectTab(3) },
+            onOpenAvatarHistory = { onSelectTab(3) },
+            onRequestFullAvatar = { viewModel.requestFullProfilePicture(target.jid) },
+            onSaveAvatar = {
+                val safeName = target.name.ifBlank { target.jid.substringBefore("@") }
+                viewModel.exportMediaToGallery(target.avatarPath, "${safeName}_avatar.jpg", "image/jpeg")
+            }
         )
     }
 
@@ -541,21 +753,52 @@ fun HomeScreen(
         )
     }
 
+    if (showThemePickerDialog) {
+        ThemePickerDialog(
+            selectedTheme = stealth.themeMode,
+            onSelectTheme = { viewModel.setThemeMode(it) },
+            onDismiss = { showThemePickerDialog = false }
+        )
+    }
+
     activeStatusViewer?.let { st ->
-        val senderStatuses = remember(statuses, st.senderJid, st.id) {
-            statuses.filter { it.senderJid == st.senderJid }.sortedBy { it.timestamp }.ifEmpty { listOf(st) }
+        val statusGroups = remember(statuses, allChats, st.id) {
+            val chatsByJid = allChats.associateBy { it.jid }
+            val bySender = statuses.groupBy { it.senderJid }
+            val groupsList = bySender.entries.map { (senderJid, items) ->
+                val sortedItems = items.sortedBy { it.timestamp }
+                val senderChat = chatsByJid[senderJid]
+                StatusGroup(
+                    senderJid = senderJid,
+                    senderName = senderChat?.name?.takeIf { it.isNotBlank() }
+                        ?: sortedItems.firstOrNull()?.senderName
+                        ?: senderJid.substringBefore("@"),
+                    senderAvatarPath = senderChat?.avatarPath,
+                    items = sortedItems
+                )
+            }
+            groupsList.ifEmpty {
+                val senderChat = chatsByJid[st.senderJid]
+                listOf(
+                    StatusGroup(
+                        senderJid = st.senderJid,
+                        senderName = senderChat?.name?.takeIf { it.isNotBlank() } ?: st.senderName,
+                        senderAvatarPath = senderChat?.avatarPath,
+                        items = listOf(st)
+                    )
+                )
+            }
         }
-        val startIdx = remember(senderStatuses, st.id) {
-            senderStatuses.indexOfFirst { it.id == st.id }.coerceAtLeast(0)
+        val initialGroupIdx = remember(statusGroups, st.senderJid) {
+            statusGroups.indexOfFirst { it.senderJid == st.senderJid }.coerceAtLeast(0)
         }
-        val senderChat = remember(allChats, st.senderJid) {
-            allChats.firstOrNull { it.jid == st.senderJid }
+        val initialStoryIdx = remember(statusGroups, initialGroupIdx, st.id) {
+            statusGroups.getOrNull(initialGroupIdx)?.items?.indexOfFirst { it.id == st.id }?.coerceAtLeast(0) ?: 0
         }
         FullScreenStatusViewer(
-            statuses = senderStatuses,
-            initialIndex = startIdx,
-            senderName = senderChat?.name?.takeIf { it.isNotBlank() } ?: st.senderName,
-            senderAvatarPath = senderChat?.avatarPath,
+            groups = statusGroups,
+            initialGroupIndex = initialGroupIdx,
+            initialStoryIndex = initialStoryIdx,
             onDismiss = { activeStatusViewer = null },
             onSaveToGallery = { target ->
                 val ext = if (target.mimeType.contains("mp4", ignoreCase = true)) "mp4" else "png"
@@ -604,13 +847,32 @@ fun HomeScreen(
         )
     }
 
-    if (showUpdatePrompt) {
-        AppUpdateDialog(
-            state = updateState,
-            onDownload = { release -> viewModel.downloadUpdate(release) },
-            onInstall = { apkFile -> viewModel.installDownloadedApk(apkFile) },
-            onSkipVersion = { viewModel.dismissUpdatePrompt(skipVersion = true) },
-            onDismiss = { viewModel.dismissUpdatePrompt(skipVersion = false) }
+    if (pendingDeleteJids.isNotEmpty()) {
+        val count = pendingDeleteJids.size
+        AlertDialog(
+            onDismissRequest = { pendingDeleteJids = emptyList() },
+            title = { Text(if (count == 1) "Delete this chat?" else "Delete $count chats?") },
+            text = {
+                Text(
+                    "Messages for ${if (count == 1) "this conversation" else "these conversations"} will be removed from Wupp's local cache only."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteChatsLocally(pendingDeleteJids)
+                        pendingDeleteJids = emptyList()
+                        selectedChatJids = emptySet()
+                    }
+                ) {
+                    Text("Delete", color = colors.antiDeleteRed, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteJids = emptyList() }) {
+                    Text("Cancel")
+                }
+            }
         )
     }
 }
@@ -655,7 +917,8 @@ internal fun WhatsAppAvatar(
     avatarPath: String?,
     isGroup: Boolean,
     size: Dp,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    initialChar: String? = null
 ) {
     val avatarBmp = rememberAvatarBitmap(jid = jid, avatarPath = avatarPath)
     val palette = remember(jid, isGroup) {
@@ -689,6 +952,14 @@ internal fun WhatsAppAvatar(
                 tint = Color(0xFF99B2BD),
                 modifier = Modifier.size(size * 0.54f)
             )
+        } else if (!initialChar.isNullOrBlank()) {
+            Text(
+                text = initialChar,
+                color = palette.second,
+                fontSize = (size.value * 0.44f).sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
         } else {
             Icon(
                 imageVector = Icons.Rounded.Person,
@@ -707,6 +978,8 @@ private fun ChatsTabContent(
     selectedChip: HomeFilterChip,
     ftsHits: List<MessageEntity>,
     searchQuery: String,
+    listState: LazyListState,
+    selectedChatJids: Set<String> = emptySet(),
     onSearchChange: (String) -> Unit,
     heartbeat: com.wa.beastclient.domain.stealth.PrimaryHeartbeatStatus,
     bridgeStatus: com.wa.beastclient.core.service.BridgeStatus,
@@ -714,7 +987,8 @@ private fun ChatsTabContent(
     onResetHeartbeat: () -> Unit,
     onSeedShowcase: () -> Unit,
     onAvatarClick: (ChatEntity) -> Unit,
-    onChatClick: (ChatEntity) -> Unit
+    onChatClick: (ChatEntity) -> Unit,
+    onChatLongClick: (ChatEntity) -> Unit
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
@@ -728,7 +1002,10 @@ private fun ChatsTabContent(
         }
     }
 
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize()
+    ) {
         // Inline "Ask Meta AI or Search" pill bar (matching Original WhatsApp)
         item(key = "inline_search_bar") {
             Row(
@@ -976,35 +1253,48 @@ private fun ChatsTabContent(
             items(chats, key = { it.jid }) { chat ->
                 ChatListRow(
                     chat = chat,
+                    selected = chat.jid in selectedChatJids,
                     onAvatarClick = { onAvatarClick(chat) },
-                    onRowClick = { onChatClick(chat) }
+                    onRowClick = { onChatClick(chat) },
+                    onRowLongClick = { onChatLongClick(chat) }
                 )
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatListRow(
     chat: ChatEntity,
+    selected: Boolean = false,
     onAvatarClick: () -> Unit,
-    onRowClick: () -> Unit
+    onRowClick: () -> Unit,
+    onRowLongClick: () -> Unit = {}
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
+    val rowBg = if (selected) colors.brightGreen.copy(alpha = 0.16f) else Color.Transparent
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(76.dp)
-            .clickable(onClick = onRowClick)
+            .background(rowBg)
+            .combinedClickable(
+                onClick = onRowClick,
+                onLongClick = onRowLongClick
+            )
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
                 .size(52.dp)
-                .clickable(onClick = onAvatarClick)
+                .combinedClickable(
+                    onClick = onAvatarClick,
+                    onLongClick = onRowLongClick
+                )
         ) {
             WhatsAppAvatar(
                 jid = chat.jid,
@@ -1012,7 +1302,24 @@ private fun ChatListRow(
                 isGroup = chat.isGroup,
                 size = 52.dp
             )
-            if (chat.isOnline) {
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .size(21.dp)
+                        .align(Alignment.BottomEnd)
+                        .clip(CircleShape)
+                        .background(colors.brightGreen)
+                        .border(2.dp, colors.appSurface, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Check,
+                        contentDescription = "Selected",
+                        tint = Color(0xFF0B141A),
+                        modifier = Modifier.size(13.dp)
+                    )
+                }
+            } else if (chat.isOnline) {
                 Box(
                     modifier = Modifier
                         .size(13.dp)
@@ -1101,6 +1408,7 @@ private fun ChatListRow(
                 val subtitle = when {
                     chat.chatPresence.isNotBlank() -> chat.chatPresence
                     isViewOncePreview && !chat.lastMessageIsDeleted -> when {
+                        chat.lastMessagePreview.startsWith("Opened") -> chat.lastMessagePreview
                         chat.lastMessageType.endsWith("VIDEO") -> "Video"
                         chat.lastMessageType.endsWith("AUDIO") || chat.lastMessageType.endsWith("PTT") -> "Voice message"
                         else -> "Photo"
@@ -1170,6 +1478,7 @@ private fun UpdatesStatusTab(
     channels: List<ChatEntity>,
     allChats: List<ChatEntity>,
     searchQuery: String,
+    listState: LazyListState,
     onOpenStatus: (StatusEntity) -> Unit,
     onOpenChannel: (String) -> Unit
 ) {
@@ -1195,6 +1504,7 @@ private fun UpdatesStatusTab(
     }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 112.dp)
     ) {
@@ -1517,6 +1827,7 @@ private fun ChannelListRow(
 @Composable
 private fun CommunitiesTab(
     allChats: List<ChatEntity>,
+    listState: LazyListState,
     onOpenGroup: (String) -> Unit
 ) {
     val colors = LocalWaColors.current
@@ -1553,6 +1864,7 @@ private fun CommunitiesTab(
     }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 84.dp)
     ) {
@@ -1922,14 +2234,19 @@ private fun CommunityAvatarBox(
 @Composable
 private fun ToolsVaultTab(
     viewModel: MainViewModel,
+    listState: LazyListState,
     onOpenFeedback: (GitHubFeedbackType) -> Unit
 ) {
     val context = LocalContext.current
     val stealth by viewModel.stealthConfig.collectAsState()
+    val allChats by viewModel.allChats.collectAsState()
     val updateState by viewModel.updateState.collectAsState()
     val autoUpdateEnabled by viewModel.autoUpdateEnabled.collectAsState()
+    var editingAutoDlNetwork by remember { mutableStateOf<AutoDownloadNetwork?>(null) }
+    var showGalleryContactsDialog by remember { mutableStateOf(false) }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
@@ -2002,19 +2319,113 @@ private fun ToolsVaultTab(
             }
         }
 
+        item(key = "patch_section_storage_media") {
+            PatchSectionCard(title = "Storage & Media Auto-Download") {
+                PatchToggleRow(
+                    icon = Icons.Rounded.CloudDownload,
+                    title = "Media auto-download",
+                    subtitle = if (stealth.autoDownloadEnabled) {
+                        "Automatically download incoming photos, audio, videos, and files"
+                    } else {
+                        "Off — tap media items in chats to download manually"
+                    },
+                    checked = stealth.autoDownloadEnabled,
+                    onCheckedChange = { viewModel.setAutoDownloadEnabled(it) }
+                )
+                PatchRowDivider()
+                PatchActionRow(
+                    icon = Icons.Rounded.SignalCellularAlt,
+                    title = "When using mobile data",
+                    subtitle = if (stealth.autoDownloadEnabled) {
+                        StealthMatrixManager.formatAutoDownloadSummary(stealth.autoDownloadMobileMask)
+                    } else {
+                        "Disabled (auto-download is off)"
+                    },
+                    onClick = { editingAutoDlNetwork = AutoDownloadNetwork.MOBILE }
+                )
+                PatchRowDivider()
+                PatchActionRow(
+                    icon = Icons.Rounded.Wifi,
+                    title = "When connected on Wi-Fi",
+                    subtitle = if (stealth.autoDownloadEnabled) {
+                        StealthMatrixManager.formatAutoDownloadSummary(stealth.autoDownloadWifiMask)
+                    } else {
+                        "Disabled (auto-download is off)"
+                    },
+                    onClick = { editingAutoDlNetwork = AutoDownloadNetwork.WIFI }
+                )
+                PatchRowDivider()
+                PatchActionRow(
+                    icon = Icons.Rounded.Flight,
+                    title = "When roaming",
+                    subtitle = if (stealth.autoDownloadEnabled) {
+                        StealthMatrixManager.formatAutoDownloadSummary(stealth.autoDownloadRoamingMask)
+                    } else {
+                        "Disabled (auto-download is off)"
+                    },
+                    onClick = { editingAutoDlNetwork = AutoDownloadNetwork.ROAMING }
+                )
+                PatchRowDivider()
+                PatchToggleRow(
+                    icon = Icons.Rounded.Collections,
+                    title = "Media visibility",
+                    subtitle = "Show newly downloaded media in your device's gallery",
+                    checked = stealth.mediaVisibilityInGallery,
+                    onCheckedChange = { viewModel.setMediaVisibilityInGallery(it) }
+                )
+                PatchRowDivider()
+                PatchActionRow(
+                    icon = Icons.Rounded.VisibilityOff,
+                    title = "Hide contact media from gallery",
+                    subtitle = if (stealth.hiddenGalleryJids.isEmpty()) {
+                        "Choose specific contacts or groups to keep out of gallery"
+                    } else {
+                        "${stealth.hiddenGalleryJids.size} contact(s)/group(s) hidden from gallery"
+                    },
+                    onClick = { showGalleryContactsDialog = true }
+                )
+            }
+        }
+
         item(key = "patch_section_appearance") {
             PatchSectionCard(title = "Appearance") {
-                PatchToggleRow(
-                    icon = if (stealth.darkTheme) Icons.Rounded.DarkMode else Icons.Rounded.LightMode,
-                    title = "Dark Theme",
-                    subtitle = "Use Wupp dark color palette across the app",
-                    checked = stealth.darkTheme,
-                    onCheckedChange = { desired ->
-                        if (desired != stealth.darkTheme) {
-                            viewModel.toggleDarkTheme()
+                val colors = LocalWaColors.current
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Palette,
+                            contentDescription = null,
+                            tint = colors.accentGreen,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "App Theme",
+                                color = colors.textPrimary,
+                                fontSize = 15.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = "${stealth.themeMode.label} — ${stealth.themeMode.tagline}",
+                                color = colors.textSecondary,
+                                fontSize = 12.5.sp
+                            )
                         }
                     }
-                )
+                    ThemeSelectorGrid(
+                        selectedTheme = stealth.themeMode,
+                        onSelectTheme = { viewModel.setThemeMode(it) }
+                    )
+                }
             }
         }
 
@@ -2101,6 +2512,33 @@ private fun ToolsVaultTab(
         item(key = "patch_bottom_spacer") {
             Spacer(modifier = Modifier.height(16.dp))
         }
+    }
+
+    editingAutoDlNetwork?.let { net ->
+        val mask = when (net) {
+            AutoDownloadNetwork.MOBILE -> stealth.autoDownloadMobileMask
+            AutoDownloadNetwork.WIFI -> stealth.autoDownloadWifiMask
+            AutoDownloadNetwork.ROAMING -> stealth.autoDownloadRoamingMask
+        }
+        AutoDownloadNetworkDialog(
+            network = net,
+            initialMask = mask,
+            onDismiss = { editingAutoDlNetwork = null },
+            onConfirmMask = { updatedMask ->
+                viewModel.setAutoDownloadMask(net, updatedMask)
+            }
+        )
+    }
+
+    if (showGalleryContactsDialog) {
+        GalleryVisibilityContactsDialog(
+            chats = allChats,
+            hiddenJids = stealth.hiddenGalleryJids,
+            onToggleHideContact = { jid, hide ->
+                viewModel.setChatMediaVisibility(jid, if (hide) false else null)
+            },
+            onDismiss = { showGalleryContactsDialog = false }
+        )
     }
 }
 

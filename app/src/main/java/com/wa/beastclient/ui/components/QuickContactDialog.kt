@@ -56,10 +56,13 @@ fun QuickContactDialog(
     onOpenChat: () -> Unit,
     onOpenGhostInfo: () -> Unit,
     onOpenPresenceLog: () -> Unit,
-    onOpenAvatarHistory: () -> Unit
+    onOpenAvatarHistory: () -> Unit,
+    onRequestFullAvatar: (() -> Unit)? = null,
+    onSaveAvatar: (() -> Unit)? = null
 ) {
     val colors = LocalWaColors.current
     val scale = remember { Animatable(0.76f) }
+    val showFullPhoto = remember(chat.jid) { androidx.compose.runtime.mutableStateOf(false) }
 
     LaunchedEffect(chat.jid) {
         scale.animateTo(
@@ -72,6 +75,24 @@ fun QuickContactDialog(
         chat.avatarPath?.let { path ->
             File(path).takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.absolutePath)?.asImageBitmap() }
         }
+    }
+
+    LaunchedEffect(chat.jid, chat.avatarPath) {
+        if (avatarBmp == null || (avatarBmp.width <= 160 && avatarBmp.height <= 160)) {
+            onRequestFullAvatar?.invoke()
+        }
+    }
+
+    if (showFullPhoto.value) {
+        ProfilePhotoLightbox(
+            jid = chat.jid,
+            title = chat.name,
+            avatarPath = chat.avatarPath,
+            onDismiss = { showFullPhoto.value = false },
+            onRequestFullAvatar = onRequestFullAvatar,
+            onSaveAvatar = onSaveAvatar
+        )
+        return
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -90,8 +111,7 @@ fun QuickContactDialog(
                         .weight(1f)
                         .background(colors.accentGreen.copy(alpha = 0.25f))
                         .clickable {
-                            onDismiss()
-                            onOpenChat()
+                            showFullPhoto.value = true
                         }
                 ) {
                     if (avatarBmp != null) {

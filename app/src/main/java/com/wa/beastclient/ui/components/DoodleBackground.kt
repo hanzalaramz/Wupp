@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import com.wa.beastclient.ui.theme.LocalWaColors
 import kotlin.math.PI
 import kotlin.math.cos
@@ -31,7 +32,7 @@ fun DoodleBackground(
 ) {
     val colors = LocalWaColors.current
 
-    val shaderBrush = remember(colors.isDark) {
+    val shaderBrush = remember(colors.doodleColor) {
         val tilePx = 360
         val bmp = Bitmap.createBitmap(tilePx, tilePx, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
@@ -40,13 +41,13 @@ fun DoodleBackground(
             strokeWidth = 2.0f
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
-            color = if (colors.isDark) 0xFFFFFFFF.toInt() else 0xFF8C8275.toInt()
+            color = colors.doodleColor.toArgb()
         }
         drawDoodleTile(c, paint)
         ShaderBrush(ImageShader(bmp.asImageBitmap(), TileMode.Repeated, TileMode.Repeated))
     }
 
-    val tileAlpha = if (colors.isDark) 0.065f else 0.18f
+    val tileAlpha = colors.doodleTintAlpha
     Box(modifier = modifier.background(colors.chatCanvas)) {
         ComposeCanvas(modifier = Modifier.fillMaxSize()) {
             drawRect(brush = shaderBrush, alpha = tileAlpha)

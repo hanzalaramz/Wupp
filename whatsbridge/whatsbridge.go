@@ -60,6 +60,8 @@ type mediaJob struct {
 	IsViewOnce    bool
 	IsStatus      bool
 	IsFromMe      bool
+	IsHistorical  bool
+	MetaVer       int
 	Msg           whatsmeow.DownloadableMessage
 }
 
@@ -117,8 +119,13 @@ var (
 	mediaRetrySent       sync.Map
 	avatarFetchedMu      sync.Map
 	avatarInFlight       sync.Map
+	fullAvatarReqMu      sync.Map
 	newsletterPicURLs    sync.Map
 	deadNewsletters      sync.Map
+	disableAutoDlPhoto   atomic.Bool
+	disableAutoDlAudio   atomic.Bool
+	disableAutoDlVideo   atomic.Bool
+	disableAutoDlDoc     atomic.Bool
 	rngMu                sync.Mutex
 	rng                  = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
@@ -293,7 +300,9 @@ func initMetaDB(dsn string) error {
 			file_length INTEGER,
 			is_view_once INTEGER,
 			is_status INTEGER,
-			is_from_me INTEGER DEFAULT 0
+			is_from_me INTEGER DEFAULT 0,
+			is_historical INTEGER DEFAULT 0,
+			meta_ver INTEGER DEFAULT 0
 		);
 	`)
 	if err != nil {
@@ -301,6 +310,8 @@ func initMetaDB(dsn string) error {
 		return err
 	}
 	_, _ = db.Exec(`ALTER TABLE wa_media_meta ADD COLUMN is_from_me INTEGER DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE wa_media_meta ADD COLUMN is_historical INTEGER DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE wa_media_meta ADD COLUMN meta_ver INTEGER DEFAULT 0`)
 	_, _ = db.Exec(`
 		CREATE TABLE IF NOT EXISTS wa_avatar_miss (
 			jid TEXT PRIMARY KEY,
@@ -371,15 +382,20 @@ func metaWriterWorker() {
 			INSERT INTO wa_media_meta (
 				message_id, chat_jid, sender_jid, media_type, mime_type,
 				direct_path, media_key, file_sha256, file_enc_sha256, file_length,
-				is_view_once, is_status, is_from_me
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				is_view_once, is_status, is_from_me, is_historical, meta_ver
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(message_id) DO UPDATE SET
+				media_type = excluded.media_type,
+				mime_type = excluded.mime_type,
 				direct_path = excluded.direct_path,
 				media_key = excluded.media_key,
 				file_sha256 = excluded.file_sha256,
 				file_enc_sha256 = excluded.file_enc_sha256,
 				file_length = excluded.file_length,
-				is_from_me = excluded.is_from_me
+				is_view_once = excluded.is_view_once,
+				is_from_me = excluded.is_from_me,
+				is_historical = excluded.is_historical,
+				meta_ver = excluded.meta_ver
 		`)
 		if err != nil {
 			_ = tx.Rollback()
@@ -399,10 +415,18 @@ func metaWriterWorker() {
 			if job.IsFromMe {
 				fm = 1
 			}
+			hist := 0
+			if job.IsHistorical {
+				hist = 1
+			}
+			mv := job.MetaVer
+			if mv <= 0 {
+				mv = 1
+			}
 			_, _ = stmt.Exec(
 				job.MessageID, job.ChatJID, job.SenderJID, job.MediaType, job.MimeType,
 				job.DirectPath, job.MediaKey, job.FileSHA256, job.FileEncSHA256, int64(job.FileLength),
-				vo, st, fm,
+				vo, st, fm, hist, mv,
 			)
 		}
 		_ = stmt.Close()
@@ -454,17 +478,18 @@ func lookupMediaJob(messageId string) (*mediaJob, bool) {
 	}
 	var j mediaJob
 	var fileLen int64
-	var vo, st, fm int
+	var vo, st, fm, hist, mv int
 	err := db.QueryRow(`
 		SELECT message_id, chat_jid, sender_jid, media_type, mime_type,
 		       direct_path, media_key, file_sha256, file_enc_sha256, file_length,
-		       is_view_once, is_status, COALESCE(is_from_me, 0)
+		       is_view_once, is_status, COALESCE(is_from_me, 0),
+		       COALESCE(is_historical, 0), COALESCE(meta_ver, 0)
 		FROM wa_media_meta
 		WHERE message_id = ?
 	`, messageId).Scan(
 		&j.MessageID, &j.ChatJID, &j.SenderJID, &j.MediaType, &j.MimeType,
 		&j.DirectPath, &j.MediaKey, &j.FileSHA256, &j.FileEncSHA256, &fileLen,
-		&vo, &st, &fm,
+		&vo, &st, &fm, &hist, &mv,
 	)
 	if err != nil {
 		return nil, false
@@ -473,6 +498,8 @@ func lookupMediaJob(messageId string) (*mediaJob, bool) {
 	j.IsViewOnce = vo != 0
 	j.IsStatus = st != 0
 	j.IsFromMe = fm != 0
+	j.IsHistorical = hist != 0
+	j.MetaVer = mv
 	mediaJobsById.Store(j.MessageID, j)
 	return &j, true
 }
@@ -926,6 +953,120 @@ func resolveBestContactName(ctx context.Context, cli *whatsmeow.Client, jid type
 	return "", false, alt
 }
 
+type participantMeta struct {
+	JID        string `json:"jid"`
+	AltJID     string `json:"altJid"`
+	SavedName  string `json:"savedName"`
+	PushName   string `json:"pushName"`
+	Phone      string `json:"phone"`
+	AvatarPath string `json:"avatarPath"`
+	IsSelf     bool   `json:"isSelf"`
+}
+
+func resolveLocalParticipantMeta(ctx context.Context, cli *whatsmeow.Client, filesDir string, jid types.JID) participantMeta {
+	meta := participantMeta{JID: jid.String()}
+	if cli == nil || cli.Store == nil || jid.IsEmpty() {
+		return meta
+	}
+	nonAd := jid.ToNonAD()
+	alt := resolveAlternateChatJID(ctx, cli, nonAd)
+	if alt.IsEmpty() {
+		if a, err := cli.Store.GetAltJID(ctx, nonAd); err == nil && !a.IsEmpty() {
+			alt = a.ToNonAD()
+		}
+	}
+	meta.AltJID = alt.ToNonAD().String()
+
+	if cli.Store.ID != nil {
+		ownNonAd := cli.Store.ID.ToNonAD()
+		if (nonAd.User == ownNonAd.User && nonAd.Server == ownNonAd.Server) ||
+			(!alt.IsEmpty() && alt.User == ownNonAd.User && alt.Server == ownNonAd.Server) {
+			meta.IsSelf = true
+		}
+	}
+	if !meta.IsSelf && !cli.Store.LID.IsEmpty() {
+		ownLid := cli.Store.LID.ToNonAD()
+		if (nonAd.User == ownLid.User && nonAd.Server == ownLid.Server) ||
+			(!alt.IsEmpty() && alt.User == ownLid.User && alt.Server == ownLid.Server) {
+			meta.IsSelf = true
+		}
+	}
+
+	if nonAd.Server == types.DefaultUserServer && nonAd.User != "" {
+		meta.Phone = "+" + nonAd.User
+	} else if alt.Server == types.DefaultUserServer && alt.User != "" {
+		meta.Phone = "+" + alt.User
+	}
+
+	if cli.Store.Contacts != nil {
+		c1, _ := cli.Store.Contacts.GetContact(ctx, nonAd)
+		var c2 types.ContactInfo
+		if !alt.IsEmpty() {
+			c2, _ = cli.Store.Contacts.GetContact(ctx, alt)
+		}
+		for _, s := range []string{c1.FullName, c2.FullName, c1.FirstName, c2.FirstName} {
+			if t := strings.TrimSpace(s); t != "" {
+				meta.SavedName = t
+				break
+			}
+		}
+		for _, s := range []string{c1.BusinessName, c2.BusinessName, c1.PushName, c2.PushName} {
+			if t := strings.TrimSpace(s); t != "" {
+				meta.PushName = t
+				break
+			}
+		}
+	}
+
+	if filesDir != "" {
+		if p := findCachedAvatar(filesDir, nonAd.User); p != "" {
+			meta.AvatarPath = p
+		} else if !alt.IsEmpty() {
+			if p := findCachedAvatar(filesDir, alt.User); p != "" {
+				meta.AvatarPath = p
+			}
+		}
+	}
+	return meta
+}
+
+// ResolveParticipantNamesJson resolves JID display metadata (@lid -> PN, saved/push names, local cached avatars)
+// strictly from the local SQLite store and disk cache with zero network requests.
+func ResolveParticipantNamesJson(jidsCsv string) string {
+	mu.Lock()
+	cli := client
+	ctx := baseCtx
+	filesDir := appFilesDir
+	mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	out := make(map[string]participantMeta)
+	if cli == nil || cli.Store == nil {
+		b, _ := json.Marshal(out)
+		return string(b)
+	}
+	for _, raw := range strings.Split(jidsCsv, ",") {
+		key := strings.TrimSpace(raw)
+		if key == "" {
+			continue
+		}
+		if _, exists := out[key]; exists {
+			continue
+		}
+		parsed, err := types.ParseJID(key)
+		if err != nil || parsed.IsEmpty() {
+			continue
+		}
+		out[key] = resolveLocalParticipantMeta(ctx, cli, filesDir, parsed)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
 func enqueueAvatarFetch(jid types.JID) {
 	if jid.IsEmpty() || jid == types.StatusBroadcastJID || jid.Server == types.BroadcastServer {
 		return
@@ -958,15 +1099,22 @@ func findCachedAvatar(filesDir, user string) string {
 	if err != nil {
 		return ""
 	}
+	fallback := ""
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
 			info, infoErr := e.Info()
 			if infoErr == nil && info.Size() > 0 {
-				return filepath.Join(dir, e.Name())
+				fullPath := filepath.Join(dir, e.Name())
+				if strings.HasSuffix(e.Name(), "_hd.jpg") {
+					return fullPath
+				}
+				if fallback == "" {
+					fallback = fullPath
+				}
 			}
 		}
 	}
-	return ""
+	return fallback
 }
 
 func newsletterPictureInfoURL(meta *types.NewsletterMetadata) (string, string) {
@@ -1024,16 +1172,6 @@ func resolveAvatarURL(ctx context.Context, cli *whatsmeow.Client, jid, alt types
 	}
 
 	queryTarget := func(target types.JID, isCommunity bool) (string, string, bool) {
-		info, err := cli.GetProfilePictureInfo(ctx, target, &whatsmeow.GetProfilePictureParams{
-			Preview:     true,
-			IsCommunity: isCommunity,
-		})
-		if err == nil && info != nil && info.URL != "" {
-			return info.URL, info.ID, false
-		}
-		if errors.Is(err, whatsmeow.ErrProfilePictureUnauthorized) {
-			return "", "", true
-		}
 		infoFull, errFull := cli.GetProfilePictureInfo(ctx, target, &whatsmeow.GetProfilePictureParams{
 			Preview:     false,
 			IsCommunity: isCommunity,
@@ -1041,7 +1179,17 @@ func resolveAvatarURL(ctx context.Context, cli *whatsmeow.Client, jid, alt types
 		if errFull == nil && infoFull != nil && infoFull.URL != "" {
 			return infoFull.URL, infoFull.ID, false
 		}
-		return "", "", isAvatarNotFoundErr(errFull)
+		if errors.Is(errFull, whatsmeow.ErrProfilePictureUnauthorized) || errors.Is(errFull, whatsmeow.ErrProfilePictureNotSet) {
+			return "", "", true
+		}
+		info, err := cli.GetProfilePictureInfo(ctx, target, &whatsmeow.GetProfilePictureParams{
+			Preview:     true,
+			IsCommunity: isCommunity,
+		})
+		if err == nil && info != nil && info.URL != "" {
+			return info.URL, info.ID, false
+		}
+		return "", "", isAvatarNotFoundErr(err)
 	}
 
 	if u, id, nf := queryTarget(jid, false); u != "" {
@@ -1142,40 +1290,126 @@ func processAvatarJob(jid types.JID, httpCli *http.Client) {
 		picID = "pic"
 	}
 
-	req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, picURL, nil)
-	if reqErr == nil {
-		setWhatsAppCDNHeaders(req)
-		resp, httpErr := httpCli.Do(req)
-		if httpErr == nil {
-			b, readErr := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
-			if (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone) && len(b) == 0 {
-				if jid.Server == types.HiddenUserServer && alt.IsEmpty() {
-					avatarFetchedMu.Store(jid.String(), time.Now().Unix()-avatarMissTTLSec+avatarUnmappedRetrySec)
-				} else {
-					persistAvatarMiss(jid.String(), alt.String())
-				}
-			} else if resp.StatusCode == http.StatusOK && readErr == nil && len(b) > 0 {
-				fname := sanitizeFileName(jid.User + "_" + picID + ".jpg")
-				target := filepath.Join(filesDir, "vault", "avatars", fname)
-				if os.WriteFile(target, b, 0o644) == nil {
-					avatarFetchedMu.Store(jid.String(), time.Now().Unix())
-					if !alt.IsEmpty() {
-						avatarFetchedMu.Store(alt.String(), time.Now().Unix())
-					}
-					emitJSON("PROFILE_UPDATE", map[string]any{
-						"jid":        jid.String(),
-						"altJid":     alt.String(),
-						"pictureId":  picID,
-						"avatarPath": target,
-						"removed":    false,
-						"timestamp":  time.Now().UnixMilli(),
-					})
-				}
-			}
+	b, statusCode, readErr := downloadAvatarBytes(ctx, httpCli, picURL)
+	if (statusCode == http.StatusNotFound || statusCode == http.StatusGone) && len(b) == 0 {
+		if jid.Server == types.HiddenUserServer && alt.IsEmpty() {
+			avatarFetchedMu.Store(jid.String(), time.Now().Unix()-avatarMissTTLSec+avatarUnmappedRetrySec)
+		} else {
+			persistAvatarMiss(jid.String(), alt.String())
 		}
+	} else if statusCode == http.StatusOK && readErr == nil && len(b) > 0 {
+		saveAvatarAndEmit(filesDir, jid, alt, picID, b)
 	}
 	time.Sleep(time.Duration(75+int(randomFloat()*85)) * time.Millisecond)
+}
+
+func downloadAvatarBytes(ctx context.Context, httpCli *http.Client, picURL string) ([]byte, int, error) {
+	req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, picURL, nil)
+	if reqErr != nil {
+		return nil, 0, reqErr
+	}
+	setWhatsAppCDNHeaders(req)
+	resp, httpErr := httpCli.Do(req)
+	if httpErr != nil {
+		return nil, 0, httpErr
+	}
+	defer resp.Body.Close()
+	b, readErr := io.ReadAll(resp.Body)
+	return b, resp.StatusCode, readErr
+}
+
+func saveAvatarAndEmit(filesDir string, jid, alt types.JID, picID string, b []byte) string {
+	if filesDir == "" || len(b) == 0 {
+		return ""
+	}
+	if picID == "" {
+		picID = "pic"
+	}
+	fname := sanitizeFileName(jid.User + "_" + picID + "_hd.jpg")
+	target := filepath.Join(filesDir, "vault", "avatars", fname)
+	if err := os.WriteFile(target, b, 0o644); err != nil {
+		return ""
+	}
+	now := time.Now().Unix()
+	avatarFetchedMu.Store(jid.String(), now)
+	if !alt.IsEmpty() {
+		avatarFetchedMu.Store(alt.String(), now)
+	}
+	emitJSON("PROFILE_UPDATE", map[string]any{
+		"jid":        jid.String(),
+		"altJid":     alt.String(),
+		"pictureId":  picID,
+		"avatarPath": target,
+		"removed":    false,
+		"timestamp":  time.Now().UnixMilli(),
+	})
+	return target
+}
+
+func FetchFullProfilePicture(jidStr string) {
+	raw := strings.TrimSpace(jidStr)
+	if raw == "" {
+		return
+	}
+	jid, err := types.ParseJID(raw)
+	if err != nil || jid.User == "" {
+		return
+	}
+	now := time.Now().Unix()
+	if prev, ok := fullAvatarReqMu.Load(jid.String()); ok {
+		if ts, ok2 := prev.(int64); ok2 && now-ts < 60 {
+			return
+		}
+	}
+	fullAvatarReqMu.Store(jid.String(), now)
+
+	go func() {
+		mu.Lock()
+		cli := client
+		ctx := baseCtx
+		filesDir := appFilesDir
+		mu.Unlock()
+		if cli == nil || filesDir == "" {
+			return
+		}
+		alt := resolveAlternateChatJID(ctx, cli, jid)
+		if cached := findCachedAvatar(filesDir, jid.User); strings.HasSuffix(cached, "_hd.jpg") {
+			emitJSON("PROFILE_UPDATE", map[string]any{
+				"jid":        jid.String(),
+				"altJid":     alt.String(),
+				"avatarPath": cached,
+				"removed":    false,
+				"timestamp":  time.Now().UnixMilli(),
+			})
+			return
+		}
+		if !alt.IsEmpty() {
+			if cachedAlt := findCachedAvatar(filesDir, alt.User); strings.HasSuffix(cachedAlt, "_hd.jpg") {
+				emitJSON("PROFILE_UPDATE", map[string]any{
+					"jid":        jid.String(),
+					"altJid":     alt.String(),
+					"avatarPath": cachedAlt,
+					"removed":    false,
+					"timestamp":  time.Now().UnixMilli(),
+				})
+				return
+			}
+		}
+		if !ensureConnectedAndAuthenticated(cli, 6*time.Second) {
+			return
+		}
+		picCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		picURL, picID, _ := resolveAvatarURL(picCtx, cli, jid, alt)
+		cancel()
+		if picURL == "" {
+			return
+		}
+		httpCli := &http.Client{Timeout: 12 * time.Second}
+		b, status, readErr := downloadAvatarBytes(ctx, httpCli, picURL)
+		if status == http.StatusOK && readErr == nil && len(b) > 0 {
+			saveAvatarAndEmit(filesDir, jid, alt, picID, b)
+		}
+	}()
 }
 
 func avatarDownloadWorker() {
@@ -1502,6 +1736,10 @@ func RequestMediaDownload(chatJid string, senderJid string, messageId string, ti
 	}
 
 	if job, ok := lookupMediaJob(messageId); ok {
+		if job.IsViewOnce {
+			emitViewOnceExpired(job, "Open in original WhatsApp")
+			return nil
+		}
 		if _, busy := mediaInFlight.Load(messageId); busy {
 			emitMediaStatus(messageId, job.ChatJID, "DOWNLOADING", "")
 			return nil
@@ -1721,7 +1959,100 @@ func VerifyNumbersOnWhatsApp(phonesCsv string) (string, error) {
 	return string(b), nil
 }
 
-// Recursive unwrapper handling Ephemeral, ViewOnceV1/V2/Ext, DeviceSent, DocumentWithCaption, and Edited containers.
+// Recursive unwrapper handling Ephemeral, ViewOnceV1/V2/Ext, DeviceSent, DocumentWithCaption, FutureProof, and Edited containers.
+func hasInnerViewOnceFlag(m *waE2E.Message) bool {
+	if m == nil {
+		return false
+	}
+	if im := m.GetImageMessage(); im != nil && im.GetViewOnce() {
+		return true
+	}
+	if vm := m.GetVideoMessage(); vm != nil && vm.GetViewOnce() {
+		return true
+	}
+	if am := m.GetAudioMessage(); am != nil && am.GetViewOnce() {
+		return true
+	}
+	return false
+}
+
+func isNonZeroBytes(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func isMediaNotFoundOrExpired(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith404) ||
+		errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith410) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "404") ||
+		strings.Contains(lower, "410") ||
+		strings.Contains(lower, "not found") ||
+		strings.Contains(lower, "gone")
+}
+
+func emitViewOnceExpired(job *mediaJob, reason string) {
+	if job == nil || job.MessageID == "" {
+		return
+	}
+	emitJSON("VIEW_ONCE_EXPIRED", map[string]any{
+		"messageId": job.MessageID,
+		"chatJid":   job.ChatJID,
+		"mediaType": job.MediaType,
+		"isFromMe":  job.IsFromMe,
+		"reason":    reason,
+	})
+}
+
+func requestPeerPlaceholderResendForJob(cli *whatsmeow.Client, ctx context.Context, job *mediaJob) {
+	if cli == nil || cli.Store == nil || cli.Store.ID == nil || job == nil || job.MessageID == "" || job.ChatJID == "" {
+		return
+	}
+	now := time.Now().UnixMilli()
+	if prev, ok := peerMediaReqMu.Load(job.MessageID); ok && now-prev.(int64) < 15_000 {
+		return
+	}
+	peerMediaReqMu.Store(job.MessageID, now)
+
+	chat, err := types.ParseJID(job.ChatJID)
+	if err != nil || chat.IsEmpty() || chat.Server == types.NewsletterServer {
+		return
+	}
+	var sender types.JID
+	if job.SenderJID != "" {
+		sender, _ = types.ParseJID(job.SenderJID)
+	}
+	isFromMe := job.IsFromMe
+	if !isFromMe && !sender.IsEmpty() &&
+		(sender.User == cli.Store.ID.User || (!cli.Store.LID.IsEmpty() && sender.User == cli.Store.LID.User)) {
+		isFromMe = true
+	}
+	var tSender types.JID
+	switch {
+	case chat.Server == types.GroupServer || chat.Server == types.BroadcastServer:
+		tSender = sender
+	case !isFromMe:
+		tSender = chat.ToNonAD()
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, uErr := cli.SendMessage(reqCtx, cli.Store.ID.ToNonAD(), cli.BuildUnavailableMessageRequest(chat, tSender, job.MessageID), whatsmeow.SendRequestExtra{Peer: true})
+	emitJSON("BRIDGE_LOG", map[string]any{
+		"level":  "INFO",
+		"module": "MediaReq",
+		"msg":    fmt.Sprintf("legacy placeholder resend id=%s chat=%s fromMe=%v err=%v", job.MessageID, chat.String(), isFromMe, uErr),
+	})
+}
+
 func unwrapMessageContainer(m *waE2E.Message) (
 	inner *waE2E.Message,
 	isViewOnce bool,
@@ -1737,6 +2068,9 @@ func unwrapMessageContainer(m *waE2E.Message) (
 			if ctx := curr.GetEphemeralMessage().GetMessage(); ctx != nil {
 				curr = ctx
 			} else {
+				if hasInnerViewOnceFlag(curr) {
+					isViewOnce = true
+				}
 				return curr, isViewOnce, isEphemeral, ephemeralSec, isEdit
 			}
 		case curr.GetViewOnceMessage() != nil:
@@ -1773,6 +2107,9 @@ func unwrapMessageContainer(m *waE2E.Message) (
 			ephemeralSec = extractEphemeralDuration(curr)
 			if ephemeralSec > 0 {
 				isEphemeral = true
+			}
+			if hasInnerViewOnceFlag(curr) {
+				isViewOnce = true
 			}
 			return curr, isViewOnce, isEphemeral, ephemeralSec, isEdit
 		}
@@ -2224,7 +2561,7 @@ func handlePictureUpdate(evt *events.Picture) {
 				if httpErr == nil {
 					defer resp.Body.Close()
 					if b, readErr := io.ReadAll(resp.Body); readErr == nil && len(b) > 0 {
-						fname := sanitizeFileName(evt.JID.User + "_" + info.ID + ".jpg")
+						fname := sanitizeFileName(evt.JID.User + "_" + info.ID + "_hd.jpg")
 						target := filepath.Join(filesDir, "vault", "avatars", fname)
 						if os.WriteFile(target, b, 0o644) == nil {
 							avatarPath = target
@@ -2364,7 +2701,7 @@ func processIncomingMessage(evt *events.Message) {
 						} else {
 							emitJSON("MESSAGE_UPSERT", rPayload)
 						}
-						if rJob != nil {
+						if shouldAutoDownloadMedia(rJob) {
 							enqueueMedia(rJob)
 						}
 					}
@@ -2413,6 +2750,9 @@ func processIncomingMessage(evt *events.Message) {
 	}
 
 	payload, job := buildNormalizedMessage(&evt.Info, inner, isVO, isEph, ephSec)
+	if v, ok := payload["isViewOnce"].(bool); ok && v {
+		isVO = true
+	}
 	msgTypeStr, _ := payload["msgType"].(string)
 	bodyStr, _ := payload["body"].(string)
 	if !isVO && job == nil && msgTypeStr == "UNKNOWN" && strings.TrimSpace(bodyStr) == "" {
@@ -2661,6 +3001,9 @@ func processHistorySync(evt *events.HistorySync) {
 				continue
 			}
 			mPayload, job := buildNormalizedMessage(&parsed.Info, inner, isVO, isEph, ephSec)
+			if v, ok := mPayload["isViewOnce"].(bool); ok && v {
+				isVO = true
+			}
 			mPayload["deliveryStatus"] = deliveryStatusFromWebMsg(webMsg, parsed.Info.IsFromMe)
 			mt, _ := mPayload["msgType"].(string)
 			bd, _ := mPayload["body"].(string)
@@ -2669,7 +3012,11 @@ func processHistorySync(evt *events.HistorySync) {
 			}
 			msgBatch = append(msgBatch, mPayload)
 			if job != nil {
+				job.IsHistorical = parsed.Info.IsFromMe || time.Since(parsed.Info.Timestamp) > 24*time.Hour
+				saveMediaMeta(job)
 				switch {
+				case isVO && job.IsHistorical:
+					// Do not fire CDN 404/410 requests in bulk for old or previously sent View-Once media in HistorySync
 				case isVO || job.MediaType == "PTT" || job.MediaType == "AUDIO":
 					priorityMediaJobs = append(priorityMediaJobs, job)
 				case job.MediaType == "IMAGE" || job.MediaType == "STICKER" || job.MediaType == "VIDEO":
@@ -2820,17 +3167,50 @@ func buildNormalizedMessage(
 	isEph bool,
 	ephSec uint32,
 ) (map[string]any, *mediaJob) {
+	if !isVO && hasInnerViewOnceFlag(inner) {
+		isVO = true
+	}
 	body, msgType, mimeType, durationSec, fileSize, dlMsg := extractMessageContent(inner)
 	quotedId, quotedSender, quotedBody, mentionsCsv := extractContextInfo(inner)
 
-	hasKey := dlMsg != nil && len(dlMsg.GetMediaKey()) > 0
+	hasKey := dlMsg != nil && isNonZeroBytes(dlMsg.GetMediaKey())
+	hasDirectPath := dlMsg != nil && strings.TrimSpace(dlMsg.GetDirectPath()) != ""
 	isChannel := info.Chat.Server == types.NewsletterServer
 	voState := "NONE"
 	if isVO {
-		if hasKey {
+		if hasKey && hasDirectPath {
 			voState = "AVAILABLE"
 		} else {
 			voState = "STRIPPED"
+		}
+	}
+
+	mu.Lock()
+	cli := client
+	ctx := baseCtx
+	mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	resolvedSenderName := strings.TrimSpace(info.PushName)
+	if cli != nil && !info.Sender.IsEmpty() {
+		sMeta := resolveLocalParticipantMeta(ctx, cli, "", info.Sender)
+		switch {
+		case sMeta.SavedName != "":
+			resolvedSenderName = sMeta.SavedName
+		case resolvedSenderName == "" && sMeta.PushName != "":
+			resolvedSenderName = sMeta.PushName
+		case resolvedSenderName == "" && sMeta.Phone != "":
+			resolvedSenderName = sMeta.Phone
+		}
+	}
+	if cli != nil && quotedSender != "" {
+		if qJID, qErr := types.ParseJID(quotedSender); qErr == nil && qJID.Server == types.HiddenUserServer {
+			qMeta := resolveLocalParticipantMeta(ctx, cli, "", qJID)
+			if qMeta.AltJID != "" && !strings.HasSuffix(qMeta.AltJID, "@lid") {
+				quotedSender = qMeta.AltJID
+			}
 		}
 	}
 
@@ -2838,7 +3218,7 @@ func buildNormalizedMessage(
 		"id":                string(info.ID),
 		"chatJid":           info.Chat.String(),
 		"senderJid":         info.Sender.String(),
-		"senderName":        info.PushName,
+		"senderName":        resolvedSenderName,
 		"isFromMe":          info.IsFromMe,
 		"isGroup":           info.IsGroup,
 		"timestamp":         info.Timestamp.UnixMilli(),
@@ -2859,7 +3239,8 @@ func buildNormalizedMessage(
 	}
 
 	var job *mediaJob
-	if dlMsg != nil && dlMsg.GetDirectPath() != "" && (hasKey || isChannel) {
+	if !isVO && dlMsg != nil && hasDirectPath && (hasKey || isChannel) {
+		isHist := !info.Timestamp.IsZero() && time.Since(info.Timestamp) > 24*time.Hour
 		job = &mediaJob{
 			MessageID:     string(info.ID),
 			ChatJID:       info.Chat.String(),
@@ -2871,9 +3252,11 @@ func buildNormalizedMessage(
 			FileSHA256:    append([]byte(nil), dlMsg.GetFileSHA256()...),
 			FileEncSHA256: append([]byte(nil), dlMsg.GetFileEncSHA256()...),
 			FileLength:    fileSize,
-			IsViewOnce:    isVO,
+			IsViewOnce:    false,
 			IsStatus:      info.Chat == types.StatusBroadcastJID,
 			IsFromMe:      info.IsFromMe,
+			IsHistorical:  isHist,
+			MetaVer:       1,
 			Msg:           dlMsg,
 		}
 		saveMediaMeta(job)
@@ -3008,24 +3391,47 @@ func extractContextInfo(m *waE2E.Message) (qId, qSender, qBody, mentionsCsv stri
 	return
 }
 
+func SetAutoDownloadPolicy(allowPhoto, allowAudio, allowVideo, allowDoc bool) {
+	disableAutoDlPhoto.Store(!allowPhoto)
+	disableAutoDlAudio.Store(!allowAudio)
+	disableAutoDlVideo.Store(!allowVideo)
+	disableAutoDlDoc.Store(!allowDoc)
+}
+
 func shouldAutoDownloadMedia(job *mediaJob) bool {
-	if job == nil || job.MessageID == "" {
+	if job == nil || job.MessageID == "" || job.IsViewOnce {
 		return false
 	}
 	switch job.MediaType {
+	case "IMAGE", "STICKER":
+		if disableAutoDlPhoto.Load() {
+			return false
+		}
+		return job.FileLength <= maxManualMediaBytes
+	case "PTT", "AUDIO":
+		if disableAutoDlAudio.Load() {
+			return false
+		}
+		return job.FileLength <= maxManualMediaBytes
 	case "VIDEO":
+		if disableAutoDlVideo.Load() {
+			return false
+		}
 		limit := autoDownloadVideoMaxBytes
-		if job.IsViewOnce || job.IsStatus {
+		if job.IsStatus {
 			limit = autoDownloadVaultMaxBytes
 		}
 		return job.FileLength > 0 && job.FileLength <= limit
 	case "DOCUMENT":
-		return job.FileLength > 0 && job.FileLength <= autoDownloadVaultMaxBytes
-	default:
-		if job.FileLength > maxManualMediaBytes {
+		if disableAutoDlDoc.Load() {
 			return false
 		}
-		return true
+		return job.FileLength > 0 && job.FileLength <= autoDownloadVaultMaxBytes
+	default:
+		if disableAutoDlPhoto.Load() {
+			return false
+		}
+		return job.FileLength <= maxManualMediaBytes
 	}
 }
 
@@ -3054,7 +3460,7 @@ func waMediaTypeFromString(mediaType string) whatsmeow.MediaType {
 }
 
 func triggerMediaRetry(cli *whatsmeow.Client, job *mediaJob) {
-	if cli == nil || job == nil || job.MessageID == "" || len(job.MediaKey) == 0 {
+	if cli == nil || job == nil || job.MessageID == "" || len(job.MediaKey) == 0 || job.IsViewOnce {
 		return
 	}
 	now := time.Now()
@@ -3100,19 +3506,22 @@ func triggerMediaRetry(cli *whatsmeow.Client, job *mediaJob) {
 	}
 	err = cli.SendMediaRetryReceipt(ctx, msgInfo, job.MediaKey)
 
+	var altChat types.JID
 	var altErr error
-	altChat := resolveAlternateChatJID(ctx, cli, chat)
-	if !altChat.IsEmpty() && altChat.String() != chat.String() {
-		altInfo := &types.MessageInfo{
-			MessageSource: types.MessageSource{
-				Chat:     altChat,
-				Sender:   sender,
-				IsFromMe: isFromMe,
-				IsGroup:  altChat.Server == types.GroupServer,
-			},
-			ID: types.MessageID(job.MessageID),
+	if err != nil {
+		altChat = resolveAlternateChatJID(ctx, cli, chat)
+		if !altChat.IsEmpty() && altChat.String() != chat.String() {
+			altInfo := &types.MessageInfo{
+				MessageSource: types.MessageSource{
+					Chat:     altChat,
+					Sender:   sender,
+					IsFromMe: isFromMe,
+					IsGroup:  altChat.Server == types.GroupServer,
+				},
+				ID: types.MessageID(job.MessageID),
+			}
+			altErr = cli.SendMediaRetryReceipt(ctx, altInfo, job.MediaKey)
 		}
-		altErr = cli.SendMediaRetryReceipt(ctx, altInfo, job.MediaKey)
 	}
 
 	emitJSON("BRIDGE_LOG", map[string]any{
@@ -3156,6 +3565,11 @@ func processMediaRetry(evt *events.MediaRetry) {
 	})
 
 	if res != waMmsRetry.MediaRetryNotification_SUCCESS || newPath == "" {
+		if job.IsViewOnce {
+			emitViewOnceExpired(job, "Opened or expired")
+		} else {
+			emitMediaStatus(job.MessageID, job.ChatJID, "FAILED", "Media unavailable on primary device")
+		}
 		return
 	}
 
@@ -3218,6 +3632,10 @@ func moveOrCopyTempFile(tmpPath, targetPath string) error {
 
 func downloadAndEmitMedia(cli *whatsmeow.Client, ctx context.Context, filesDir string, job *mediaJob) bool {
 	if cli == nil || job == nil || job.MessageID == "" || filesDir == "" {
+		return false
+	}
+	if job.IsViewOnce {
+		emitViewOnceExpired(job, "Open in original WhatsApp")
 		return false
 	}
 	if _, busy := mediaInFlight.LoadOrStore(job.MessageID, true); busy {
@@ -3304,14 +3722,27 @@ func downloadAndEmitMedia(cli *whatsmeow.Client, ctx context.Context, filesDir s
 		emitJSON("BRIDGE_LOG", map[string]any{
 			"level":  "WARN",
 			"module": "MediaDownload",
-			"msg":    fmt.Sprintf("failed id=%s type=%s err=%v bytes=%d", job.MessageID, job.MediaType, err, fileBytes),
+			"msg":    fmt.Sprintf("failed id=%s type=%s vo=%v err=%v bytes=%d", job.MessageID, job.MediaType, job.IsViewOnce, err, fileBytes),
 		})
+		isNotFound := isMediaNotFoundOrExpired(err) || (err == nil && fileBytes <= 0)
+		if job.IsViewOnce && isNotFound {
+			if job.IsFromMe || job.IsHistorical {
+				emitViewOnceExpired(job, "Already opened or expired")
+				return false
+			}
+			if _, retried := mediaRetrySent.Load(job.MessageID); retried {
+				emitViewOnceExpired(job, "Already opened or expired")
+				return false
+			}
+			emitMediaStatus(job.MessageID, job.ChatJID, "FAILED", errReason)
+			triggerMediaRetry(cli, job)
+			return false
+		}
 		emitMediaStatus(job.MessageID, job.ChatJID, "FAILED", errReason)
-		if err != nil && len(job.MediaKey) > 0 &&
-			(errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith404) ||
-				errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith410) ||
-				strings.Contains(err.Error(), "410") ||
-				strings.Contains(err.Error(), "404")) {
+		if err != nil && len(job.MediaKey) > 0 && isMediaNotFoundOrExpired(err) {
+			if job.MetaVer == 0 {
+				go requestPeerPlaceholderResendForJob(cli, ctx, job)
+			}
 			triggerMediaRetry(cli, job)
 		}
 		return false
@@ -3363,14 +3794,18 @@ func downloadAndEmitMedia(cli *whatsmeow.Client, ctx context.Context, filesDir s
 	}
 
 	emitJSON("MEDIA_DOWNLOADED", map[string]any{
-		"messageId":   job.MessageID,
-		"chatJid":     job.ChatJID,
-		"localPath":   targetPath,
-		"sha256":      hashHex,
-		"fileSize":    hashedLen,
-		"isViewOnce":  job.IsViewOnce,
-		"isStatus":    job.IsStatus,
-		"waveformCsv": waveform,
+		"messageId":    job.MessageID,
+		"chatJid":      job.ChatJID,
+		"localPath":    targetPath,
+		"sha256":       hashHex,
+		"fileSize":     hashedLen,
+		"isViewOnce":   job.IsViewOnce,
+		"isStatus":     job.IsStatus,
+		"isHistorical": job.IsHistorical,
+		"isFromMe":     job.IsFromMe,
+		"mediaType":    job.MediaType,
+		"mimeType":     job.MimeType,
+		"waveformCsv":  waveform,
 	})
 	return true
 }
@@ -3733,8 +4168,9 @@ func emitNewsletterMessages(cli *whatsmeow.Client, chJID types.JID, count int) {
 			continue
 		}
 		payload["reactionSummary"] = formatNewsletterReactionSummary(nm.ReactionCounts, nm.ForwardsCount)
+		payload["isSync"] = true
 		emitJSON("MESSAGE_UPSERT", payload)
-		if job != nil {
+		if shouldAutoDownloadMedia(job) {
 			enqueueMedia(job)
 		}
 	}

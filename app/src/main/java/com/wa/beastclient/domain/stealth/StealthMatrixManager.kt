@@ -2,8 +2,11 @@ package com.wa.beastclient.domain.stealth
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import com.wa.beastclient.data.db.PrivacyRuleEntity
 import com.wa.beastclient.data.db.WaDao
+import com.wa.beastclient.ui.theme.WuppThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -11,6 +14,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
+
+enum class AutoDownloadNetwork(val label: String) {
+    MOBILE("When using mobile data"),
+    WIFI("When connected on Wi-Fi"),
+    ROAMING("When roaming")
+}
 
 data class GlobalStealthConfig(
     val ghostPresence: Boolean = true,
@@ -20,7 +29,14 @@ data class GlobalStealthConfig(
     val antiDeleteEnabled: Boolean = true,
     val viewOnceVaultEnabled: Boolean = true,
     val disappearingImmunity: Boolean = true,
-    val darkTheme: Boolean = true,
+    val themeMode: WuppThemeMode = WuppThemeMode.DARK,
+    val autoDownloadEnabled: Boolean = true,
+    val autoDownloadMobileMask: Int = StealthMatrixManager.MEDIA_ALL,
+    val autoDownloadWifiMask: Int = StealthMatrixManager.MEDIA_ALL,
+    val autoDownloadRoamingMask: Int = StealthMatrixManager.MEDIA_NONE,
+    val mediaVisibilityInGallery: Boolean = true,
+    val hiddenGalleryJids: Set<String> = emptySet(),
+    val visibleGalleryJids: Set<String> = emptySet(),
     val primaryLastSeenEpochMs: Long = System.currentTimeMillis()
 )
 
@@ -41,10 +57,17 @@ data class PrimaryHeartbeatStatus(
 )
 
 /**
- * Manages Global & per-chat Ghost/Stealth rules, Error 463 unsaved-number outbound guard,
- * and Meta's 14-day primary phone companion heartbeat reminder.
+ * Manages Global & per-chat Ghost/Stealth rules, auto-download & gallery visibility rules,
+ * Error 463 unsaved-number outbound guard, and Meta's 14-day primary phone companion heartbeat reminder.
  */
 object StealthMatrixManager {
+    const val MEDIA_NONE = 0
+    const val MEDIA_PHOTO = 1
+    const val MEDIA_AUDIO = 2
+    const val MEDIA_VIDEO = 4
+    const val MEDIA_DOCUMENT = 8
+    const val MEDIA_ALL = MEDIA_PHOTO or MEDIA_AUDIO or MEDIA_VIDEO or MEDIA_DOCUMENT
+
     private const val PREFS_NAME = "wa_stealth_prefs"
     private const val KEY_GHOST_PRESENCE = "ghost_presence"
     private const val KEY_HIDE_READ = "hide_read_receipts"
@@ -54,6 +77,14 @@ object StealthMatrixManager {
     private const val KEY_VIEW_ONCE_VAULT = "view_once_vault_enabled"
     private const val KEY_DISAPPEARING_IMMUNITY = "disappearing_immunity"
     private const val KEY_DARK_THEME = "dark_theme"
+    private const val KEY_THEME_MODE = "app_theme_mode"
+    private const val KEY_AUTO_DL_ENABLED = "auto_download_enabled"
+    private const val KEY_AUTO_DL_MOBILE = "auto_download_mobile_mask"
+    private const val KEY_AUTO_DL_WIFI = "auto_download_wifi_mask"
+    private const val KEY_AUTO_DL_ROAMING = "auto_download_roaming_mask"
+    private const val KEY_MEDIA_VISIBILITY = "media_visibility_gallery"
+    private const val KEY_HIDDEN_GALLERY_JIDS = "hidden_gallery_jids"
+    private const val KEY_VISIBLE_GALLERY_JIDS = "visible_gallery_jids"
     private const val KEY_PRIMARY_HEARTBEAT_MS = "primary_last_seen_ms"
 
     private const val FOURTEEN_DAYS_MS = 14L * 24L * 60L * 60L * 1000L
@@ -83,7 +114,17 @@ object StealthMatrixManager {
                 antiDeleteEnabled = prefs.getBoolean(KEY_ANTI_DELETE, true),
                 viewOnceVaultEnabled = prefs.getBoolean(KEY_VIEW_ONCE_VAULT, true),
                 disappearingImmunity = prefs.getBoolean(KEY_DISAPPEARING_IMMUNITY, true),
-                darkTheme = prefs.getBoolean(KEY_DARK_THEME, true),
+                themeMode = WuppThemeMode.fromStorageKey(
+                    prefs.getString(KEY_THEME_MODE, null),
+                    prefs.getBoolean(KEY_DARK_THEME, true)
+                ),
+                autoDownloadEnabled = prefs.getBoolean(KEY_AUTO_DL_ENABLED, true),
+                autoDownloadMobileMask = prefs.getInt(KEY_AUTO_DL_MOBILE, MEDIA_ALL),
+                autoDownloadWifiMask = prefs.getInt(KEY_AUTO_DL_WIFI, MEDIA_ALL),
+                autoDownloadRoamingMask = prefs.getInt(KEY_AUTO_DL_ROAMING, MEDIA_NONE),
+                mediaVisibilityInGallery = prefs.getBoolean(KEY_MEDIA_VISIBILITY, true),
+                hiddenGalleryJids = prefs.getStringSet(KEY_HIDDEN_GALLERY_JIDS, emptySet())?.toSet() ?: emptySet(),
+                visibleGalleryJids = prefs.getStringSet(KEY_VISIBLE_GALLERY_JIDS, emptySet())?.toSet() ?: emptySet(),
                 primaryLastSeenEpochMs = prefs.getLong(KEY_PRIMARY_HEARTBEAT_MS, now)
             )
             initialized = true
@@ -102,10 +143,115 @@ object StealthMatrixManager {
                 .putBoolean(KEY_ANTI_DELETE, updated.antiDeleteEnabled)
                 .putBoolean(KEY_VIEW_ONCE_VAULT, updated.viewOnceVaultEnabled)
                 .putBoolean(KEY_DISAPPEARING_IMMUNITY, updated.disappearingImmunity)
-                .putBoolean(KEY_DARK_THEME, updated.darkTheme)
+                .putString(KEY_THEME_MODE, updated.themeMode.storageKey)
+                .putBoolean(KEY_DARK_THEME, updated.themeMode != WuppThemeMode.LIGHT)
+                .putBoolean(KEY_AUTO_DL_ENABLED, updated.autoDownloadEnabled)
+                .putInt(KEY_AUTO_DL_MOBILE, updated.autoDownloadMobileMask)
+                .putInt(KEY_AUTO_DL_WIFI, updated.autoDownloadWifiMask)
+                .putInt(KEY_AUTO_DL_ROAMING, updated.autoDownloadRoamingMask)
+                .putBoolean(KEY_MEDIA_VISIBILITY, updated.mediaVisibilityInGallery)
+                .putStringSet(KEY_HIDDEN_GALLERY_JIDS, updated.hiddenGalleryJids.toSet())
+                .putStringSet(KEY_VISIBLE_GALLERY_JIDS, updated.visibleGalleryJids.toSet())
                 .putLong(KEY_PRIMARY_HEARTBEAT_MS, updated.primaryLastSeenEpochMs)
                 .apply()
         }
+    }
+
+    fun currentAutoDownloadNetwork(context: Context): AutoDownloadNetwork {
+        val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return AutoDownloadNetwork.WIFI
+        val active = cm.activeNetwork ?: return AutoDownloadNetwork.WIFI
+        val caps = cm.getNetworkCapabilities(active) ?: return AutoDownloadNetwork.WIFI
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+        ) {
+            return AutoDownloadNetwork.WIFI
+        }
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+            return if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING)) {
+                AutoDownloadNetwork.ROAMING
+            } else {
+                AutoDownloadNetwork.MOBILE
+            }
+        }
+        return AutoDownloadNetwork.WIFI
+    }
+
+    fun activeAutoDownloadMask(context: Context, cfg: GlobalStealthConfig = _config.value): Int {
+        if (!cfg.autoDownloadEnabled) return MEDIA_NONE
+        return when (currentAutoDownloadNetwork(context)) {
+            AutoDownloadNetwork.WIFI -> cfg.autoDownloadWifiMask
+            AutoDownloadNetwork.MOBILE -> cfg.autoDownloadMobileMask
+            AutoDownloadNetwork.ROAMING -> cfg.autoDownloadRoamingMask
+        }
+    }
+
+    fun isAutoDownloadAllowed(
+        context: Context,
+        msgType: String,
+        mimeType: String = "",
+        cfg: GlobalStealthConfig = _config.value
+    ): Boolean {
+        val mask = activeAutoDownloadMask(context, cfg)
+        if (mask == MEDIA_NONE) return false
+        val upperType = msgType.uppercase()
+        val bit = when {
+            upperType == "PTT" || upperType == "AUDIO" || mimeType.startsWith("audio/", ignoreCase = true) -> MEDIA_AUDIO
+            upperType == "VIDEO" || mimeType.startsWith("video/", ignoreCase = true) -> MEDIA_VIDEO
+            upperType == "DOCUMENT" -> MEDIA_DOCUMENT
+            else -> MEDIA_PHOTO
+        }
+        return (mask and bit) != 0
+    }
+
+    fun formatAutoDownloadSummary(mask: Int): String {
+        if (mask == MEDIA_NONE) return "No media"
+        if ((mask and MEDIA_ALL) == MEDIA_ALL) return "All media"
+        val parts = mutableListOf<String>()
+        if ((mask and MEDIA_PHOTO) != 0) parts += "Photos"
+        if ((mask and MEDIA_AUDIO) != 0) parts += "Audio"
+        if ((mask and MEDIA_VIDEO) != 0) parts += "Videos"
+        if ((mask and MEDIA_DOCUMENT) != 0) parts += "Documents"
+        return if (parts.isEmpty()) "No media" else parts.joinToString(", ")
+    }
+
+    fun getChatGalleryOverride(chatJid: String, cfg: GlobalStealthConfig = _config.value): Boolean? = when (chatJid) {
+        in cfg.hiddenGalleryJids -> false
+        in cfg.visibleGalleryJids -> true
+        else -> null
+    }
+
+    fun setChatGalleryVisibility(chatJid: String, visibleOverride: Boolean?) {
+        if (chatJid.isBlank()) return
+        updateConfig { cfg ->
+            val hidden = cfg.hiddenGalleryJids.toMutableSet()
+            val visible = cfg.visibleGalleryJids.toMutableSet()
+            when (visibleOverride) {
+                true -> {
+                    hidden.remove(chatJid)
+                    visible.add(chatJid)
+                }
+                false -> {
+                    visible.remove(chatJid)
+                    hidden.add(chatJid)
+                }
+                null -> {
+                    hidden.remove(chatJid)
+                    visible.remove(chatJid)
+                }
+            }
+            cfg.copy(hiddenGalleryJids = hidden, visibleGalleryJids = visible)
+        }
+    }
+
+    fun shouldShowChatMediaInGallery(
+        chatJid: String,
+        altChatJid: String = "",
+        cfg: GlobalStealthConfig = _config.value
+    ): Boolean {
+        val override = getChatGalleryOverride(chatJid, cfg)
+            ?: altChatJid.takeIf { it.isNotBlank() }?.let { getChatGalleryOverride(it, cfg) }
+        return override ?: cfg.mediaVisibilityInGallery
     }
 
     fun recordPrimaryHeartbeat(timestampMs: Long = System.currentTimeMillis()) {

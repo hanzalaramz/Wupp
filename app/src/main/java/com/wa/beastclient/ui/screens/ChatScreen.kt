@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -125,13 +126,19 @@ import com.airbnb.lottie.compose.LottieCompositionSpec
 import com.airbnb.lottie.compose.LottieConstants
 import com.airbnb.lottie.compose.rememberLottieComposition
 import com.wa.beastclient.R
+import com.wa.beastclient.data.db.ChatEntity
 import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.data.media.OutboundQualityMode
+import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.MainViewModel
+import com.wa.beastclient.ui.QuotedSenderMeta
+import com.wa.beastclient.ui.ResolvedParticipantUi
+import com.wa.beastclient.ui.components.ChatMediaVisibilitySelector
 import com.wa.beastclient.ui.components.DoodleBackground
 import com.wa.beastclient.ui.components.FullScreenMediaViewer
 import com.wa.beastclient.ui.components.InlineTimestampMessage
 import com.wa.beastclient.ui.components.MessageMetaCluster
+import com.wa.beastclient.ui.components.ProfilePhotoLightbox
 import com.wa.beastclient.ui.components.SwipeToReplyBox
 import com.wa.beastclient.ui.components.VoiceNoteBubble
 import com.wa.beastclient.ui.components.WhatsAppBubbleShape
@@ -167,15 +174,49 @@ fun ChatScreen(
         onDispose { viewModel.setActiveChat(null) }
     }
 
-    val chat by viewModel.observeChat(chatJid).collectAsState(initial = null)
+    val chat by remember(chatJid) { viewModel.observeChat(chatJid) }.collectAsState(initial = null)
     val isChannel = chatJid.endsWith("@newsletter")
-    val isGroupAnnounceLocked by viewModel.isGroupAnnounceLocked(chatJid).collectAsState(initial = false)
-    val effectivePrivacy by viewModel.observeEffectivePrivacy(chatJid).collectAsState(initial = null)
-    val canSendOutbound by viewModel.canInitiateOutbound(chatJid).collectAsState(initial = true)
+    val isGroupAnnounceLocked by remember(chatJid) { viewModel.isGroupAnnounceLocked(chatJid) }.collectAsState(initial = false)
+    val effectivePrivacy by remember(chatJid) { viewModel.observeEffectivePrivacy(chatJid) }.collectAsState(initial = null)
+    val stealthConfig by viewModel.stealthConfig.collectAsState()
+    val canSendOutbound by remember(chatJid) { viewModel.canInitiateOutbound(chatJid) }.collectAsState(initial = true)
     val isRecordingVoice by viewModel.isRecordingVoice.collectAsState()
     val downloadingMediaIds by viewModel.downloadingMediaIds.collectAsState()
     val failedMediaIds by viewModel.failedMediaIds.collectAsState()
-    val pagedItems = viewModel.pagedMessages(chatJid).collectAsLazyPagingItems()
+    val pagedItems = remember(chatJid) { viewModel.pagedMessages(chatJid) }.collectAsLazyPagingItems()
+    val allChats by viewModel.allChats.collectAsState()
+    val participantMeta by viewModel.participantMeta.collectAsState()
+    val quotedMsgMeta by viewModel.quotedMsgMeta.collectAsState()
+    val chatsByJid = remember(allChats) { allChats.associateBy { it.jid } }
+    val loadedSnapshot = pagedItems.itemSnapshotList.items
+    val loadedMessagesById = remember(loadedSnapshot) { loadedSnapshot.associateBy { it.id } }
+    val senderPushByJid = remember(loadedSnapshot) {
+        buildMap {
+            for (m in loadedSnapshot) {
+                val sJid = m.senderJid.trim()
+                val sName = m.senderName.trim()
+                if (sJid.isNotBlank() && isMeaningfulDisplayName(sName, sJid) && !containsKey(sJid)) {
+                    put(sJid, sName)
+                }
+            }
+        }
+    }
+    LaunchedEffect(chatJid, pagedItems.itemCount) {
+        val snap = pagedItems.itemSnapshotList.items
+        val jids = linkedSetOf<String>()
+        val quotedIds = linkedSetOf<String>()
+        for (m in snap) {
+            if (m.senderJid.contains("@")) jids += m.senderJid
+            val q = m.quotedSender?.trim().orEmpty()
+            if (q.contains("@")) jids += q
+            val qid = m.quotedId?.trim().orEmpty()
+            if (qid.isNotBlank() && !loadedMessagesById.containsKey(qid)) {
+                quotedIds += qid
+            }
+        }
+        if (jids.isNotEmpty()) viewModel.resolveParticipantsLocally(jids)
+        if (quotedIds.isNotEmpty()) viewModel.resolveQuotedSendersLocally(quotedIds)
+    }
 
     var draftText by rememberSaveable(chatJid) { mutableStateOf("") }
     var replyTarget by remember { mutableStateOf<MessageEntity?>(null) }
@@ -196,6 +237,8 @@ fun ChatScreen(
     var showMoreReactionEmojis by remember { mutableStateOf(false) }
     var editMessageDialogTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var mediaLightboxTarget by remember { mutableStateOf<MessageEntity?>(null) }
+    var showProfilePhotoLightbox by remember { mutableStateOf(false) }
+    var participantAvatarTarget by remember { mutableStateOf<Triple<String, String, String?>?>(null) }
 
     BackHandler(enabled = actionMenuTarget != null) {
         actionMenuTarget = null
@@ -385,14 +428,20 @@ fun ChatScreen(
                     },
                     title = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            WhatsAppAvatar(
-                                jid = chatJid,
-                                avatarPath = chat?.avatarPath,
-                                isGroup = chat?.isGroup == true,
-                                size = 38.dp
-                            )
+                            Box(modifier = Modifier.clickable { showProfilePhotoLightbox = true }) {
+                                WhatsAppAvatar(
+                                    jid = chatJid,
+                                    avatarPath = chat?.avatarPath,
+                                    isGroup = chat?.isGroup == true,
+                                    size = 38.dp
+                                )
+                            }
                             Spacer(modifier = Modifier.width(10.dp))
-                            Column {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f, fill = false)
+                                    .clickable { showGhostOverrideSheet = true }
+                            ) {
                                 Text(
                                     text = chat?.name?.ifBlank { chatJid.substringBefore("@") }
                                         ?: chatJid.substringBefore("@"),
@@ -620,13 +669,50 @@ fun ChatScreen(
                                 SystemNoticePill(text = msg.body)
                             } else {
                                 val channelDisplayName = chat?.name?.takeIf { it.isNotBlank() } ?: chatJid.substringBefore("@")
+                                val isGroupChat = chat?.isGroup == true && !isChannel
+                                val senderMeta = participantMeta[msg.senderJid]
+                                val altJid = senderMeta?.altJid.orEmpty()
+                                val senderAvatarPath = senderMeta?.avatarPath?.takeIf { it.isNotBlank() }
+                                    ?: chatsByJid[msg.senderJid]?.avatarPath?.takeIf { it.isNotBlank() }
+                                    ?: altJid.takeIf { it.isNotBlank() }?.let { chatsByJid[it]?.avatarPath?.takeIf { p -> p.isNotBlank() } }
+                                val senderDisplay = resolveSenderDisplayInfo(
+                                    rawJidOrText = msg.senderJid,
+                                    explicitName = msg.senderName,
+                                    isSelf = msg.isFromMe || senderMeta?.isSelf == true,
+                                    participantMeta = participantMeta,
+                                    chatsByJid = chatsByJid,
+                                    senderPushByJid = senderPushByJid
+                                )
+                                val quotedDisplay = if (!msg.quotedId.isNullOrBlank()) {
+                                    resolveQuotedBannerSender(
+                                        msg = msg,
+                                        isChannel = isChannel,
+                                        channelDisplayName = channelDisplayName,
+                                        loadedMessagesById = loadedMessagesById,
+                                        quotedMsgMeta = quotedMsgMeta,
+                                        participantMeta = participantMeta,
+                                        chatsByJid = chatsByJid,
+                                        senderPushByJid = senderPushByJid
+                                    )
+                                } else null
+                                val clickAvatar: () -> Unit = {
+                                    participantAvatarTarget = Triple(
+                                        msg.senderJid,
+                                        senderDisplay.primary,
+                                        senderAvatarPath
+                                    )
+                                }
                                 if (isChannel || isGroupAnnounceLocked) {
                                     MessageBubbleRow(
                                         msg = msg,
-                                        isGroup = chat?.isGroup == true && !isChannel,
+                                        isGroup = isGroupChat,
                                         isChannel = isChannel,
                                         channelDisplayName = channelDisplayName,
                                         showTail = if (isChannel) false else isFirstInCluster,
+                                        senderDisplay = senderDisplay,
+                                        senderAvatarPath = senderAvatarPath,
+                                        quotedDisplay = quotedDisplay,
+                                        onClickSenderAvatar = clickAvatar,
                                         ghostPlayedActive = effectivePrivacy?.sendPlayedReceipts == false,
                                         isDownloadingMedia = downloadingMediaIds.contains(msg.id),
                                         mediaDownloadError = failedMediaIds[msg.id],
@@ -648,6 +734,10 @@ fun ChatScreen(
                                             isChannel = false,
                                             channelDisplayName = channelDisplayName,
                                             showTail = isFirstInCluster,
+                                            senderDisplay = senderDisplay,
+                                            senderAvatarPath = senderAvatarPath,
+                                            quotedDisplay = quotedDisplay,
+                                            onClickSenderAvatar = clickAvatar,
                                             ghostPlayedActive = effectivePrivacy?.sendPlayedReceipts == false,
                                             isDownloadingMedia = downloadingMediaIds.contains(msg.id),
                                             mediaDownloadError = failedMediaIds[msg.id],
@@ -1088,6 +1178,14 @@ fun ChatScreen(
                     Text("Send Live Typing & Recording", color = colors.textPrimary)
                     Switch(checked = sendTyping, onCheckedChange = { sendTyping = it })
                 }
+                HorizontalDivider(color = colors.divider)
+                ChatMediaVisibilitySelector(
+                    selectedOverride = StealthMatrixManager.getChatGalleryOverride(chatJid, stealthConfig),
+                    globalDefaultVisible = stealthConfig.mediaVisibilityInGallery,
+                    onSelectOverride = { overrideVisible ->
+                        viewModel.setChatMediaVisibility(chatJid, overrideVisible)
+                    }
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 18.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -1095,6 +1193,7 @@ fun ChatScreen(
                     OutlinedButton(
                         onClick = {
                             viewModel.clearChatPrivacyOverride(chatJid)
+                            viewModel.setChatMediaVisibility(chatJid, null)
                             showGhostOverrideSheet = false
                         },
                         modifier = Modifier.weight(1f)
@@ -1228,6 +1327,33 @@ fun ChatScreen(
         )
     }
 
+    if (showProfilePhotoLightbox) {
+        val avatarTitle = chat?.name?.takeIf { it.isNotBlank() } ?: chatJid.substringBefore("@")
+        ProfilePhotoLightbox(
+            jid = chatJid,
+            title = avatarTitle,
+            avatarPath = chat?.avatarPath,
+            onDismiss = { showProfilePhotoLightbox = false },
+            onRequestFullAvatar = { viewModel.requestFullProfilePicture(chatJid) },
+            onSaveAvatar = {
+                viewModel.exportMediaToGallery(chat?.avatarPath, "${avatarTitle}_avatar.jpg", "image/jpeg")
+            }
+        )
+    }
+
+    participantAvatarTarget?.let { (pJid, pName, pPath) ->
+        ProfilePhotoLightbox(
+            jid = pJid,
+            title = pName.ifBlank { pJid.substringBefore("@") },
+            avatarPath = pPath,
+            onDismiss = { participantAvatarTarget = null },
+            onRequestFullAvatar = { viewModel.requestFullProfilePicture(pJid) },
+            onSaveAvatar = {
+                viewModel.exportMediaToGallery(pPath, "${pName.ifBlank { pJid.substringBefore("@") }}_avatar.jpg", "image/jpeg")
+            }
+        )
+    }
+
     // Full-screen Media / View Once Lightbox
     mediaLightboxTarget?.let { target ->
         val displaySender = if (target.isFromMe) {
@@ -1241,8 +1367,14 @@ fun ChatScreen(
             senderDisplayName = displaySender,
             onDismiss = { mediaLightboxTarget = null },
             onSaveToGallery = {
-                val ext = if (target.mimeType.contains("mp4", ignoreCase = true) || target.msgType == "VIDEO") "mp4" else "png"
-                val mime = target.mimeType.ifBlank { if (ext == "mp4") "video/mp4" else "image/png" }
+                val (ext, fallbackMime) = when {
+                    target.mimeType.contains("mp4", ignoreCase = true) || target.msgType == "VIDEO" ->
+                        "mp4" to "video/mp4"
+                    target.msgType == "PTT" || target.msgType == "AUDIO" || target.mimeType.startsWith("audio/", ignoreCase = true) ->
+                        (if (target.mimeType.contains("m4a", ignoreCase = true) || target.mimeType.contains("mp4", ignoreCase = true)) "m4a" else "ogg") to "audio/ogg"
+                    else -> "png" to "image/png"
+                }
+                val mime = target.mimeType.ifBlank { fallbackMime }
                 viewModel.exportMediaToGallery(
                     target.localMediaPath,
                     "WA_Vault_${target.id}.$ext",
@@ -1284,6 +1416,10 @@ private fun MessageBubbleRow(
     isChannel: Boolean = false,
     channelDisplayName: String = "",
     showTail: Boolean,
+    senderDisplay: SenderDisplayInfo? = null,
+    senderAvatarPath: String? = null,
+    quotedDisplay: SenderDisplayInfo? = null,
+    onClickSenderAvatar: () -> Unit = {},
     ghostPlayedActive: Boolean,
     isDownloadingMedia: Boolean = false,
     mediaDownloadError: String? = null,
@@ -1296,6 +1432,7 @@ private fun MessageBubbleRow(
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
+    val context = LocalContext.current
     val effectiveOutgoing = msg.isFromMe && !isChannel
     val bubbleColor = if (effectiveOutgoing) colors.outgoingBubble else colors.incomingBubble
     val shape = when {
@@ -1304,22 +1441,28 @@ private fun MessageBubbleRow(
         else -> WhatsAppClusterInnerShape
     }
 
+    val hasVaultFile = remember(msg.localMediaPath) {
+        !msg.localMediaPath.isNullOrBlank() &&
+            File(msg.localMediaPath).let { it.exists() && it.length() > 0L }
+    }
     val isMediaCard = (msg.msgType == "IMAGE" || msg.msgType == "VIDEO") &&
-        msg.viewOnceState != "STRIPPED" &&
-        !(msg.isViewOnce && msg.viewOnceState == "AVAILABLE") &&
+        !msg.isViewOnce &&
+        msg.msgType != "VIEW_ONCE_STRIPPED" &&
         !msg.isDeletedBySender
 
     val sideStartPad = if (isMediaCard) {
-        if (!isChannel && showTail && !effectiveOutgoing) 11.dp else 3.dp
+        if (!isChannel && showTail && !effectiveOutgoing) 9.dp else 3.dp
     } else {
-        if (!isChannel && showTail && !effectiveOutgoing) 16.dp else 12.dp
+        if (!isChannel && showTail && !effectiveOutgoing) 15.dp else 12.dp
     }
     val sideEndPad = if (isMediaCard) {
-        if (!isChannel && showTail && effectiveOutgoing) 11.dp else 3.dp
+        if (!isChannel && showTail && effectiveOutgoing) 9.dp else 3.dp
     } else {
-        if (!isChannel && showTail && effectiveOutgoing) 16.dp else 12.dp
+        if (!isChannel && showTail && effectiveOutgoing) 15.dp else 12.dp
     }
     val topBottomPad = if (isMediaCard) 3.dp else 8.dp
+    val bubbleMaxW = if (isMediaCard) 256.dp else 305.dp
+    val showGroupGutter = isGroup && !effectiveOutgoing
 
     Row(
         modifier = Modifier
@@ -1333,6 +1476,7 @@ private fun MessageBubbleRow(
                 end = when {
                     isChannel -> 4.dp
                     effectiveOutgoing -> 0.dp
+                    showGroupGutter -> 38.dp
                     else -> 52.dp
                 }
             ),
@@ -1340,21 +1484,52 @@ private fun MessageBubbleRow(
             isChannel -> Arrangement.Center
             effectiveOutgoing -> Arrangement.End
             else -> Arrangement.Start
-        }
+        },
+        verticalAlignment = Alignment.Top
     ) {
+        if (showGroupGutter) {
+            if (showTail) {
+                val resolvedPrimary = senderDisplay?.primary ?: msg.senderName
+                Box(
+                    modifier = Modifier
+                        .padding(top = 1.dp, end = 6.dp)
+                        .clickable(onClick = onClickSenderAvatar)
+                ) {
+                    WhatsAppAvatar(
+                        jid = msg.senderJid,
+                        avatarPath = senderAvatarPath,
+                        isGroup = false,
+                        size = 28.dp,
+                        initialChar = extractAvatarInitialChar(resolvedPrimary)
+                    )
+                }
+            } else {
+                Spacer(modifier = Modifier.width(34.dp))
+            }
+        }
         Column(
             horizontalAlignment = if (effectiveOutgoing) Alignment.End else Alignment.Start
         ) {
         Box(
             modifier = Modifier
-                .then(if (isChannel) Modifier.fillMaxWidth().widthIn(max = 390.dp) else Modifier.widthIn(max = 310.dp))
+                .then(if (isChannel) Modifier.fillMaxWidth().widthIn(max = 390.dp) else Modifier.widthIn(max = bubbleMaxW))
                 .clip(shape)
                 .background(bubbleColor)
                 .combinedClickable(
                     onClick = {
                         when {
                             msg.isEdited -> onClickEditBadge()
-                            msg.isViewOnce && msg.viewOnceState == "AVAILABLE" -> onOpenMedia()
+                            msg.isViewOnce || msg.msgType == "VIEW_ONCE_STRIPPED" -> {
+                                if (hasVaultFile) {
+                                    onOpenMedia()
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        "Open this View Once message in WhatsApp on your phone",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
                             !msg.localMediaPath.isNullOrBlank() && msg.msgType != "PTT" && msg.msgType != "AUDIO" -> onOpenMedia()
                             msg.msgType == "IMAGE" || msg.msgType == "VIDEO" -> onRequestDownload()
                         }
@@ -1368,19 +1543,43 @@ private fun MessageBubbleRow(
                 if (isGroup && !effectiveOutgoing && showTail) {
                     val palette = listOf(Color(0xFF53BDEB), Color(0xFFFFB74D), Color(0xFF7CE8A5), Color(0xFFF48FB1))
                     val c = palette[abs(msg.senderJid.hashCode()) % palette.size]
-                    Text(
-                        text = msg.senderName.ifBlank { msg.senderJid.substringBefore("@") },
-                        color = c,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 12.5.sp,
-                        modifier = Modifier.padding(bottom = 2.dp)
-                    )
+                    val resolvedPrimary = senderDisplay?.primary
+                        ?.takeIf { it.isNotBlank() }
+                        ?: msg.senderName.ifBlank { msg.senderJid.substringBefore("@") }
+                    val resolvedPhone = senderDisplay?.secondaryPhone.orEmpty()
+                    Row(
+                        modifier = Modifier
+                            .then(
+                                if (isMediaCard) Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                else Modifier.padding(bottom = 2.dp)
+                            ),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = resolvedPrimary,
+                            color = c,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (resolvedPhone.isNotBlank()) {
+                            Text(
+                                text = resolvedPhone,
+                                color = colors.textSecondary,
+                                fontSize = 11.sp,
+                                maxLines = 1
+                            )
+                        }
+                    }
                 }
 
                 // Quoted Context Banner
                 if (!msg.quotedId.isNullOrBlank()) {
                     val rawQuoted = msg.quotedSender.orEmpty()
-                    val resolvedQuotedSender = when {
+                    val qPrimary = quotedDisplay?.primary?.takeIf { it.isNotBlank() } ?: when {
                         isChannel && (rawQuoted.isBlank() || rawQuoted == msg.chatJid || rawQuoted.endsWith("@newsletter")) ->
                             channelDisplayName.ifBlank { "Channel" }
                         rawQuoted.endsWith("@newsletter") ->
@@ -1389,28 +1588,60 @@ private fun MessageBubbleRow(
                         rawQuoted.isNotBlank() -> rawQuoted
                         else -> "Quoted message"
                     }
+                    val qPhone = quotedDisplay?.secondaryPhone.orEmpty()
+                    val qAccent = when {
+                        isChannel || qPrimary == "You" -> colors.brightGreen
+                        else -> listOf(
+                            Color(0xFF53BDEB),
+                            Color(0xFFFFB74D),
+                            Color(0xFF7CE8A5),
+                            Color(0xFFF48FB1)
+                        )[abs((quotedDisplay?.keyForColor ?: rawQuoted).hashCode()) % 4]
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(bottom = 5.dp)
-                            .clip(RoundedCornerShape(6.dp))
+                            .padding(
+                                start = if (isMediaCard) 3.dp else 0.dp,
+                                end = if (isMediaCard) 3.dp else 0.dp,
+                                bottom = 5.dp
+                            )
+                            .clip(RoundedCornerShape(10.dp))
                             .background(colors.quotedBg)
-                            .padding(6.dp)
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
                     ) {
                         Box(
                             modifier = Modifier
                                 .width(3.dp)
-                                .height(28.dp)
-                                .background(colors.brightGreen, RoundedCornerShape(2.dp))
+                                .height(30.dp)
+                                .background(qAccent, RoundedCornerShape(2.dp))
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Column {
-                            Text(
-                                text = resolvedQuotedSender,
-                                color = colors.brightGreen,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.5.sp
-                            )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = qPrimary,
+                                    color = qAccent,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 11.5.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (qPhone.isNotBlank()) {
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = qPhone,
+                                        color = colors.textSecondary,
+                                        fontSize = 10.5.sp,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
                             Text(
                                 text = msg.quotedBody.orEmpty(),
                                 color = colors.textSecondary,
@@ -1423,38 +1654,42 @@ private fun MessageBubbleRow(
                 }
 
                 when {
-                    // Explicit forensic stub when Meta servers strip Key=0B on companion session
-                    msg.viewOnceState == "STRIPPED" || msg.msgType == "VIEW_ONCE_STRIPPED" -> {
+                    // Already opened / stripped View-Once (original WhatsApp style)
+                    (msg.viewOnceState == "STRIPPED" && !hasVaultFile) || msg.msgType == "VIEW_ONCE_STRIPPED" -> {
+                        val voSubType = when (msg.msgType.uppercase()) {
+                            "VIDEO" -> " · Video"
+                            "PTT", "AUDIO" -> " · Voice message"
+                            "IMAGE" -> " · Photo"
+                            else -> ""
+                        }
                         Row(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(colors.antiDeleteRed.copy(alpha = 0.14f))
-                                .padding(10.dp),
+                                .widthIn(min = 165.dp)
+                                .padding(horizontal = 4.dp, vertical = 3.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
                                 painter = painterResource(R.drawable.vec_ic_view_once),
-                                contentDescription = "View Once Restricted",
-                                tint = colors.antiDeleteRed,
-                                modifier = Modifier.size(22.dp)
+                                contentDescription = "View once opened",
+                                tint = colors.textSecondary,
+                                modifier = Modifier.size(20.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
+                            Column {
                                 Text(
-                                    text = "View Once (Restricted on Companion)",
-                                    color = colors.antiDeleteRed,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
+                                    text = "Opened$voSubType",
+                                    color = colors.textSecondary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium
                                 )
                                 Text(
-                                    text = msg.body.ifBlank { "Meta stripped MediaKey (Key=0B)" },
-                                    color = colors.textSecondary,
-                                    fontSize = 11.5.sp
+                                    text = "Open in original WhatsApp",
+                                    color = colors.textSecondary.copy(alpha = 0.85f),
+                                    fontSize = 11.sp
                                 )
                             }
                         }
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(3.dp))
                         Row(modifier = Modifier.align(Alignment.End)) {
                             MessageMetaCluster(
                                 timeText = formatMessageClock(msg.timestamp),
@@ -1466,39 +1701,52 @@ private fun MessageBubbleRow(
                         }
                     }
 
-                    // Vaulted Unstripped View Once Media (Unlimited views + Gallery export)
-                    msg.isViewOnce && msg.viewOnceState == "AVAILABLE" -> {
+                    // Active View-Once (Photo, Video, Voice message -> concise companion notice)
+                    msg.isViewOnce -> {
+                        val voLabel = when (msg.msgType.uppercase()) {
+                            "VIDEO" -> "Video"
+                            "PTT", "AUDIO" -> "Voice message"
+                            else -> "Photo"
+                        }
+                        val tintColor = if (effectiveOutgoing) colors.textPrimary else colors.brightGreen
+                        val subLabel = if (hasVaultFile) {
+                            if (msg.durationSec > 0) "${formatVideoDuration(msg.durationSec)} · Vaulted" else "Vaulted"
+                        } else {
+                            if (msg.durationSec > 0) "${formatVideoDuration(msg.durationSec)} · Open in original WhatsApp" else "Open in original WhatsApp"
+                        }
                         Row(
                             modifier = Modifier
-                                .fillMaxWidth()
+                                .widthIn(min = 175.dp)
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(colors.pillActiveBg)
-                                .clickable(onClick = onOpenMedia)
-                                .padding(10.dp),
+                                .background(
+                                    if (hasVaultFile) colors.pillActiveBg.copy(alpha = 0.55f)
+                                    else Color.Transparent
+                                )
+                                .padding(horizontal = 4.dp, vertical = 3.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
                                 painter = painterResource(R.drawable.vec_ic_view_once),
-                                contentDescription = "View Once Vault",
-                                tint = colors.pillActiveText,
-                                modifier = Modifier.size(22.dp)
+                                contentDescription = "View once $voLabel",
+                                tint = tintColor,
+                                modifier = Modifier.size(21.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
+                            Column {
                                 Text(
-                                    text = "View Once Unlocked · Vaulted",
-                                    color = colors.pillActiveText,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
+                                    text = voLabel,
+                                    color = if (hasVaultFile) colors.textPrimary else tintColor,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 14.5.sp
                                 )
                                 Text(
-                                    text = msg.body.ifBlank { "Tap to view anytime or save to Gallery" },
+                                    text = subLabel,
                                     color = colors.textSecondary,
-                                    fontSize = 11.5.sp
+                                    fontSize = 11.sp
                                 )
                             }
                         }
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(3.dp))
                         Row(modifier = Modifier.align(Alignment.End)) {
                             MessageMetaCluster(
                                 timeText = formatMessageClock(msg.timestamp),
@@ -1638,20 +1886,26 @@ private fun MessageBubbleRow(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(13.dp))
                                 .clickable {
                                     if (localFile != null) onOpenMedia() else onRequestDownload()
                                 }
                         ) {
                             if (localFile != null) {
-                                if (bmp != null) {
+                                val loadedBmp = bmp
+                                if (loadedBmp != null) {
+                                    val ratio = if (loadedBmp.height > 0) {
+                                        (loadedBmp.width.toFloat() / loadedBmp.height.toFloat()).coerceIn(0.55f, 1.85f)
+                                    } else {
+                                        1f
+                                    }
                                     Image(
-                                        bitmap = bmp!!,
+                                        bitmap = loadedBmp,
                                         contentDescription = msg.body,
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .heightIn(min = 180.dp, max = 300.dp)
+                                            .aspectRatio(ratio)
                                     )
                                 } else {
                                     Box(
@@ -1938,4 +2192,146 @@ private fun formatVideoDuration(seconds: Int): String {
     val mins = s / 60
     val rem = s % 60
     return String.format(Locale.US, "%d:%02d", mins, rem)
+}
+
+private data class SenderDisplayInfo(
+    val primary: String,
+    val secondaryPhone: String = "",
+    val keyForColor: String = primary
+)
+
+private fun isMeaningfulDisplayName(candidate: String?, jid: String = ""): Boolean {
+    val t = candidate?.trim().orEmpty()
+    if (t.isBlank() || t.contains("@")) return false
+    val bare = t.removePrefix("+").replace(" ", "").replace("-", "")
+    if (bare.isNotEmpty() && bare.all { it.isDigit() }) {
+        val jidUser = jid.substringBefore("@")
+        if (bare == jidUser || bare.length >= 7) return false
+    }
+    return true
+}
+
+private fun formatIntlPhone(raw: String): String {
+    val digits = raw.filter { it.isDigit() }
+    if (digits.isBlank()) return ""
+    return when {
+        digits.startsWith("92") && digits.length == 12 ->
+            "+92 ${digits.substring(2, 5)} ${digits.substring(5)}"
+        digits.startsWith("1") && digits.length == 11 ->
+            "+1 (${digits.substring(1, 4)}) ${digits.substring(4, 7)}-${digits.substring(7)}"
+        digits.length >= 11 ->
+            "+${digits.substring(0, 2)} ${digits.substring(2, 5)} ${digits.substring(5)}"
+        else -> "+$digits"
+    }
+}
+
+private fun extractAvatarInitialChar(displayName: String): String? {
+    val cleaned = displayName.removePrefix("~").trim()
+    if (cleaned.isBlank() || cleaned.startsWith("+")) return null
+    val cp = cleaned.codePointAt(0)
+    if (Character.isDigit(cp)) return null
+    return String(Character.toChars(cp)).uppercase(Locale.getDefault())
+}
+
+private fun resolveSenderDisplayInfo(
+    rawJidOrText: String,
+    explicitName: String,
+    isSelf: Boolean,
+    participantMeta: Map<String, ResolvedParticipantUi>,
+    chatsByJid: Map<String, ChatEntity>,
+    senderPushByJid: Map<String, String>
+): SenderDisplayInfo {
+    if (isSelf) return SenderDisplayInfo(primary = "You", keyForColor = rawJidOrText)
+    val jid = rawJidOrText.trim()
+    val meta = participantMeta[jid]
+    val altJid = meta?.altJid.orEmpty()
+    val chatMatch = chatsByJid[jid] ?: altJid.takeIf { it.isNotBlank() }?.let { chatsByJid[it] }
+
+    val savedName = meta?.savedName?.takeIf { isMeaningfulDisplayName(it, jid) }.orEmpty()
+    val pushName = sequenceOf(
+        explicitName.takeIf { isMeaningfulDisplayName(it, jid) },
+        meta?.pushName?.takeIf { isMeaningfulDisplayName(it, jid) },
+        senderPushByJid[jid]?.takeIf { isMeaningfulDisplayName(it, jid) },
+        altJid.takeIf { it.isNotBlank() }?.let { senderPushByJid[it]?.takeIf { n -> isMeaningfulDisplayName(n, it) } },
+        chatMatch?.name?.takeIf { isMeaningfulDisplayName(it, jid) }
+    ).firstOrNull().orEmpty()
+
+    val rawPhone = when {
+        !meta?.phone.isNullOrBlank() -> meta!!.phone
+        jid.endsWith("@s.whatsapp.net") -> jid.substringBefore("@")
+        altJid.endsWith("@s.whatsapp.net") -> altJid.substringBefore("@")
+        else -> {
+            val bare = jid.removePrefix("+")
+            if (jid.all { it.isDigit() || it == '+' } && bare.length in 7..13 && !jid.endsWith("@lid")) bare else ""
+        }
+    }
+    val formattedPhone = formatIntlPhone(rawPhone)
+
+    return when {
+        savedName.isNotBlank() ->
+            SenderDisplayInfo(primary = savedName, keyForColor = jid.ifBlank { savedName })
+        pushName.isNotBlank() ->
+            SenderDisplayInfo(primary = "~ $pushName", secondaryPhone = formattedPhone, keyForColor = jid.ifBlank { pushName })
+        formattedPhone.isNotBlank() ->
+            SenderDisplayInfo(primary = formattedPhone, keyForColor = jid.ifBlank { formattedPhone })
+        jid.endsWith("@lid") -> {
+            val tail = jid.substringBefore("@").takeLast(4)
+            SenderDisplayInfo(primary = if (tail.isNotBlank()) "~ User · …$tail" else "~ User", keyForColor = jid)
+        }
+        jid.contains("@") ->
+            SenderDisplayInfo(primary = jid.substringBefore("@"), keyForColor = jid)
+        jid.isNotBlank() ->
+            SenderDisplayInfo(primary = jid, keyForColor = jid)
+        else ->
+            SenderDisplayInfo(primary = "Participant", keyForColor = "participant")
+    }
+}
+
+private fun resolveQuotedBannerSender(
+    msg: MessageEntity,
+    isChannel: Boolean,
+    channelDisplayName: String,
+    loadedMessagesById: Map<String, MessageEntity>,
+    quotedMsgMeta: Map<String, QuotedSenderMeta>,
+    participantMeta: Map<String, ResolvedParticipantUi>,
+    chatsByJid: Map<String, ChatEntity>,
+    senderPushByJid: Map<String, String>
+): SenderDisplayInfo {
+    val rawQuoted = msg.quotedSender.orEmpty().trim()
+    if (isChannel && (rawQuoted.isBlank() || rawQuoted == msg.chatJid || rawQuoted.endsWith("@newsletter"))) {
+        return SenderDisplayInfo(primary = channelDisplayName.ifBlank { "Channel" }, keyForColor = msg.chatJid)
+    }
+    if (rawQuoted.endsWith("@newsletter")) {
+        return SenderDisplayInfo(primary = channelDisplayName.ifBlank { rawQuoted.substringBefore("@") }, keyForColor = rawQuoted)
+    }
+
+    val quotedId = msg.quotedId.orEmpty()
+    val loadedQ = loadedMessagesById[quotedId]
+    val cachedQ = quotedMsgMeta[quotedId]
+    val qFromMe = loadedQ?.isFromMe ?: cachedQ?.isFromMe ?: false
+    val qSenderJidFromMsg = loadedQ?.senderJid ?: cachedQ?.senderJid.orEmpty()
+    val qSenderNameFromMsg = loadedQ?.senderName ?: cachedQ?.senderName.orEmpty()
+
+    val chosenJid = when {
+        qSenderJidFromMsg.endsWith("@s.whatsapp.net") -> qSenderJidFromMsg
+        rawQuoted.endsWith("@s.whatsapp.net") -> rawQuoted
+        qSenderJidFromMsg.contains("@") -> qSenderJidFromMsg
+        rawQuoted.isNotBlank() -> rawQuoted
+        else -> qSenderJidFromMsg
+    }
+    val explicitName = if (isMeaningfulDisplayName(qSenderNameFromMsg, chosenJid)) {
+        qSenderNameFromMsg
+    } else if (!rawQuoted.contains("@") && isMeaningfulDisplayName(rawQuoted, chosenJid)) {
+        rawQuoted
+    } else ""
+
+    val isSelf = qFromMe || participantMeta[chosenJid]?.isSelf == true || participantMeta[rawQuoted]?.isSelf == true
+    return resolveSenderDisplayInfo(
+        rawJidOrText = chosenJid,
+        explicitName = explicitName,
+        isSelf = isSelf,
+        participantMeta = participantMeta,
+        chatsByJid = chatsByJid,
+        senderPushByJid = senderPushByJid
+    )
 }

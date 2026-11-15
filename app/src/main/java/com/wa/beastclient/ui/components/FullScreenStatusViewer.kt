@@ -7,6 +7,7 @@ import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,6 +21,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -36,10 +39,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,35 +69,128 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.wa.beastclient.data.db.StatusEntity
 import com.wa.beastclient.ui.screens.WhatsAppAvatar
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+data class StatusGroup(
+    val senderJid: String,
+    val senderName: String,
+    val senderAvatarPath: String?,
+    val items: List<StatusEntity>
+)
+
 @Composable
 fun FullScreenStatusViewer(
-    statuses: List<StatusEntity>,
-    initialIndex: Int = 0,
-    senderName: String,
-    senderAvatarPath: String?,
+    groups: List<StatusGroup>,
+    initialGroupIndex: Int = 0,
+    initialStoryIndex: Int = 0,
     onDismiss: () -> Unit,
     onSaveToGallery: (StatusEntity) -> Unit,
     onReply: ((StatusEntity) -> Unit)? = null
 ) {
-    if (statuses.isEmpty()) {
+    val nonEmptyGroups = remember(groups) { groups.filter { it.items.isNotEmpty() } }
+    if (nonEmptyGroups.isEmpty()) {
         onDismiss()
         return
     }
-    val context = LocalContext.current
-    var currentIndex by remember(statuses) {
-        mutableIntStateOf(initialIndex.coerceIn(0, statuses.lastIndex))
-    }
-    var progress by remember(currentIndex) { mutableFloatStateOf(0f) }
-    var isPaused by remember { mutableStateOf(false) }
-    var showOverflow by remember { mutableStateOf(false) }
-    var liked by remember(currentIndex) { mutableStateOf(false) }
 
-    val current = statuses[currentIndex.coerceIn(0, statuses.lastIndex)]
+    val clampedInitialGroup = initialGroupIndex.coerceIn(0, nonEmptyGroups.lastIndex)
+    val pagerState = rememberPagerState(
+        initialPage = clampedInitialGroup,
+        pageCount = { nonEmptyGroups.size }
+    )
+    val scope = rememberCoroutineScope()
+
+    val storyIndices = remember(clampedInitialGroup, initialStoryIndex) {
+        mutableStateMapOf<String, Int>().apply {
+            val initialSender = nonEmptyGroups[clampedInitialGroup].senderJid
+            this[initialSender] = initialStoryIndex.coerceIn(
+                0,
+                nonEmptyGroups[clampedInitialGroup].items.lastIndex
+            )
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        HorizontalPager(
+            state = pagerState,
+            beyondViewportPageCount = 1,
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) { page ->
+            val group = nonEmptyGroups[page]
+            val storyIndex = (storyIndices[group.senderJid] ?: 0).coerceIn(0, group.items.lastIndex)
+            val isPageActive = pagerState.currentPage == page && !pagerState.isScrollInProgress
+
+            StatusGroupPage(
+                group = group,
+                storyIndex = storyIndex,
+                isPageActive = isPageActive,
+                allowSingleGroupHorizontalSwipe = nonEmptyGroups.size == 1 && group.items.size > 1,
+                onAdvanceNext = {
+                    if (storyIndex < group.items.lastIndex) {
+                        storyIndices[group.senderJid] = storyIndex + 1
+                    } else if (page < nonEmptyGroups.lastIndex) {
+                        scope.launch {
+                            pagerState.animateScrollToPage(page + 1)
+                        }
+                    } else {
+                        onDismiss()
+                    }
+                },
+                onStepPrevious = { resetCurrentProgress ->
+                    if (storyIndex > 0) {
+                        storyIndices[group.senderJid] = storyIndex - 1
+                    } else if (page > 0) {
+                        val prevGroup = nonEmptyGroups[page - 1]
+                        storyIndices[prevGroup.senderJid] = prevGroup.items.lastIndex
+                        scope.launch {
+                            pagerState.animateScrollToPage(page - 1)
+                        }
+                    } else {
+                        resetCurrentProgress()
+                    }
+                },
+                onDismiss = onDismiss,
+                onSaveToGallery = onSaveToGallery,
+                onReply = onReply
+            )
+        }
+    }
+}
+
+@Composable
+private fun StatusGroupPage(
+    group: StatusGroup,
+    storyIndex: Int,
+    isPageActive: Boolean,
+    allowSingleGroupHorizontalSwipe: Boolean,
+    onAdvanceNext: () -> Unit,
+    onStepPrevious: (resetProgress: () -> Unit) -> Unit,
+    onDismiss: () -> Unit,
+    onSaveToGallery: (StatusEntity) -> Unit,
+    onReply: ((StatusEntity) -> Unit)?
+) {
+    val context = LocalContext.current
+    val statuses = group.items
+    val current = statuses[storyIndex.coerceIn(0, statuses.lastIndex)]
+    var progress by remember(current.id, storyIndex) { mutableFloatStateOf(0f) }
+    var isPressed by remember { mutableStateOf(false) }
+    var showOverflow by remember { mutableStateOf(false) }
+    var liked by remember(current.id) { mutableStateOf(false) }
+
+    val isPaused = !isPageActive || isPressed || showOverflow
+
     val mediaFile = remember(current.id, current.localMediaPath) {
         current.localMediaPath?.takeIf { it.isNotBlank() }?.let { path ->
             File(path).takeIf { it.exists() && it.length() > 0L }
@@ -107,318 +205,316 @@ fun FullScreenStatusViewer(
         }
     }
 
-    LaunchedEffect(currentIndex, isPaused, showOverflow) {
-        if (isPaused || showOverflow || isVideo) return@LaunchedEffect
+    LaunchedEffect(current.id, storyIndex, isPaused, isVideo) {
+        if (isPaused || isVideo) return@LaunchedEffect
         val totalMs = 5500L
         val stepMs = 40L
         while (progress < 1f) {
             delay(stepMs)
             progress = (progress + stepMs.toFloat() / totalMs.toFloat()).coerceAtMost(1f)
         }
-        if (currentIndex < statuses.lastIndex) {
-            currentIndex++
-        } else {
-            onDismiss()
-        }
+        onAdvanceNext()
     }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
+    val singleGroupSwipeModifier = if (allowSingleGroupHorizontalSwipe) {
+        Modifier.pointerInput(current.id, storyIndex, statuses.size) {
+            var dragSum = 0f
+            detectHorizontalDragGestures(
+                onDragStart = { dragSum = 0f },
+                onHorizontalDrag = { _, dragAmount -> dragSum += dragAmount },
+                onDragEnd = {
+                    if (dragSum < -72f) {
+                        onAdvanceNext()
+                    } else if (dragSum > 72f) {
+                        onStepPrevious { progress = 0f }
+                    }
+                    dragSum = 0f
+                },
+                onDragCancel = { dragSum = 0f }
+            )
+        }
+    } else {
+        Modifier
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
     ) {
+        // Story Media / Text Canvas + Tap & Hold Gestures
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black)
-        ) {
-            // Story Media / Text Canvas + Tap & Hold Gestures
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(currentIndex, statuses.size) {
-                        detectTapGestures(
-                            onPress = {
-                                isPaused = true
-                                tryAwaitRelease()
-                                isPaused = false
-                            },
-                            onTap = { offset ->
-                                val width = size.width.toFloat().coerceAtLeast(1f)
-                                if (offset.x < width * 0.30f) {
-                                    if (currentIndex > 0) {
-                                        currentIndex--
-                                    } else {
-                                        progress = 0f
-                                    }
-                                } else {
-                                    if (currentIndex < statuses.lastIndex) {
-                                        currentIndex++
-                                    } else {
-                                        onDismiss()
-                                    }
-                                }
-                            }
-                        )
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                if (isVideo && mediaFile != null) {
-                    StatusVideoPlayer(
-                        file = mediaFile,
-                        isPaused = isPaused || showOverflow,
-                        onProgress = { progress = it },
-                        onEnded = {
-                            if (currentIndex < statuses.lastIndex) {
-                                currentIndex++
+                .then(singleGroupSwipeModifier)
+                .pointerInput(current.id, storyIndex, statuses.size) {
+                    detectTapGestures(
+                        onPress = {
+                            isPressed = true
+                            tryAwaitRelease()
+                            isPressed = false
+                        },
+                        onTap = { offset ->
+                            val width = size.width.toFloat().coerceAtLeast(1f)
+                            if (offset.x < width * 0.30f) {
+                                onStepPrevious { progress = 0f }
                             } else {
-                                onDismiss()
+                                onAdvanceNext()
                             }
                         }
                     )
-                } else if (bitmap != null) {
-                    Image(
-                        bitmap = bitmap,
-                        contentDescription = current.caption,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize()
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            if (isVideo && mediaFile != null) {
+                key(current.id) {
+                    StatusVideoPlayer(
+                        file = mediaFile,
+                        isPaused = isPaused,
+                        onProgress = { progress = it },
+                        onEnded = onAdvanceNext
                     )
-                } else {
+                }
+            } else if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = current.caption,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xFF1F384A)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = current.caption.ifBlank { "Status update" },
+                        color = Color.White,
+                        fontSize = 24.sp,
+                        lineHeight = 32.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 28.dp)
+                    )
+                }
+            }
+        }
+
+        // Top Segmented Progress Bars + Header
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Black.copy(alpha = 0.72f), Color.Transparent)
+                    )
+                )
+                .statusBarsPadding()
+                .padding(top = 8.dp, bottom = 12.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                statuses.forEachIndexed { idx, _ ->
+                    val barFraction = when {
+                        idx < storyIndex -> 1f
+                        idx == storyIndex -> progress.coerceIn(0f, 1f)
+                        else -> 0f
+                    }
                     Box(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color(0xFF1F384A)),
-                        contentAlignment = Alignment.Center
+                            .weight(1f)
+                            .height(2.5.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Color.White.copy(alpha = 0.34f))
                     ) {
-                        Text(
-                            text = current.caption.ifBlank { "Status update" },
-                            color = Color.White,
-                            fontSize = 24.sp,
-                            lineHeight = 32.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(horizontal = 28.dp)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(barFraction)
+                                .height(2.5.dp)
+                                .background(Color.White)
                         )
                     }
                 }
             }
 
-            // Top Segmented Progress Bars + Header
-            Column(
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
                     .fillMaxWidth()
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(Color.Black.copy(alpha = 0.72f), Color.Transparent)
-                        )
-                    )
-                    .statusBarsPadding()
-                    .padding(top = 8.dp, bottom = 12.dp)
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = "Back",
+                        tint = Color.White
+                    )
+                }
+                WhatsAppAvatar(
+                    jid = current.senderJid,
+                    avatarPath = group.senderAvatarPath,
+                    isGroup = false,
+                    size = 38.dp
+                )
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        .weight(1f)
+                        .padding(horizontal = 10.dp)
                 ) {
-                    statuses.forEachIndexed { idx, _ ->
-                        val barFraction = when {
-                            idx < currentIndex -> 1f
-                            idx == currentIndex -> progress.coerceIn(0f, 1f)
-                            else -> 0f
-                        }
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(2.5.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(Color.White.copy(alpha = 0.34f))
-                        ) {
-                            Box(
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = group.senderName.ifBlank { current.senderName },
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (current.isRevoked) {
+                            Text(
+                                text = "Deleted",
+                                color = Color(0xFFFF6B6B),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier
-                                    .fillMaxWidth(barFraction)
-                                    .height(2.5.dp)
-                                    .background(Color.White)
+                                    .background(Color(0xFF44181A), RoundedCornerShape(6.dp))
+                                    .padding(horizontal = 6.dp, vertical = 1.dp)
                             )
                         }
                     }
+                    Text(
+                        text = formatStatusRelativeTime(current.timestamp),
+                        color = Color(0xFFD1D7DB),
+                        fontSize = 12.sp
+                    )
                 }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = onDismiss) {
+                Box {
+                    IconButton(onClick = { showOverflow = true }) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                            contentDescription = "Back",
+                            imageVector = Icons.Rounded.MoreVert,
+                            contentDescription = "More",
                             tint = Color.White
                         )
                     }
-                    WhatsAppAvatar(
-                        jid = current.senderJid,
-                        avatarPath = senderAvatarPath,
-                        isGroup = false,
-                        size = 38.dp
-                    )
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 10.dp)
+                    DropdownMenu(
+                        expanded = showOverflow,
+                        onDismissRequest = { showOverflow = false },
+                        containerColor = Color(0xFF233138)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                text = senderName.ifBlank { current.senderName },
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            if (current.isRevoked) {
-                                Text(
-                                    text = "Deleted",
-                                    color = Color(0xFFFF6B6B),
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier
-                                        .background(Color(0xFF44181A), RoundedCornerShape(6.dp))
-                                        .padding(horizontal = 6.dp, vertical = 1.dp)
-                                )
-                            }
-                        }
-                        Text(
-                            text = formatStatusRelativeTime(current.timestamp),
-                            color = Color(0xFFD1D7DB),
-                            fontSize = 12.sp
-                        )
-                    }
-                    Box {
-                        IconButton(onClick = { showOverflow = true }) {
-                            Icon(
-                                imageVector = Icons.Rounded.MoreVert,
-                                contentDescription = "More",
-                                tint = Color.White
+                        if (mediaFile != null) {
+                            DropdownMenuItem(
+                                text = { Text("Save to gallery", color = Color.White) },
+                                onClick = {
+                                    showOverflow = false
+                                    onSaveToGallery(current)
+                                }
                             )
                         }
-                        DropdownMenu(
-                            expanded = showOverflow,
-                            onDismissRequest = { showOverflow = false },
-                            containerColor = Color(0xFF233138)
-                        ) {
-                            if (mediaFile != null) {
-                                DropdownMenuItem(
-                                    text = { Text("Save to gallery", color = Color.White) },
-                                    onClick = {
-                                        showOverflow = false
-                                        onSaveToGallery(current)
-                                    }
-                                )
-                            }
-                            if (onReply != null) {
-                                DropdownMenuItem(
-                                    text = { Text("Open chat", color = Color.White) },
-                                    onClick = {
-                                        showOverflow = false
-                                        onReply(current)
-                                        onDismiss()
-                                    }
-                                )
-                            }
+                        if (onReply != null) {
+                            DropdownMenuItem(
+                                text = { Text("Open chat", color = Color.White) },
+                                onClick = {
+                                    showOverflow = false
+                                    onReply(current)
+                                    onDismiss()
+                                }
+                            )
                         }
                     }
                 }
             }
+        }
 
-            // Bottom Caption + Reply Pill + Heart Button
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.78f))
-                        )
+        // Bottom Caption + Reply Pill + Heart Button
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.78f))
                     )
-                    .navigationBarsPadding()
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                )
+                .navigationBarsPadding()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            if ((bitmap != null || isVideo) && current.caption.isNotBlank()) {
+                Text(
+                    text = current.caption,
+                    color = Color.White,
+                    fontSize = 14.5.sp,
+                    lineHeight = 20.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                if ((bitmap != null || isVideo) && current.caption.isNotBlank()) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(46.dp)
+                        .clip(RoundedCornerShape(23.dp))
+                        .background(Color(0xFF202C33).copy(alpha = 0.92f))
+                        .clickable {
+                            if (onReply != null) {
+                                onReply(current)
+                                onDismiss()
+                            }
+                        }
+                        .padding(horizontal = 18.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
                     Text(
-                        text = current.caption,
-                        color = Color.White,
-                        fontSize = 14.5.sp,
-                        lineHeight = 20.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
+                        text = "Reply",
+                        color = Color(0xFFD1D7DB),
+                        fontSize = 15.sp
                     )
                 }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
+                listOf("❤️", "👍", "😮").forEach { emoji ->
                     Box(
                         modifier = Modifier
-                            .weight(1f)
-                            .height(46.dp)
-                            .clip(RoundedCornerShape(23.dp))
-                            .background(Color(0xFF202C33).copy(alpha = 0.92f))
-                            .clickable {
-                                if (onReply != null) {
-                                    onReply(current)
-                                    onDismiss()
-                                }
-                            }
-                            .padding(horizontal = 18.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        Text(
-                            text = "Reply",
-                            color = Color(0xFFD1D7DB),
-                            fontSize = 15.sp
-                        )
-                    }
-                    listOf("❤️", "👍", "😮").forEach { emoji ->
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFF202C33).copy(alpha = 0.92f))
-                                .clickable {
-                                    Toast.makeText(context, "Reacted $emoji to status", Toast.LENGTH_SHORT).show()
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(text = emoji, fontSize = 17.sp)
-                        }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(46.dp)
+                            .size(40.dp)
                             .clip(CircleShape)
                             .background(Color(0xFF202C33).copy(alpha = 0.92f))
-                            .clickable { liked = !liked },
+                            .clickable {
+                                Toast.makeText(context, "Reacted $emoji to status", Toast.LENGTH_SHORT).show()
+                            },
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                            contentDescription = "Like status",
-                            tint = if (liked) Color(0xFFFF4D6D) else Color.White,
-                            modifier = Modifier.size(22.dp)
-                        )
+                        Text(text = emoji, fontSize = 17.sp)
                     }
+                }
+                Box(
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF202C33).copy(alpha = 0.92f))
+                        .clickable { liked = !liked },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                        contentDescription = "Like status",
+                        tint = if (liked) Color(0xFFFF4D6D) else Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
                 }
             }
         }
@@ -437,7 +533,7 @@ private fun StatusVideoPlayer(
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
             prepare()
-            playWhenReady = true
+            playWhenReady = !isPaused
         }
     }
     LaunchedEffect(isPaused) {

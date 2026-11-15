@@ -44,6 +44,9 @@ interface WaDao {
     @Query("UPDATE chats SET unread_count = 0 WHERE jid = :chatJid")
     suspend fun clearLocalUnread(chatJid: String)
 
+    @Query("UPDATE chats SET unread_count = 0 WHERE jid LIKE '%@newsletter' AND unread_count > 0")
+    suspend fun resetInflatedNewsletterUnread()
+
     @Query("UPDATE chats SET is_pinned = :pinned, pin_order = :pinOrder WHERE jid = :chatJid")
     suspend fun updatePinned(chatJid: String, pinned: Boolean, pinOrder: Long)
 
@@ -55,6 +58,15 @@ interface WaDao {
 
     @Query("UPDATE chats SET is_favorite = :favorite WHERE jid = :chatJid")
     suspend fun updateFavorite(chatJid: String, favorite: Boolean)
+
+    @Query("UPDATE chats SET unread_count = :unreadCount WHERE jid = :chatJid")
+    suspend fun updateUnreadCount(chatJid: String, unreadCount: Int)
+
+    @Query("DELETE FROM messages WHERE chat_jid = :chatJid")
+    suspend fun deleteMessagesForChat(chatJid: String)
+
+    @Query("DELETE FROM chats WHERE jid = :chatJid")
+    suspend fun deleteChatRow(chatJid: String)
 
     @Query(
         """
@@ -241,6 +253,8 @@ interface WaDao {
         SELECT * FROM messages
         WHERE chat_jid = :chatJid
           AND msg_type IN ('PTT', 'AUDIO')
+          AND is_view_once = 0
+          AND view_once_state != 'STRIPPED'
           AND (local_media_path IS NULL OR local_media_path = '')
         ORDER BY timestamp DESC
         LIMIT 25
@@ -500,16 +514,27 @@ interface WaDao {
         chatNameHint: String,
         isGroup: Boolean,
         incrementUnread: Boolean
-    ) {
+    ): Boolean {
         val existing = getMessage(message.id)
+        val isNewMessage = existing == null
         if (existing != null) {
-            // Preserve Anti-Delete, Edit History, Local Media, and Transcripts
+            val existingHasFile = !existing.localMediaPath.isNullOrBlank() &&
+                java.io.File(existing.localMediaPath).let { it.exists() && it.length() > 0L }
+            val resolvedVo = message.isViewOnce || existing.isViewOnce
+            val resolvedVoState = when {
+                existingHasFile && resolvedVo -> "AVAILABLE"
+                message.viewOnceState != "NONE" -> message.viewOnceState
+                else -> existing.viewOnceState
+            }
+            // Preserve Anti-Delete, Edit History, Local Media, View-Once state, and Transcripts
             upsertMessage(
                 message.copy(
                     isDeletedBySender = existing.isDeletedBySender,
                     deletedAt = existing.deletedAt,
                     isEdited = existing.isEdited,
                     editedAt = existing.editedAt,
+                    isViewOnce = resolvedVo,
+                    viewOnceState = resolvedVoState,
                     localMediaPath = message.localMediaPath ?: existing.localMediaPath,
                     waveformCsv = message.waveformCsv.ifBlank { existing.waveformCsv },
                     audioTranscript = message.audioTranscript ?: existing.audioTranscript,
@@ -523,13 +548,14 @@ interface WaDao {
         val existingChat = getChat(message.chatJid)
         val preview = previewTextFor(message)
         val effectiveType = if (message.isViewOnce) "VIEW_ONCE_${message.msgType}" else message.msgType
+        val shouldBumpUnread = incrementUnread && isNewMessage && !message.isFromMe
         if (existingChat == null) {
             upsertChat(
                 ChatEntity(
                     jid = message.chatJid,
                     name = chatNameHint.ifBlank { message.chatJid.substringBefore("@") },
                     isGroup = isGroup,
-                    unreadCount = if (incrementUnread && !message.isFromMe) 1 else 0,
+                    unreadCount = if (shouldBumpUnread) 1 else 0,
                     lastMessageId = message.id,
                     lastMessagePreview = preview,
                     lastMessageType = effectiveType,
@@ -549,7 +575,7 @@ interface WaDao {
                     name = if (existingChat.name.isBlank() || existingChat.name == existingChat.jid.substringBefore("@")) {
                         chatNameHint.ifBlank { existingChat.name }
                     } else existingChat.name,
-                    unreadCount = if (incrementUnread && !message.isFromMe) existingChat.unreadCount + 1 else existingChat.unreadCount,
+                    unreadCount = if (shouldBumpUnread) existingChat.unreadCount + 1 else existingChat.unreadCount,
                     lastMessageId = if (shouldAdvancePreview) message.id else existingChat.lastMessageId,
                     lastMessagePreview = if (shouldAdvancePreview) preview else existingChat.lastMessagePreview,
                     lastMessageType = if (shouldAdvancePreview) effectiveType else existingChat.lastMessageType,
@@ -561,6 +587,7 @@ interface WaDao {
                 )
             )
         }
+        return isNewMessage
     }
 
     @Transaction
@@ -614,6 +641,39 @@ interface WaDao {
         }
     }
 
+    @Transaction
+    suspend fun markViewOnceStrippedIfUndownloaded(messageId: String, mediaTypeHint: String = "") {
+        val existing = getMessage(messageId) ?: return
+        val hasLocalFile = !existing.localMediaPath.isNullOrBlank() &&
+            java.io.File(existing.localMediaPath).let { it.exists() && it.length() > 0L }
+        if (hasLocalFile) {
+            if (!existing.isViewOnce || existing.viewOnceState != "AVAILABLE") {
+                upsertMessage(existing.copy(isViewOnce = true, viewOnceState = "AVAILABLE"))
+            }
+            return
+        }
+        val resolvedType = when {
+            existing.msgType in setOf("IMAGE", "VIDEO", "PTT", "AUDIO") -> existing.msgType
+            mediaTypeHint in setOf("IMAGE", "VIDEO", "PTT", "AUDIO") -> mediaTypeHint
+            else -> "VIEW_ONCE_STRIPPED"
+        }
+        val updated = existing.copy(
+            msgType = resolvedType,
+            isViewOnce = true,
+            viewOnceState = "STRIPPED"
+        )
+        upsertMessage(updated)
+        val chat = getChat(existing.chatJid)
+        if (chat != null && chat.lastMessageId == messageId) {
+            upsertChat(
+                chat.copy(
+                    lastMessagePreview = previewTextFor(updated),
+                    lastMessageType = "VIEW_ONCE_$resolvedType"
+                )
+            )
+        }
+    }
+
     companion object {
         fun deliveryRank(status: String): Int = when (status.uppercase()) {
             "PLAYED" -> 4
@@ -624,8 +684,16 @@ interface WaDao {
         }
 
         fun previewTextFor(msg: MessageEntity): String {
+            val voStripped = (msg.viewOnceState == "STRIPPED" || msg.msgType == "VIEW_ONCE_STRIPPED") &&
+                msg.localMediaPath.isNullOrBlank()
             return when {
                 msg.isDeletedBySender -> "🚫 ${msg.body.ifBlank { "Deleted message" }}"
+                voStripped -> when (msg.msgType) {
+                    "VIDEO" -> "Opened · Video"
+                    "AUDIO", "PTT" -> "Opened · Voice message"
+                    "IMAGE" -> "Opened · Photo"
+                    else -> "Opened"
+                }
                 msg.isViewOnce -> when (msg.msgType) {
                     "VIDEO" -> "Video"
                     "AUDIO", "PTT" -> "Voice message"

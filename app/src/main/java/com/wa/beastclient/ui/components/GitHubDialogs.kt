@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.widget.Toast
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,10 +16,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -30,18 +33,23 @@ import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,11 +61,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wa.beastclient.BuildConfig
+import com.wa.beastclient.R
 import com.wa.beastclient.core.update.AppReleaseInfo
 import com.wa.beastclient.core.update.UpdateUiState
 import com.wa.beastclient.core.update.WuppUpdater
@@ -283,12 +294,13 @@ fun GitHubFeedbackDialog(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppUpdateDialog(
     state: UpdateUiState,
     onDownload: (AppReleaseInfo) -> Unit,
     onInstall: (File) -> Unit,
-    onSkipVersion: () -> Unit,
+    onSkipVersion: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val colors = LocalWaColors.current
@@ -306,163 +318,384 @@ fun AppUpdateDialog(
     val apkSizeLabel = remember(release.apkSizeBytes) {
         WuppUpdater.formatByteSize(release.apkSizeBytes)
     }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val parsedChangelog = remember(release.changelog) { parseReleaseNotesLines(release.changelog) }
+    val showReleaseTitle = remember(release.title, release.tagName, release.versionName) {
+        val t = release.title.trim()
+        t.isNotBlank() &&
+            !t.equals(release.tagName, ignoreCase = true) &&
+            !t.equals(release.versionName, ignoreCase = true) &&
+            !t.equals("v${release.versionName}", ignoreCase = true)
+    }
+    val apkDisplayName = release.apkFileName?.takeIf { it.isNotBlank() } ?: "Wupp-${release.versionName}.apk"
+    val apkMetaSubtitle = buildString {
+        append(context.packageName)
+        if (apkSizeLabel.isNotBlank()) {
+            append(" · ")
+            append(apkSizeLabel)
+        }
+    }
 
-    AlertDialog(
+    ModalBottomSheet(
         onDismissRequest = { if (!isDownloading) onDismiss() },
-        containerColor = colors.elevatedBar,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
+        sheetState = sheetState,
+        containerColor = colors.appSurface,
+        contentColor = colors.textPrimary,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        dragHandle = {
+            BottomSheetDefaults.DragHandle(color = colors.textSecondary.copy(alpha = 0.45f))
+        }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 22.dp)
+        ) {
+            // Circular Wupp app badge matching reference sheet
+            Box(
+                modifier = Modifier
+                    .size(54.dp)
+                    .clip(CircleShape)
+                    .background(colors.elevatedBar)
+                    .border(0.75.dp, colors.textSecondary.copy(alpha = 0.16f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.wupp_logo),
+                    contentDescription = "Wupp",
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(34.dp)
                         .clip(RoundedCornerShape(10.dp))
-                        .background(colors.accentGreen.copy(alpha = 0.16f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.SystemUpdate,
-                        contentDescription = null,
-                        tint = colors.accentGreen,
-                        modifier = Modifier.size(20.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Text(
+                text = if (isReady) "Update ready to install!" else "Update available!",
+                color = colors.textPrimary,
+                fontSize = 21.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Rounded changelog card: "What changed on X.Y.Z"
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(colors.elevatedBar)
+                    .border(0.6.dp, colors.textSecondary.copy(alpha = 0.14f), RoundedCornerShape(20.dp))
+                    .padding(18.dp)
+            ) {
+                Text(
+                    text = "What changed on ${release.versionName}",
+                    color = colors.textPrimary,
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                if (showReleaseTitle) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = release.title,
+                        color = colors.textPrimary.copy(alpha = 0.9f),
+                        fontSize = 14.5.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = if (isReady) "Update Ready to Install" else "Wupp Update Available",
-                        color = colors.textPrimary,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 17.sp
-                    )
-                    val meta = buildString {
-                        append("v${BuildConfig.VERSION_NAME} → ${release.tagName}")
-                        if (apkSizeLabel.isNotBlank()) append(" ($apkSizeLabel)")
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = colors.textSecondary.copy(alpha = 0.22f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "What's new",
+                    color = colors.textPrimary,
+                    fontSize = 15.5.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp, max = 210.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    parsedChangelog.forEach { line ->
+                        when (line.kind) {
+                            ChangelogLineKind.HEADING -> {
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = line.text,
+                                    color = colors.textPrimary,
+                                    fontSize = 13.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            ChangelogLineKind.BULLET -> {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    Text(
+                                        text = "•",
+                                        color = colors.textSecondary,
+                                        fontSize = 13.5.sp,
+                                        modifier = Modifier.padding(start = 4.dp, end = 8.dp)
+                                    )
+                                    Text(
+                                        text = line.text,
+                                        color = colors.textSecondary,
+                                        fontSize = 13.5.sp,
+                                        lineHeight = 19.sp
+                                    )
+                                }
+                            }
+                            ChangelogLineKind.TEXT -> {
+                                Text(
+                                    text = line.text,
+                                    color = colors.textSecondary,
+                                    fontSize = 13.5.sp,
+                                    lineHeight = 19.sp
+                                )
+                            }
+                        }
                     }
-                    Text(
-                        text = meta,
-                        color = colors.accentGreen,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
-                    )
                 }
             }
-        },
-        text = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "To Be Installed -",
+                color = colors.textSecondary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(start = 2.dp, bottom = 8.dp)
+            )
+
+            // Package asset preview card
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(colors.elevatedBar)
+                    .border(0.6.dp, colors.textSecondary.copy(alpha = 0.14f), RoundedCornerShape(18.dp))
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 60.dp, max = 210.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(colors.appSurface.copy(alpha = 0.65f))
-                        .border(0.5.dp, colors.textSecondary.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
-                        .padding(12.dp)
-                        .verticalScroll(rememberScrollState())
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(colors.chatCanvas),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = release.changelog,
-                        color = colors.textPrimary,
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp
+                    Image(
+                        painter = painterResource(R.drawable.wupp_logo),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(26.dp)
+                            .clip(RoundedCornerShape(7.dp))
                     )
                 }
-
-                if (state is UpdateUiState.Downloading) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        if (state.progressPercent >= 0) {
-                            LinearProgressIndicator(
-                                progress = { state.progressPercent / 100f },
-                                modifier = Modifier.fillMaxWidth(),
-                                color = colors.accentGreen
-                            )
-                        } else {
-                            LinearProgressIndicator(
-                                modifier = Modifier.fillMaxWidth(),
-                                color = colors.accentGreen
-                            )
-                        }
-                        val dlText = buildString {
-                            append("Downloading APK")
-                            if (state.progressPercent >= 0) append(" ${state.progressPercent}%")
-                            val done = WuppUpdater.formatByteSize(state.downloadedBytes)
-                            val tot = WuppUpdater.formatByteSize(state.totalBytes)
-                            if (done.isNotBlank() && tot.isNotBlank()) append(" ($done / $tot)")
-                        }
-                        Text(
-                            text = dlText,
-                            color = colors.textSecondary,
-                            fontSize = 12.sp
-                        )
-                    }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = apkDisplayName,
+                        color = colors.textPrimary,
+                        fontSize = 14.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = apkMetaSubtitle,
+                        color = colors.textSecondary,
+                        fontSize = 12.5.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
-        },
-        confirmButton = {
+
+            if (state is UpdateUiState.Downloading) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (state.progressPercent >= 0) {
+                        LinearProgressIndicator(
+                            progress = { state.progressPercent / 100f },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = colors.accentGreen,
+                            trackColor = colors.elevatedBar
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = colors.accentGreen,
+                            trackColor = colors.elevatedBar
+                        )
+                    }
+                    val dlText = buildString {
+                        append("Downloading update")
+                        if (state.progressPercent >= 0) append(" ${state.progressPercent}%")
+                        val done = WuppUpdater.formatByteSize(state.downloadedBytes)
+                        val tot = WuppUpdater.formatByteSize(state.totalBytes)
+                        if (done.isNotBlank() && tot.isNotBlank()) append(" · $done / $tot")
+                    }
+                    Text(
+                        text = dlText,
+                        color = colors.textSecondary,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            // Primary CTA pill ("Install here" / "Install now" / "Download in background")
             when (state) {
                 is UpdateUiState.ReadyToInstall -> {
                     Button(
                         onClick = { onInstall(File(state.apkPath)) },
+                        shape = RoundedCornerShape(26.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = colors.accentGreen,
                             contentColor = Color(0xFF0B141A)
-                        )
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
                     ) {
-                        Text("Install APK", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            text = "Install now",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
                 is UpdateUiState.Downloading -> {
-                    OutlinedButton(onClick = onDismiss) {
-                        Text("Download in Background", color = colors.textPrimary)
+                    Button(
+                        onClick = onDismiss,
+                        shape = RoundedCornerShape(26.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = colors.elevatedBar,
+                            contentColor = colors.textPrimary
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                    ) {
+                        Text(
+                            text = "Download in background",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
                 else -> {
-                    if (!release.apkDownloadUrl.isNullOrBlank()) {
-                        Button(
-                            onClick = { onDownload(release) },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = colors.accentGreen,
-                                contentColor = Color(0xFF0B141A)
-                            )
-                        ) {
-                            Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Update Now", fontWeight = FontWeight.SemiBold)
-                        }
-                    } else if (release.htmlUrl.isNotBlank()) {
-                        Button(
-                            onClick = {
+                    Button(
+                        onClick = {
+                            if (!release.apkDownloadUrl.isNullOrBlank()) {
+                                onDownload(release)
+                            } else if (release.htmlUrl.isNotBlank()) {
                                 runCatching {
                                     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.htmlUrl)))
                                 }
                                 onDismiss()
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = colors.accentGreen,
-                                contentColor = Color(0xFF0B141A)
-                            )
-                        ) {
-                            Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("View Release", fontWeight = FontWeight.SemiBold)
-                        }
+                            }
+                        },
+                        shape = RoundedCornerShape(26.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = colors.accentGreen,
+                            contentColor = Color(0xFF0B141A)
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                    ) {
+                        Text(
+                            text = if (!release.apkDownloadUrl.isNullOrBlank()) "Install here" else "View release",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }
-        },
-        dismissButton = {
-            if (!isDownloading) {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = onSkipVersion) {
-                        Text("Skip", color = colors.textSecondary)
-                    }
-                    TextButton(onClick = onDismiss) {
-                        Text("Later", color = colors.textSecondary)
-                    }
+
+            if (release.htmlUrl.isNotBlank() && !isDownloading) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Button(
+                    onClick = {
+                        runCatching {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.htmlUrl)))
+                        }
+                        onDismiss()
+                    },
+                    shape = RoundedCornerShape(26.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.elevatedBar,
+                        contentColor = colors.textPrimary
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                ) {
+                    Text(
+                        text = "Open the web",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
         }
-    )
+    }
+}
+
+private enum class ChangelogLineKind { HEADING, BULLET, TEXT }
+
+private data class ChangelogLine(val kind: ChangelogLineKind, val text: String)
+
+private fun parseReleaseNotesLines(raw: String): List<ChangelogLine> {
+    val lines = raw.lines()
+    val out = ArrayList<ChangelogLine>(lines.size)
+    for (original in lines) {
+        val trimmed = original.trim()
+        if (trimmed.isBlank() || trimmed == "---" || trimmed == "***") continue
+        val cleanMarkdown = trimmed
+            .replace(Regex("\\*\\*([^*]+)\\*\\*"), "$1")
+            .replace(Regex("`([^`]+)`"), "$1")
+            .trim()
+        when {
+            trimmed.startsWith("#") -> {
+                val headingText = cleanMarkdown.trimStart('#').trim()
+                if (headingText.isNotBlank() && !headingText.equals("What's new", ignoreCase = true)) {
+                    out += ChangelogLine(ChangelogLineKind.HEADING, headingText)
+                }
+            }
+            trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("• ") -> {
+                val itemText = cleanMarkdown.drop(1).trim()
+                if (itemText.isNotBlank()) {
+                    out += ChangelogLine(ChangelogLineKind.BULLET, itemText)
+                }
+            }
+            else -> {
+                out += ChangelogLine(ChangelogLineKind.TEXT, cleanMarkdown)
+            }
+        }
+    }
+    return if (out.isEmpty()) listOf(ChangelogLine(ChangelogLineKind.TEXT, raw.trim())) else out
 }

@@ -30,6 +30,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Reply
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -92,8 +93,10 @@ fun FullScreenMediaViewer(
         }
     }
     val isVideo = msg.msgType.uppercase() == "VIDEO" || msg.mimeType.startsWith("video/", ignoreCase = true)
-    val bitmap = remember(mediaFile, isVideo) {
-        if (!isVideo && mediaFile != null) {
+    val isAudio = msg.msgType.uppercase() == "PTT" || msg.msgType.uppercase() == "AUDIO" ||
+        msg.mimeType.startsWith("audio/", ignoreCase = true)
+    val bitmap = remember(mediaFile, isVideo, isAudio) {
+        if (!isVideo && !isAudio && mediaFile != null) {
             runCatching { BitmapFactory.decodeFile(mediaFile.absolutePath)?.asImageBitmap() }.getOrNull()
         } else {
             null
@@ -127,7 +130,13 @@ fun FullScreenMediaViewer(
                 .fillMaxSize()
                 .background(Color.Black)
         ) {
-            if (isVideo && mediaFile != null) {
+            if (isAudio && mediaFile != null) {
+                AudioLightboxStage(
+                    file = mediaFile,
+                    durationSec = msg.durationSec,
+                    onToggleChrome = { showChrome = !showChrome }
+                )
+            } else if (isVideo && mediaFile != null) {
                 VideoLightboxStage(
                     file = mediaFile,
                     onToggleChrome = { showChrome = !showChrome }
@@ -510,6 +519,138 @@ private fun VideoLightboxStage(
                     )
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun AudioLightboxStage(
+    file: File,
+    durationSec: Int,
+    onToggleChrome: () -> Unit
+) {
+    val context = LocalContext.current
+    val player = remember(file.absolutePath) {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
+            prepare()
+            playWhenReady = true
+        }
+    }
+    var isPlaying by remember { mutableStateOf(true) }
+    var positionMs by remember { mutableLongStateOf(0L) }
+    var durationMs by remember { mutableLongStateOf((durationSec.coerceAtLeast(0) * 1000L)) }
+
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED) {
+                    isPlaying = false
+                    positionMs = 0L
+                    player.seekTo(0L)
+                    player.playWhenReady = false
+                }
+            }
+        }
+        player.addListener(listener)
+        onDispose {
+            player.removeListener(listener)
+            player.release()
+        }
+    }
+
+    LaunchedEffect(player) {
+        while (true) {
+            val dur = player.duration
+            if (dur > 0L) durationMs = dur
+            positionMs = player.currentPosition.coerceAtLeast(0L)
+            delay(100L)
+        }
+    }
+
+    fun formatSec(ms: Long): String {
+        val total = (ms / 1000L).coerceAtLeast(0L)
+        return "%d:%02d".format(total / 60L, total % 60L)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clickable(onClick = onToggleChrome),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(116.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF1F2C34)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.GraphicEq,
+                    contentDescription = "Voice message",
+                    tint = Color(0xFF25D366),
+                    modifier = Modifier.size(56.dp)
+                )
+            }
+            Text(
+                text = "Voice message · View once",
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF25D366))
+                    .clickable {
+                        if (player.playbackState == Player.STATE_ENDED) {
+                            player.seekTo(0L)
+                            player.play()
+                        } else if (player.isPlaying) {
+                            player.pause()
+                        } else {
+                            player.play()
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    contentDescription = if (isPlaying) "Pause" else "Play",
+                    tint = Color(0xFF0B141A),
+                    modifier = Modifier.size(36.dp)
+                )
+            }
+            val safeDur = durationMs.coerceAtLeast(1L)
+            Slider(
+                value = (positionMs.toFloat() / safeDur.toFloat()).coerceIn(0f, 1f),
+                onValueChange = { frac ->
+                    player.seekTo((frac * safeDur).toLong())
+                },
+                colors = SliderDefaults.colors(
+                    thumbColor = Color(0xFF25D366),
+                    activeTrackColor = Color(0xFF25D366),
+                    inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                )
+            )
+            Text(
+                text = "${formatSec(positionMs)} / ${formatSec(durationMs)}",
+                color = Color(0xFFD1D7DB),
+                fontSize = 13.sp
+            )
         }
     }
 }

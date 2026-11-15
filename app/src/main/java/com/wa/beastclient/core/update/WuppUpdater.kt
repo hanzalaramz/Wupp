@@ -61,7 +61,7 @@ object WuppUpdater {
     private const val KEY_AUTO_CHECK = "auto_check_enabled"
     private const val KEY_SKIPPED_TAG = "skipped_release_tag"
     private const val KEY_LAST_CHECK_MS = "last_check_ms"
-    private const val AUTO_CHECK_INTERVAL_MS = 6L * 60L * 60L * 1000L
+    private const val AUTO_CHECK_INTERVAL_MS = 60_000L
     private const val UPDATE_CHANNEL_ID = "wupp_updates_channel"
     private const val UPDATE_NOTIFICATION_ID = 4209
 
@@ -76,6 +76,12 @@ object WuppUpdater {
 
     @Volatile
     private var initialized = false
+
+    @Volatile
+    private var dismissedInCurrentVisit = false
+
+    @Volatile
+    private var checkInFlight = false
 
     fun init(context: Context) {
         if (initialized) return
@@ -94,10 +100,29 @@ object WuppUpdater {
     }
 
     fun openPromptDialog() {
+        dismissedInCurrentVisit = false
         _showPromptDialog.value = true
     }
 
+    fun onAppBackgrounded() {
+        dismissedInCurrentVisit = false
+    }
+
+    suspend fun onAppOpened(context: Context) {
+        val appCtx = context.applicationContext
+        init(appCtx)
+        if (!_autoCheckEnabled.value) return
+        val current = _state.value
+        if (!dismissedInCurrentVisit &&
+            (current is UpdateUiState.UpdateAvailable || current is UpdateUiState.ReadyToInstall)
+        ) {
+            _showPromptDialog.value = true
+        }
+        checkForUpdates(appCtx, silent = true)
+    }
+
     fun dismissPromptDialog(context: Context, skipVersion: Boolean = false) {
+        dismissedInCurrentVisit = true
         _showPromptDialog.value = false
         if (skipVersion) {
             val tag = when (val s = _state.value) {
@@ -119,56 +144,86 @@ object WuppUpdater {
         init(appCtx)
         val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+        if (!silent) {
+            dismissedInCurrentVisit = false
+        }
+
+        if (_state.value is UpdateUiState.Downloading) {
+            if (!silent || !dismissedInCurrentVisit) _showPromptDialog.value = true
+            return _state.value
+        }
+
         if (silent) {
             if (!_autoCheckEnabled.value) return _state.value
             val now = System.currentTimeMillis()
             val lastCheck = prefs.getLong(KEY_LAST_CHECK_MS, 0L)
             if (now - lastCheck < AUTO_CHECK_INTERVAL_MS && _state.value !is UpdateUiState.Idle) {
-                return _state.value
+                val cur = _state.value
+                if (!dismissedInCurrentVisit &&
+                    (cur is UpdateUiState.UpdateAvailable || cur is UpdateUiState.ReadyToInstall)
+                ) {
+                    _showPromptDialog.value = true
+                }
+                return cur
             }
         }
 
-        if (_state.value is UpdateUiState.Downloading) {
-            if (!silent) _showPromptDialog.value = true
+        if (checkInFlight) {
             return _state.value
         }
+        checkInFlight = true
+        try {
+            _state.value = UpdateUiState.Checking(silent = silent)
+            val repoSlug = BuildConfig.GITHUB_REPO.trim().trim('/')
 
-        _state.value = UpdateUiState.Checking(silent = silent)
-        val repoSlug = BuildConfig.GITHUB_REPO.trim().trim('/')
-
-        val result = withContext(Dispatchers.IO) {
-            fetchLatestRelease(repoSlug)
-        }
-
-        prefs.edit().putLong(KEY_LAST_CHECK_MS, System.currentTimeMillis()).apply()
-
-        return result.fold(
-            onSuccess = { release ->
-                val current = BuildConfig.VERSION_NAME
-                if (release != null && isNewerVersion(release.versionName, current)) {
-                    val skipped = prefs.getString(KEY_SKIPPED_TAG, "") ?: ""
-                    val nextState = UpdateUiState.UpdateAvailable(release)
-                    _state.value = nextState
-                    if (!silent || skipped != release.tagName) {
-                        _showPromptDialog.value = true
-                        postUpdateNotification(appCtx, release)
-                    }
-                    nextState
-                } else {
-                    val upToDate = UpdateUiState.UpToDate(current, System.currentTimeMillis())
-                    _state.value = upToDate
-                    upToDate
-                }
-            },
-            onFailure = { err ->
-                val errorState = UpdateUiState.Error(
-                    message = err.message ?: "Unable to check GitHub releases",
-                    silent = silent
-                )
-                _state.value = errorState
-                errorState
+            val result = withContext(Dispatchers.IO) {
+                fetchLatestRelease(repoSlug)
             }
-        )
+
+            prefs.edit().putLong(KEY_LAST_CHECK_MS, System.currentTimeMillis()).apply()
+
+            return result.fold(
+                onSuccess = { release ->
+                    val current = BuildConfig.VERSION_NAME
+                    if (release != null && isNewerVersion(release.versionName, current)) {
+                        val existingReady = findExistingDownloadedApk(appCtx, release)
+                        val nextState = if (existingReady != null) {
+                            UpdateUiState.ReadyToInstall(release, existingReady.absolutePath)
+                        } else {
+                            UpdateUiState.UpdateAvailable(release)
+                        }
+                        _state.value = nextState
+                        if (!silent || !dismissedInCurrentVisit) {
+                            _showPromptDialog.value = true
+                            postUpdateNotification(appCtx, release)
+                        }
+                        nextState
+                    } else {
+                        val upToDate = UpdateUiState.UpToDate(current, System.currentTimeMillis())
+                        _state.value = upToDate
+                        upToDate
+                    }
+                },
+                onFailure = { err ->
+                    val errorState = UpdateUiState.Error(
+                        message = err.message ?: "Unable to check GitHub releases",
+                        silent = silent
+                    )
+                    _state.value = errorState
+                    errorState
+                }
+            )
+        } finally {
+            checkInFlight = false
+        }
+    }
+
+    private fun findExistingDownloadedApk(context: Context, release: AppReleaseInfo): File? {
+        val downloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: File(context.filesDir, "updates")
+        val safeTag = release.tagName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val outFile = File(downloadsDir, "Wupp-$safeTag.apk")
+        return outFile.takeIf { it.exists() && it.length() > 1_000_000L }
     }
 
     suspend fun downloadUpdate(context: Context, release: AppReleaseInfo) {

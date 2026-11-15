@@ -28,10 +28,12 @@ import com.wa.beastclient.data.db.WaUiDatabase
 import com.wa.beastclient.data.media.EagerMediaVault
 import com.wa.beastclient.data.media.OutboundQualityMode
 import com.wa.beastclient.data.media.SoundPoolManager
+import com.wa.beastclient.domain.stealth.AutoDownloadNetwork
 import com.wa.beastclient.domain.stealth.EffectiveChatPrivacy
 import com.wa.beastclient.domain.stealth.GlobalStealthConfig
 import com.wa.beastclient.domain.stealth.PrimaryHeartbeatStatus
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
+import com.wa.beastclient.ui.theme.WuppThemeMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -45,6 +47,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 
 enum class HomeFilterChip(val label: String) {
@@ -101,7 +104,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @OptIn(ExperimentalCoroutinesApi::class)
     val allChats: StateFlow<List<ChatEntity>> = _includeArchived
         .flatMapLatest { dao.observeChats(it) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val filteredChats: StateFlow<List<ChatEntity>> = combine(
         allChats,
@@ -128,7 +131,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 it.jid.lowercase().contains(q) ||
                 it.lastMessagePreview.lowercase().contains(q)
         }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val channels: StateFlow<List<ChatEntity>> = allChats
         .map { chats ->
@@ -140,10 +143,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         .thenBy { it.name.lowercase() }
                 )
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val statuses: StateFlow<List<StatusEntity>> = dao.observeStatuses()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val viewOnceVault: StateFlow<List<MessageEntity>> = dao.observeViewOnceVault()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -204,16 +207,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun pagedMessages(chatJid: String): Flow<PagingData<MessageEntity>> {
-        return Pager(
-            config = PagingConfig(
-                pageSize = 60,
-                initialLoadSize = 120,
-                prefetchDistance = 20,
-                enablePlaceholders = false
-            ),
-            pagingSourceFactory = { dao.pagingMessages(chatJid) }
-        ).flow.cachedIn(viewModelScope)
+    private val pagerFlowCache = object : LinkedHashMap<String, Flow<PagingData<MessageEntity>>>(16, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, Flow<PagingData<MessageEntity>>>?
+        ): Boolean = size > 12
+    }
+
+    fun pagedMessages(chatJid: String): Flow<PagingData<MessageEntity>> = synchronized(pagerFlowCache) {
+        pagerFlowCache.getOrPut(chatJid) {
+            Pager(
+                config = PagingConfig(
+                    pageSize = 60,
+                    initialLoadSize = 120,
+                    prefetchDistance = 20,
+                    enablePlaceholders = false
+                ),
+                pagingSourceFactory = { dao.pagingMessages(chatJid) }
+            ).flow.cachedIn(viewModelScope)
+        }
     }
 
     suspend fun searchInChat(chatJid: String, query: String): List<MessageEntity> =
@@ -233,8 +244,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { WaRealtimeService.setGhostPresence(next) }
     }
 
-    fun toggleDarkTheme() {
-        StealthMatrixManager.updateConfig { it.copy(darkTheme = !it.darkTheme) }
+    fun setThemeMode(themeMode: WuppThemeMode) {
+        StealthMatrixManager.updateConfig { it.copy(themeMode = themeMode) }
+    }
+
+    fun setAutoDownloadEnabled(enabled: Boolean) {
+        StealthMatrixManager.updateConfig { it.copy(autoDownloadEnabled = enabled) }
+        WaRealtimeService.syncAutoDownloadPolicy(appContext)
+    }
+
+    fun setAutoDownloadMask(network: AutoDownloadNetwork, mask: Int) {
+        StealthMatrixManager.updateConfig { cfg ->
+            when (network) {
+                AutoDownloadNetwork.MOBILE -> cfg.copy(autoDownloadMobileMask = mask)
+                AutoDownloadNetwork.WIFI -> cfg.copy(autoDownloadWifiMask = mask)
+                AutoDownloadNetwork.ROAMING -> cfg.copy(autoDownloadRoamingMask = mask)
+            }
+        }
+        WaRealtimeService.syncAutoDownloadPolicy(appContext)
+    }
+
+    fun setMediaVisibilityInGallery(visible: Boolean) {
+        StealthMatrixManager.updateConfig { it.copy(mediaVisibilityInGallery = visible) }
+    }
+
+    fun setChatMediaVisibility(chatJid: String, overrideVisible: Boolean?) {
+        StealthMatrixManager.setChatGalleryVisibility(chatJid, overrideVisible)
     }
 
     fun updateGlobalStealth(transform: (GlobalStealthConfig) -> GlobalStealthConfig) {
@@ -272,6 +307,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun togglePinChat(chat: ChatEntity) {
         viewModelScope.launch(Dispatchers.IO) {
             dao.updatePinned(chat.jid, !chat.isPinned, System.currentTimeMillis())
+        }
+    }
+
+    fun pinChats(jids: Collection<String>, pinned: Boolean) {
+        if (jids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val order = if (pinned) System.currentTimeMillis() else 0L
+            jids.forEach { dao.updatePinned(it, pinned, order) }
+        }
+    }
+
+    fun muteChats(jids: Collection<String>, muted: Boolean) {
+        if (jids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            jids.forEach { dao.updateMuted(it, muted, 0L) }
+        }
+    }
+
+    fun archiveChats(jids: Collection<String>, archived: Boolean) {
+        if (jids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            jids.forEach { dao.updateArchived(it, archived) }
+        }
+    }
+
+    fun favoriteChats(jids: Collection<String>, favorite: Boolean) {
+        if (jids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            jids.forEach { dao.updateFavorite(it, favorite) }
+        }
+    }
+
+    fun setChatsUnreadLocal(jids: Collection<String>, unread: Boolean) {
+        if (jids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val count = if (unread) 1 else 0
+            jids.forEach { dao.updateUnreadCount(it, count) }
+        }
+    }
+
+    fun deleteChatsLocally(jids: Collection<String>) {
+        if (jids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            jids.forEach { jid ->
+                dao.deleteMessagesForChat(jid)
+                dao.deleteChatRow(jid)
+            }
         }
     }
 
@@ -585,9 +667,113 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         WuppUpdater.setAutoCheckEnabled(appContext, enabled)
     }
 
+    private val _participantMeta = MutableStateFlow<Map<String, ResolvedParticipantUi>>(emptyMap())
+    val participantMeta: StateFlow<Map<String, ResolvedParticipantUi>> = _participantMeta.asStateFlow()
+
+    private val _quotedMsgMeta = MutableStateFlow<Map<String, QuotedSenderMeta>>(emptyMap())
+    val quotedMsgMeta: StateFlow<Map<String, QuotedSenderMeta>> = _quotedMsgMeta.asStateFlow()
+
+    fun resolveParticipantsLocally(jids: Collection<String>) {
+        val current = _participantMeta.value
+        val missing = jids
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() && it.contains("@") && !current.containsKey(it) }
+            .distinct()
+            .take(80)
+            .toList()
+        if (missing.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val raw = WaRealtimeService.resolveParticipantNamesJson(missing.joinToString(","))
+            val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return@launch
+            val parsed = HashMap<String, ResolvedParticipantUi>(missing.size)
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val item = obj.optJSONObject(key) ?: continue
+                parsed[key] = ResolvedParticipantUi(
+                    jid = key,
+                    altJid = item.optString("altJid"),
+                    savedName = item.optString("savedName"),
+                    pushName = item.optString("pushName"),
+                    phone = item.optString("phone"),
+                    avatarPath = item.optString("avatarPath"),
+                    isSelf = item.optBoolean("isSelf", false)
+                )
+            }
+            // Mark any queried JID not returned as checked so we don't re-query every recomposition.
+            missing.forEach { k ->
+                if (!parsed.containsKey(k)) {
+                    parsed[k] = ResolvedParticipantUi(jid = k)
+                }
+            }
+            if (parsed.isNotEmpty()) {
+                _participantMeta.value = _participantMeta.value + parsed
+            }
+        }
+    }
+
+    fun resolveQuotedSendersLocally(quotedIds: Collection<String>) {
+        val current = _quotedMsgMeta.value
+        val missing = quotedIds
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() && !current.containsKey(it) }
+            .distinct()
+            .take(50)
+            .toList()
+        if (missing.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val resolved = HashMap<String, QuotedSenderMeta>(missing.size)
+            val discoveredJids = mutableSetOf<String>()
+            for (qid in missing) {
+                val msg = dao.getMessage(qid)
+                if (msg != null) {
+                    resolved[qid] = QuotedSenderMeta(
+                        senderJid = msg.senderJid,
+                        senderName = msg.senderName,
+                        isFromMe = msg.isFromMe
+                    )
+                    if (msg.senderJid.contains("@")) {
+                        discoveredJids += msg.senderJid
+                    }
+                } else {
+                    resolved[qid] = QuotedSenderMeta()
+                }
+            }
+            if (resolved.isNotEmpty()) {
+                _quotedMsgMeta.value = _quotedMsgMeta.value + resolved
+            }
+            if (discoveredJids.isNotEmpty()) {
+                resolveParticipantsLocally(discoveredJids)
+            }
+        }
+    }
+
+    fun requestFullProfilePicture(jid: String) {
+        if (jid.isBlank()) return
+        WaRealtimeService.requestFullProfilePicture(jid)
+    }
+
     private fun showToast(text: String) {
         viewModelScope.launch(Dispatchers.Main) {
             Toast.makeText(appContext, text, Toast.LENGTH_SHORT).show()
         }
     }
 }
+
+data class ResolvedParticipantUi(
+    val jid: String,
+    val altJid: String = "",
+    val savedName: String = "",
+    val pushName: String = "",
+    val phone: String = "",
+    val avatarPath: String = "",
+    val isSelf: Boolean = false
+)
+
+data class QuotedSenderMeta(
+    val senderJid: String = "",
+    val senderName: String = "",
+    val isFromMe: Boolean = false
+)

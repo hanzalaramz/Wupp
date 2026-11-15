@@ -100,6 +100,11 @@ class WaRealtimeService : Service() {
                 dao.deleteShowcaseStatuses()
                 dao.deleteEmptyUnknownMessages()
                 dao.normalizeViewOncePreviews()
+                val healPrefs = getSharedPreferences("wupp_migrations", Context.MODE_PRIVATE)
+                if (!healPrefs.getBoolean("newsletter_unread_healed_v1", false)) {
+                    dao.resetInflatedNewsletterUnread()
+                    healPrefs.edit().putBoolean("newsletter_unread_healed_v1", true).apply()
+                }
                 dao.cleanupEmptyProtocolChats()
                 dao.getChatsWithBlankPreview().forEach { chat ->
                     val latest = dao.getLatestMessageForChat(chat.jid)
@@ -127,10 +132,6 @@ class WaRealtimeService : Service() {
                             pushnameCache[chat.jid] = fallbackName
                             dao.updateChatName(chat.jid, fallbackName, overwrite = false)
                         }
-                    }
-                    if (chat.jid == "194944455192756@lid" && (chat.name == "194944455192756" || chat.name == chat.jid || chat.name.isBlank())) {
-                        pushnameCache[chat.jid] = "talha"
-                        dao.updateChatName(chat.jid, "talha", overwrite = true)
                     }
                 }
             }
@@ -241,6 +242,7 @@ class WaRealtimeService : Service() {
             .build()
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                syncAutoDownloadPolicy(applicationContext)
                 if (!hasSeenInitialNetwork) {
                     hasSeenInitialNetwork = true
                     return
@@ -294,6 +296,7 @@ class WaRealtimeService : Service() {
                 }
                 Whatsbridge.initClient(applicationContext.filesDir.absolutePath, callback)
                 Whatsbridge.setGhostPresence(StealthMatrixManager.config.value.ghostPresence)
+                syncAutoDownloadPolicy(applicationContext)
                 // Always connect cleanly so paired sessions sync immediately and fresh installs stream QR right away.
                 Whatsbridge.connectClient()
             }.onFailure { err ->
@@ -392,6 +395,7 @@ class WaRealtimeService : Service() {
             "MESSAGE_EDIT" -> handleMessageEdit(json)
             "MESSAGE_REACTION" -> handleReaction(json)
             "VIEW_ONCE_STRIPPED" -> handleViewOnceStripped(json)
+            "VIEW_ONCE_EXPIRED" -> handleViewOnceExpired(json)
             "UNDECRYPTABLE_STUB" -> handleUndecryptableStub(json)
             "MEDIA_DOWNLOADED" -> handleMediaDownloaded(json)
             "MEDIA_DOWNLOAD_STATUS" -> handleMediaDownloadStatus(json)
@@ -542,9 +546,10 @@ class WaRealtimeService : Service() {
         if (msg.msgType == "UNKNOWN" && msg.body.isBlank() && !msg.isViewOnce) {
             return
         }
+        val isSync = json.optBoolean("isSync", false)
         val isGrp = json.optBoolean("isGroup", msg.chatJid.endsWith("@g.us"))
         val isActiveChat = activeChatJid.value == msg.chatJid
-        val shouldAutoRead = isActiveChat && !msg.isFromMe &&
+        val shouldAutoRead = !isSync && isActiveChat && !msg.isFromMe &&
             StealthMatrixManager.getEffectivePrivacy(dao, msg.chatJid).sendReadReceipts
         if (shouldAutoRead) {
             msg = msg.copy(deliveryStatus = "READ")
@@ -554,11 +559,11 @@ class WaRealtimeService : Service() {
         } else {
             pushnameCache[msg.chatJid] ?: ""
         }
-        dao.upsertIncomingMessageAndRefreshChat(
+        val insertedNew = dao.upsertIncomingMessageAndRefreshChat(
             message = msg,
             chatNameHint = nameHint,
             isGroup = isGrp,
-            incrementUnread = !isActiveChat
+            incrementUnread = !isSync && !isActiveChat
         )
         if (dao.getChat(msg.chatJid)?.avatarPath.isNullOrBlank()) {
             requestSingleAvatarIfNeeded(msg.chatJid)
@@ -571,7 +576,7 @@ class WaRealtimeService : Service() {
                     .onFailure { Log.w(TAG, "Auto markRead failed for ${msg.id}: ${it.message}") }
             }
         }
-        if (!msg.isFromMe && !isActiveChat) {
+        if (insertedNew && !isSync && !msg.isFromMe && !isActiveChat && !msg.chatJid.endsWith("@newsletter")) {
             SoundPoolManager.playIncoming()
         }
     }
@@ -666,26 +671,51 @@ class WaRealtimeService : Service() {
     }
 
     private suspend fun handleViewOnceStripped(json: JSONObject) {
+        val id = json.optString("id")
+        if (id.isBlank()) return
+        _downloadingMediaIds.value = _downloadingMediaIds.value - id
+        _failedMediaIds.value = _failedMediaIds.value - id
+        val existing = dao.getMessage(id)
+        val existingHasFile = !existing?.localMediaPath.isNullOrBlank() &&
+            File(existing!!.localMediaPath!!).let { it.exists() && it.length() > 0L }
+        if (existingHasFile) return
+        val mediaTypeHint = json.optString("mediaType")
+        val resolvedType = when {
+            existing?.msgType in setOf("IMAGE", "VIDEO", "PTT", "AUDIO") -> existing!!.msgType
+            mediaTypeHint in setOf("IMAGE", "VIDEO", "PTT", "AUDIO") -> mediaTypeHint
+            else -> "VIEW_ONCE_STRIPPED"
+        }
         val msg = MessageEntity(
-            id = json.optString("id"),
-            chatJid = json.optString("chatJid"),
-            senderJid = json.optString("senderJid"),
-            senderName = json.optString("pushName"),
-            isFromMe = json.optBoolean("isFromMe", false),
-            timestamp = json.optLong("timestamp", System.currentTimeMillis()),
-            body = json.optString("reason", "Key=0B stripped by Meta server on companion session"),
-            msgType = "VIEW_ONCE_STRIPPED",
-            mimeType = "application/x-view-once-stub",
+            id = id,
+            chatJid = json.optString("chatJid").ifBlank { existing?.chatJid.orEmpty() },
+            senderJid = json.optString("senderJid").ifBlank { existing?.senderJid.orEmpty() },
+            senderName = json.optString("pushName").ifBlank { existing?.senderName.orEmpty() },
+            isFromMe = json.optBoolean("isFromMe", existing?.isFromMe ?: false),
+            timestamp = json.optLong("timestamp", existing?.timestamp ?: System.currentTimeMillis()),
+            body = json.optString("reason", existing?.body.orEmpty()),
+            msgType = resolvedType,
+            mimeType = existing?.mimeType?.ifBlank { "application/x-view-once-stub" } ?: "application/x-view-once-stub",
+            durationSec = existing?.durationSec ?: 0,
+            fileSize = existing?.fileSize ?: 0L,
             isViewOnce = true,
             viewOnceState = "STRIPPED",
-            deliveryStatus = "DELIVERED"
+            deliveryStatus = existing?.deliveryStatus?.ifBlank { "DELIVERED" } ?: "DELIVERED"
         )
         dao.upsertIncomingMessageAndRefreshChat(
             message = msg,
             chatNameHint = msg.senderName,
             isGroup = msg.chatJid.endsWith("@g.us"),
-            incrementUnread = activeChatJid.value != msg.chatJid
+            incrementUnread = existing == null && activeChatJid.value != msg.chatJid
         )
+    }
+
+    private suspend fun handleViewOnceExpired(json: JSONObject) {
+        val messageId = json.optString("messageId")
+        val mediaTypeHint = json.optString("mediaType")
+        if (messageId.isBlank()) return
+        _downloadingMediaIds.value = _downloadingMediaIds.value - messageId
+        _failedMediaIds.value = _failedMediaIds.value - messageId
+        dao.markViewOnceStrippedIfUndownloaded(messageId, mediaTypeHint)
     }
 
     private suspend fun handleUndecryptableStub(json: JSONObject) {
@@ -733,6 +763,10 @@ class WaRealtimeService : Service() {
         val fileSize = json.optLong("fileSize", 0L)
         val waveformCsv = json.optString("waveformCsv")
         val isStatus = json.optBoolean("isStatus", false)
+        val isHistorical = json.optBoolean("isHistorical", false)
+        val isFromMe = json.optBoolean("isFromMe", false)
+        val mediaType = json.optString("mediaType")
+        val mimeType = json.optString("mimeType")
 
         if (messageId.isNotBlank()) {
             _downloadingMediaIds.value = _downloadingMediaIds.value - messageId
@@ -754,6 +788,31 @@ class WaRealtimeService : Service() {
                 durationSec = msg.durationSec,
                 existingWaveformCsv = waveformCsv.ifBlank { msg.waveformCsv }
             )
+        } else if (
+            msg != null &&
+            !isHistorical &&
+            !isFromMe &&
+            !msg.isViewOnce &&
+            !msg.chatJid.endsWith("@newsletter") &&
+            (mediaType == "IMAGE" || mediaType == "VIDEO" || msg.msgType == "IMAGE" || msg.msgType == "VIDEO") &&
+            StealthMatrixManager.shouldShowChatMediaInGallery(msg.chatJid, msg.senderJid)
+        ) {
+            val vaultFile = File(localPath)
+            if (vaultFile.exists() && vaultFile.length() > 0L) {
+                val galleryPrefs = applicationContext.getSharedPreferences("wupp_gallery_exported", Context.MODE_PRIVATE)
+                val exportKey = "exp_$messageId"
+                if (!galleryPrefs.getBoolean(exportKey, false)) {
+                    val resolvedMime = mimeType.ifBlank { msg.mimeType }.ifBlank {
+                        if (msg.msgType == "VIDEO" || mediaType == "VIDEO") "video/mp4" else "image/jpeg"
+                    }
+                    val ext = if (resolvedMime.startsWith("video/", ignoreCase = true)) "mp4" else "jpg"
+                    val displayName = "Wupp_${messageId.take(12)}.$ext"
+                    EagerMediaVault.exportToGallery(applicationContext, vaultFile, displayName, resolvedMime)
+                        .onSuccess {
+                            galleryPrefs.edit().putBoolean(exportKey, true).apply()
+                        }
+                }
+            }
         }
     }
 
@@ -1112,23 +1171,61 @@ class WaRealtimeService : Service() {
                                 .invoke(null, chatJid)
                         }
                     }
-                    val missingAudio = dao.getUndownloadedAudioMessages(chatJid)
-                    for (msg in missingAudio) {
-                        runCatching {
-                            triggerMediaDownloadWithAnchor(dao, msg)
-                        }.onFailure {
-                            Log.w(TAG, "requestMediaDownload(onChatOpened) failed for ${msg.id}: ${it.message}")
+                    if (StealthMatrixManager.isAutoDownloadAllowed(appCtx, "AUDIO")) {
+                        val missingAudio = dao.getUndownloadedAudioMessages(chatJid)
+                        for (msg in missingAudio) {
+                            runCatching {
+                                triggerMediaDownloadWithAnchor(dao, msg)
+                            }.onFailure {
+                                Log.w(TAG, "requestMediaDownload(onChatOpened) failed for ${msg.id}: ${it.message}")
+                            }
+                            delay(120L)
                         }
-                        delay(120L)
                     }
                 }
             }
         }
 
+        fun resolveParticipantNamesJson(jidsCsv: String): String {
+            if (jidsCsv.isBlank()) return "{}"
+            return runCatching { Whatsbridge.resolveParticipantNamesJson(jidsCsv) }
+                .getOrDefault("{}")
+        }
+
+        fun requestFullProfilePicture(jid: String) {
+            if (jid.isBlank()) return
+            companionScope.launch {
+                if (!runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) return@launch
+                runCatching {
+                    Whatsbridge::class.java
+                        .getMethod("fetchFullProfilePicture", String::class.java)
+                        .invoke(null, jid)
+                }.onFailure {
+                    Log.w(TAG, "requestFullProfilePicture failed for $jid: ${it.message}")
+                }
+            }
+        }
+
+        fun syncAutoDownloadPolicy(context: Context) {
+            val appCtx = context.applicationContext
+            val mask = StealthMatrixManager.activeAutoDownloadMask(appCtx)
+            val allowPhoto = (mask and StealthMatrixManager.MEDIA_PHOTO) != 0
+            val allowAudio = (mask and StealthMatrixManager.MEDIA_AUDIO) != 0
+            val allowVideo = (mask and StealthMatrixManager.MEDIA_VIDEO) != 0
+            val allowDoc = (mask and StealthMatrixManager.MEDIA_DOCUMENT) != 0
+            runCatching {
+                Whatsbridge.setAutoDownloadPolicy(allowPhoto, allowAudio, allowVideo, allowDoc)
+            }.onFailure {
+                Log.w(TAG, "syncAutoDownloadPolicy failed: ${it.message}")
+            }
+        }
+
         fun requestMediaDownload(context: Context, msg: MessageEntity, userInitiated: Boolean = true) {
             if (msg.id.isBlank()) return
+            if (msg.isViewOnce || msg.msgType == "VIEW_ONCE_STRIPPED") return
             if (_downloadingMediaIds.value.contains(msg.id)) return
             if (!userInitiated && _failedMediaIds.value.containsKey(msg.id)) return
+            if (!userInitiated && !StealthMatrixManager.isAutoDownloadAllowed(context, msg.msgType, msg.mimeType)) return
 
             val appCtx = context.applicationContext
             _downloadingMediaIds.value = _downloadingMediaIds.value + msg.id
@@ -1151,7 +1248,9 @@ class WaRealtimeService : Service() {
                         val refreshed = dao.getMessage(msg.id)
                         if (refreshed?.localMediaPath.isNullOrBlank() && _downloadingMediaIds.value.contains(msg.id)) {
                             _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
-                            _failedMediaIds.value = _failedMediaIds.value + (msg.id to "Tap to retry")
+                            if (refreshed?.viewOnceState != "STRIPPED") {
+                                _failedMediaIds.value = _failedMediaIds.value + (msg.id to "Tap to retry")
+                            }
                         }
                     }
                 }.onFailure {
