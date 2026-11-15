@@ -8,6 +8,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -19,7 +27,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ContainedLoadingIndicator
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -97,6 +107,9 @@ class MainActivity : ComponentActivity() {
                 themeMode = stealth.themeMode,
                 assetManager = assets
             ) {
+                @OptIn(ExperimentalMaterial3ExpressiveApi::class)
+                val motionScheme = MaterialTheme.motionScheme
+
                 if (!setupDone) {
                     FirstInstallSetupScreen(
                         onCompleteSetup = {
@@ -121,14 +134,15 @@ class MainActivity : ComponentActivity() {
                                 painter = painterResource(R.drawable.wupp_logo),
                                 contentDescription = "Wupp",
                                 modifier = Modifier
-                                    .size(72.dp)
-                                    .clip(RoundedCornerShape(18.dp))
+                                    .size(76.dp)
+                                    .clip(RoundedCornerShape(22.dp))
                             )
-                            Spacer(modifier = Modifier.height(20.dp))
-                            CircularProgressIndicator(
-                                color = colors.accentGreen,
-                                strokeWidth = 2.5.dp,
-                                modifier = Modifier.size(26.dp)
+                            Spacer(modifier = Modifier.height(22.dp))
+                            @OptIn(ExperimentalMaterial3ExpressiveApi::class)
+                            ContainedLoadingIndicator(
+                                containerColor = colors.pillActiveBg,
+                                indicatorColor = colors.brightGreen,
+                                modifier = Modifier.size(44.dp)
                             )
                         }
                     }
@@ -144,24 +158,59 @@ class MainActivity : ComponentActivity() {
                     val updatesListState = rememberLazyListState()
                     val communitiesListState = rememberLazyListState()
                     val toolsListState = rememberLazyListState()
-                    val activeJid = selectedChatJid
-                    if (activeJid == null) {
-                        HomeScreen(
-                            viewModel = vm,
-                            onOpenChat = { jid -> selectedChatJid = jid },
-                            currentTab = homeTab,
-                            onSelectTab = { homeTab = it },
-                            chatsListState = chatsListState,
-                            updatesListState = updatesListState,
-                            communitiesListState = communitiesListState,
-                            toolsListState = toolsListState
-                        )
-                    } else {
-                        ChatScreen(
-                            chatJid = activeJid,
-                            viewModel = vm,
-                            onBack = { selectedChatJid = null }
-                        )
+
+                    @OptIn(ExperimentalMaterial3ExpressiveApi::class)
+                    AnimatedContent(
+                        targetState = selectedChatJid,
+                        transitionSpec = {
+                            if (targetState != null) {
+                                (slideInHorizontally(
+                                    animationSpec = motionScheme.defaultSpatialSpec()
+                                ) { it / 3 } + scaleIn(
+                                    initialScale = 0.96f,
+                                    animationSpec = motionScheme.defaultSpatialSpec()
+                                ) + fadeIn(
+                                    animationSpec = motionScheme.fastEffectsSpec()
+                                )) togetherWith (slideOutHorizontally(
+                                    animationSpec = motionScheme.defaultSpatialSpec()
+                                ) { -it / 6 } + fadeOut(
+                                    animationSpec = motionScheme.fastEffectsSpec()
+                                ))
+                            } else {
+                                (slideInHorizontally(
+                                    animationSpec = motionScheme.defaultSpatialSpec()
+                                ) { -it / 6 } + fadeIn(
+                                    animationSpec = motionScheme.fastEffectsSpec()
+                                )) togetherWith (slideOutHorizontally(
+                                    animationSpec = motionScheme.defaultSpatialSpec()
+                                ) { it / 3 } + scaleOut(
+                                    targetScale = 0.96f,
+                                    animationSpec = motionScheme.defaultSpatialSpec()
+                                ) + fadeOut(
+                                    animationSpec = motionScheme.fastEffectsSpec()
+                                ))
+                            }
+                        },
+                        label = "home_chat_route"
+                    ) { activeJid ->
+                        if (activeJid == null) {
+                            HomeScreen(
+                                viewModel = vm,
+                                onOpenChat = { jid -> selectedChatJid = jid },
+                                currentTab = homeTab,
+                                onSelectTab = { homeTab = it },
+                                chatsListState = chatsListState,
+                                updatesListState = updatesListState,
+                                communitiesListState = communitiesListState,
+                                toolsListState = toolsListState
+                            )
+                        } else {
+                            ChatScreen(
+                                chatJid = activeJid,
+                                viewModel = vm,
+                                onBack = { selectedChatJid = null }
+                            )
+                        }
                     }
                 }
 

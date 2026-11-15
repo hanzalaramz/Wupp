@@ -4,16 +4,26 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -77,6 +87,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -88,12 +99,14 @@ import androidx.compose.material3.FloatingActionButtonMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -102,6 +115,10 @@ import androidx.compose.material3.ToggleFloatingActionButton
 import androidx.compose.material3.ToggleFloatingActionButtonDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -110,6 +127,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -142,6 +160,12 @@ import com.wa.beastclient.domain.stealth.AutoDownloadNetwork
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.HomeFilterChip
 import com.wa.beastclient.ui.components.AutoDownloadNetworkDialog
+import com.wa.beastclient.ui.components.ExpressiveIconBadge
+import com.wa.beastclient.ui.components.ExpressiveSegmentPosition
+import com.wa.beastclient.ui.components.ExpressiveSegmentedActionRow
+import com.wa.beastclient.ui.components.ExpressiveSegmentedContainer
+import com.wa.beastclient.ui.components.ExpressiveSegmentedGroup
+import com.wa.beastclient.ui.components.ExpressiveSegmentedSwitchRow
 import com.wa.beastclient.ui.components.FullScreenMediaViewer
 import com.wa.beastclient.ui.components.FullScreenStatusViewer
 import com.wa.beastclient.ui.components.GalleryVisibilityContactsDialog
@@ -156,6 +180,7 @@ import com.wa.beastclient.ui.components.ThemeSelectorGrid
 import com.wa.beastclient.ui.components.WallpaperPickerDialog
 import com.wa.beastclient.ui.components.WuppGlassNavBar
 import com.wa.beastclient.ui.components.describeChatWallpaper
+import com.wa.beastclient.ui.components.expressivePressScale
 import com.wa.beastclient.ui.components.formatMessageClock
 import com.wa.beastclient.ui.components.rememberWuppBackdropState
 import com.wa.beastclient.ui.components.wuppBackdropSource
@@ -169,6 +194,8 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -254,8 +281,19 @@ fun HomeScreen(
     Scaffold(
         containerColor = colors.appSurface,
         topBar = {
+            val motionScheme = MaterialTheme.motionScheme
             Column(modifier = Modifier.background(colors.appSurface)) {
-                if (currentTab == 0 && selectedChatJids.isNotEmpty()) {
+                AnimatedContent(
+                    targetState = currentTab == 0 && selectedChatJids.isNotEmpty(),
+                    transitionSpec = {
+                        (fadeIn(motionScheme.fastEffectsSpec()) + scaleIn(
+                            initialScale = 0.98f,
+                            animationSpec = motionScheme.fastSpatialSpec()
+                        )) togetherWith fadeOut(motionScheme.fastEffectsSpec())
+                    },
+                    label = "home_topbar_mode"
+                ) { inSelectionMode ->
+                if (inSelectionMode) {
                     val allPinned = selectedChats.isNotEmpty() && selectedChats.all { it.isPinned }
                     val allMuted = selectedChats.isNotEmpty() && selectedChats.all { it.isMuted }
                     val allArchived = selectedChats.isNotEmpty() && selectedChats.all { it.isArchived }
@@ -394,29 +432,54 @@ fun HomeScreen(
                                     "CONNECTING", "PAIRING", "SYNCING" -> colors.warningAmber
                                     else -> colors.textSecondary.copy(alpha = 0.55f)
                                 },
-                                animationSpec = tween(220),
+                                animationSpec = motionScheme.fastEffectsSpec(),
                                 label = "top_bar_status_dot"
                             )
+                            val statusWord = when (bridgeStatus.connectionState) {
+                                "CONNECTED" -> "Live"
+                                "SYNCING" -> "Syncing"
+                                "CONNECTING", "PAIRING" -> "Linking"
+                                else -> "Idle"
+                            }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.spacedBy(9.dp)
                             ) {
                                 Image(
                                     painter = painterResource(R.drawable.wupp_logo),
                                     contentDescription = "Wupp",
-                                    modifier = Modifier.size(28.dp)
+                                    modifier = Modifier
+                                        .size(30.dp)
+                                        .clip(RoundedCornerShape(9.dp))
                                 )
                                 Text(
                                     text = "Wupp",
-                                    fontSize = 22.sp,
-                                    fontWeight = FontWeight.Bold
+                                    fontSize = 25.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = (-0.5).sp
                                 )
-                                Box(
+                                Row(
                                     modifier = Modifier
-                                        .size(7.dp)
-                                        .clip(CircleShape)
-                                        .background(statusColor)
-                                )
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(statusColor.copy(alpha = 0.14f))
+                                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.5.dp)
+                                            .clip(CircleShape)
+                                            .background(statusColor)
+                                    )
+                                    Text(
+                                        text = statusWord,
+                                        color = statusColor,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        lineHeight = 12.sp
+                                    )
+                                }
                             }
                         } else {
                             Text(
@@ -425,8 +488,9 @@ fun HomeScreen(
                                     2 -> "Communities"
                                     else -> "Settings"
                                 },
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.Bold
+                                fontSize = 25.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = (-0.4).sp
                             )
                         }
                     },
@@ -527,6 +591,7 @@ fun HomeScreen(
                         }
                     }
                 )
+                }
                 }
 
                 AnimatedVisibility(visible = searchExpanded && currentTab != 0) {
@@ -635,6 +700,7 @@ fun HomeScreen(
         }
     ) { innerPadding ->
         val contentBottomPad = innerPadding.calculateBottomPadding() + 14.dp
+        val motionScheme = MaterialTheme.motionScheme
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -642,77 +708,94 @@ fun HomeScreen(
                 .wuppBackdropSource(backdropState)
                 .background(colors.appSurface)
         ) {
-            when (currentTab) {
-                0 -> ChatsTabContent(
-                    chats = chats,
-                    allChats = allChats,
-                    selectedChip = selectedChip,
-                    ftsHits = ftsHits,
-                    searchQuery = searchQuery,
-                    listState = chatsListState,
-                    selectedChatJids = selectedChatJids,
-                    bottomPadding = contentBottomPad,
-                    onSearchChange = { viewModel.updateHomeSearch(it) },
-                    heartbeat = heartbeat,
-                    bridgeStatus = bridgeStatus,
-                    onSelectChip = { viewModel.selectFilter(it) },
-                    onResetHeartbeat = { viewModel.recordPrimaryHeartbeatNow() },
-                    onSeedShowcase = { viewModel.seedShowcaseData() },
-                    onAvatarClick = { chat ->
-                        if (selectedChatJids.isNotEmpty()) {
+            AnimatedContent(
+                targetState = currentTab,
+                transitionSpec = {
+                    val forward = targetState >= initialState
+                    (slideInHorizontally(
+                        animationSpec = motionScheme.defaultSpatialSpec()
+                    ) { width -> if (forward) width / 5 else -width / 5 } + fadeIn(
+                        animationSpec = motionScheme.fastEffectsSpec()
+                    )) togetherWith (slideOutHorizontally(
+                        animationSpec = motionScheme.defaultSpatialSpec()
+                    ) { width -> if (forward) -width / 6 else width / 6 } + fadeOut(
+                        animationSpec = motionScheme.fastEffectsSpec()
+                    ))
+                },
+                label = "home_tab_transition"
+            ) { tabIndex ->
+                when (tabIndex) {
+                    0 -> ChatsTabContent(
+                        chats = chats,
+                        allChats = allChats,
+                        selectedChip = selectedChip,
+                        ftsHits = ftsHits,
+                        searchQuery = searchQuery,
+                        listState = chatsListState,
+                        selectedChatJids = selectedChatJids,
+                        bottomPadding = contentBottomPad,
+                        onSearchChange = { viewModel.updateHomeSearch(it) },
+                        heartbeat = heartbeat,
+                        bridgeStatus = bridgeStatus,
+                        onSelectChip = { viewModel.selectFilter(it) },
+                        onResetHeartbeat = { viewModel.recordPrimaryHeartbeatNow() },
+                        onSeedShowcase = { viewModel.seedShowcaseData() },
+                        onAvatarClick = { chat ->
+                            if (selectedChatJids.isNotEmpty()) {
+                                selectedChatJids = if (chat.jid in selectedChatJids) {
+                                    selectedChatJids - chat.jid
+                                } else {
+                                    selectedChatJids + chat.jid
+                                }
+                            } else {
+                                quickContactTarget = chat
+                            }
+                        },
+                        onChatClick = { chat ->
+                            if (selectedChatJids.isNotEmpty()) {
+                                selectedChatJids = if (chat.jid in selectedChatJids) {
+                                    selectedChatJids - chat.jid
+                                } else {
+                                    selectedChatJids + chat.jid
+                                }
+                            } else {
+                                onOpenChat(chat.jid)
+                            }
+                        },
+                        onChatLongClick = { chat ->
                             selectedChatJids = if (chat.jid in selectedChatJids) {
                                 selectedChatJids - chat.jid
                             } else {
                                 selectedChatJids + chat.jid
                             }
-                        } else {
-                            quickContactTarget = chat
                         }
-                    },
-                    onChatClick = { chat ->
-                        if (selectedChatJids.isNotEmpty()) {
-                            selectedChatJids = if (chat.jid in selectedChatJids) {
-                                selectedChatJids - chat.jid
-                            } else {
-                                selectedChatJids + chat.jid
-                            }
-                        } else {
-                            onOpenChat(chat.jid)
-                        }
-                    },
-                    onChatLongClick = { chat ->
-                        selectedChatJids = if (chat.jid in selectedChatJids) {
-                            selectedChatJids - chat.jid
-                        } else {
-                            selectedChatJids + chat.jid
-                        }
-                    }
-                )
+                    )
 
-                1 -> UpdatesStatusTab(
-                    statuses = statuses,
-                    channels = channels,
-                    allChats = allChats,
-                    searchQuery = searchQuery,
-                    listState = updatesListState,
-                    bottomPadding = contentBottomPad,
-                    onOpenStatus = { activeStatusViewer = it },
-                    onOpenChannel = { onOpenChat(it) }
-                )
+                    1 -> UpdatesStatusTab(
+                        statuses = statuses,
+                        channels = channels,
+                        allChats = allChats,
+                        searchQuery = searchQuery,
+                        listState = updatesListState,
+                        bottomPadding = contentBottomPad,
+                        onOpenStatus = { activeStatusViewer = it },
+                        onOpenChannel = { onOpenChat(it) }
+                    )
 
-                2 -> CommunitiesTab(
-                    allChats = allChats,
-                    listState = communitiesListState,
-                    bottomPadding = contentBottomPad,
-                    onOpenGroup = onOpenChat
-                )
+                    2 -> CommunitiesTab(
+                        allChats = allChats,
+                        listState = communitiesListState,
+                        bottomPadding = contentBottomPad,
+                        onOpenGroup = onOpenChat
+                    )
 
-                3 -> ToolsVaultTab(
-                    viewModel = viewModel,
-                    listState = toolsListState,
-                    bottomPadding = contentBottomPad,
-                    onOpenFeedback = { activeFeedbackType = it }
-                )
+                    else -> ToolsVaultTab(
+                        viewModel = viewModel,
+                        listState = toolsListState,
+                        bottomPadding = contentBottomPad,
+                        onOpenFeedback = { activeFeedbackType = it }
+                    )
+                }
             }
         }
     }
@@ -1033,7 +1116,10 @@ private fun ChatsTabContent(
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
+    val scope = rememberCoroutineScope()
     var showExtraFilters by remember { mutableStateOf(false) }
+    var isRefreshing by remember { mutableStateOf(false) }
+    val pullRefreshState = rememberPullToRefreshState()
 
     val nonCommunityChats = remember(allChats) {
         allChats.filter {
@@ -1044,6 +1130,30 @@ private fun ChatsTabContent(
         }
     }
 
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = {
+            if (!isRefreshing) {
+                isRefreshing = true
+                scope.launch {
+                    delay(700L)
+                    isRefreshing = false
+                }
+            }
+        },
+        state = pullRefreshState,
+        indicator = {
+            @OptIn(ExperimentalMaterial3ExpressiveApi::class)
+            PullToRefreshDefaults.LoadingIndicator(
+                state = pullRefreshState,
+                isRefreshing = isRefreshing,
+                containerColor = colors.pillActiveBg,
+                color = colors.brightGreen,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+        },
+        modifier = Modifier.fillMaxSize()
+    ) {
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
@@ -1291,24 +1401,53 @@ private fun ChatsTabContent(
         // Empty state
         if (chats.isEmpty()) {
             item(key = "empty_state") {
-                Column(
+                val syncingNow = bridgeStatus.connectionState == "SYNCING" || bridgeStatus.connectionState == "CONNECTING"
+                Surface(
+                    shape = RoundedCornerShape(28.dp),
+                    color = colors.elevatedBar.copy(alpha = if (colors.isDark) 0.72f else 0.94f),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 48.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                        .padding(horizontal = 18.dp, vertical = 28.dp)
                 ) {
-                    Text(
-                        text = if (bridgeStatus.connectionState == "CONNECTED") "No chats yet" else "Start chatting on Wupp",
-                        color = colors.textPrimary,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 16.sp
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Your synced conversations will appear here automatically.",
-                        color = colors.textSecondary,
-                        fontSize = 13.5.sp
-                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp, vertical = 34.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        if (syncingNow) {
+                            @OptIn(ExperimentalMaterial3ExpressiveApi::class)
+                            ContainedLoadingIndicator(
+                                containerColor = colors.pillActiveBg,
+                                indicatorColor = colors.brightGreen,
+                                modifier = Modifier.size(52.dp)
+                            )
+                        } else {
+                            ExpressiveIconBadge(
+                                icon = Icons.Rounded.ChatBubbleOutline,
+                                contentDescription = null,
+                                active = true,
+                                modifier = Modifier.size(54.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = when {
+                                syncingNow -> "Syncing your conversations..."
+                                bridgeStatus.connectionState == "CONNECTED" -> "No chats yet"
+                                else -> "Start chatting on Wupp"
+                            },
+                            color = colors.textPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Your synced conversations will appear here automatically.",
+                            color = colors.textSecondary,
+                            fontSize = 13.5.sp
+                        )
+                    }
                 }
             }
         } else {
@@ -1323,6 +1462,7 @@ private fun ChatsTabContent(
             }
         }
     }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1336,17 +1476,24 @@ private fun ChatListRow(
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
+    val rowInteraction = remember { MutableInteractionSource() }
     val rowBg by animateColorAsState(
         targetValue = if (selected) colors.brightGreen.copy(alpha = 0.16f) else Color.Transparent,
-        animationSpec = tween(160),
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
         label = "chat_row_selection_bg"
+    )
+    val rowRadius by animateDpAsState(
+        targetValue = if (selected) 20.dp else 14.dp,
+        animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
+        label = "chat_row_radius"
     )
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .expressivePressScale(rowInteraction, pressedScale = 0.985f)
             .padding(horizontal = if (selected) 8.dp else 0.dp, vertical = 1.dp)
-            .clip(RoundedCornerShape(if (selected) 16.dp else 0.dp))
+            .clip(RoundedCornerShape(rowRadius))
             .height(76.dp)
             .background(rowBg)
             .then(
@@ -1354,13 +1501,15 @@ private fun ChatListRow(
                     Modifier.border(
                         1.dp,
                         colors.brightGreen.copy(alpha = 0.35f),
-                        RoundedCornerShape(16.dp)
+                        RoundedCornerShape(rowRadius)
                     )
                 } else {
                     Modifier
                 }
             )
             .combinedClickable(
+                interactionSource = rowInteraction,
+                indication = androidx.compose.foundation.LocalIndication.current,
                 onClick = onRowClick,
                 onLongClick = onRowLongClick
             )
@@ -1531,9 +1680,10 @@ private fun ChatListRow(
                     if (chat.unreadCount > 0) {
                         Box(
                             modifier = Modifier
-                                .clip(CircleShape)
+                                .animateContentSize()
+                                .clip(RoundedCornerShape(10.dp))
                                 .background(colors.brightGreen)
-                                .padding(horizontal = 6.dp, vertical = 1.dp),
+                                .padding(horizontal = 7.dp, vertical = 2.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
@@ -2437,42 +2587,43 @@ private fun ToolsVaultTab(
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         item(key = "patch_section_privacy") {
-            PatchSectionCard(title = "Privacy & Ghost Mode") {
-                PatchToggleRow(
+            ExpressiveSegmentedGroup(title = "Privacy & Ghost Mode") {
+                ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.VisibilityOff,
                     title = "Ghost Mode (Freeze Last Seen)",
                     subtitle = "Hide online status and freeze your last seen timestamp",
                     checked = stealth.ghostPresence,
+                    position = ExpressiveSegmentPosition.TOP,
                     onCheckedChange = {
                         viewModel.updateGlobalStealth { c -> c.copy(ghostPresence = it) }
                     }
                 )
-                PatchRowDivider()
-                PatchToggleRow(
+                ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.CheckCircle,
                     title = "Hide Read Receipts",
                     subtitle = "Read messages privately without sending blue ticks",
                     checked = stealth.hideReadReceipts,
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onCheckedChange = {
                         viewModel.updateGlobalStealth { c -> c.copy(hideReadReceipts = it) }
                     }
                 )
-                PatchRowDivider()
-                PatchToggleRow(
+                ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.Campaign,
                     title = "Hide Played Receipts",
                     subtitle = "Play voice notes and audio without marking them played",
                     checked = stealth.hidePlayedReceipts,
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onCheckedChange = {
                         viewModel.updateGlobalStealth { c -> c.copy(hidePlayedReceipts = it) }
                     }
                 )
-                PatchRowDivider()
-                PatchToggleRow(
+                ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.Shield,
                     title = "Hide Typing & Recording",
                     subtitle = "Suppress typing and recording audio indicators in chats",
                     checked = stealth.hideTypingRecording,
+                    position = ExpressiveSegmentPosition.BOTTOM,
                     onCheckedChange = {
                         viewModel.updateGlobalStealth { c -> c.copy(hideTypingRecording = it) }
                     }
@@ -2481,22 +2632,23 @@ private fun ToolsVaultTab(
         }
 
         item(key = "patch_section_media") {
-            PatchSectionCard(title = "Message & Media Patches") {
-                PatchToggleRow(
+            ExpressiveSegmentedGroup(title = "Message & Media Patches") {
+                ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.DeleteSweep,
                     title = "Anti-Delete Messages & Statuses",
                     subtitle = "Keep messages, media, and statuses deleted by everyone",
                     checked = stealth.antiDeleteEnabled,
+                    position = ExpressiveSegmentPosition.TOP,
                     onCheckedChange = {
                         viewModel.updateGlobalStealth { c -> c.copy(antiDeleteEnabled = it) }
                     }
                 )
-                PatchRowDivider()
-                PatchToggleRow(
+                ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.Lock,
                     title = "Disappearing Message Immunity",
                     subtitle = "Prevent ephemeral timers from expiring messages in chats",
                     checked = stealth.disappearingImmunity,
+                    position = ExpressiveSegmentPosition.BOTTOM,
                     onCheckedChange = {
                         viewModel.updateGlobalStealth { c -> c.copy(disappearingImmunity = it) }
                     }
@@ -2505,8 +2657,8 @@ private fun ToolsVaultTab(
         }
 
         item(key = "patch_section_storage_media") {
-            PatchSectionCard(title = "Storage & Media Auto-Download") {
-                PatchToggleRow(
+            ExpressiveSegmentedGroup(title = "Storage & Media Auto-Download") {
+                ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.CloudDownload,
                     title = "Media auto-download",
                     subtitle = if (stealth.autoDownloadEnabled) {
@@ -2515,10 +2667,10 @@ private fun ToolsVaultTab(
                         "Off — tap media items in chats to download manually"
                     },
                     checked = stealth.autoDownloadEnabled,
+                    position = ExpressiveSegmentPosition.TOP,
                     onCheckedChange = { viewModel.setAutoDownloadEnabled(it) }
                 )
-                PatchRowDivider()
-                PatchActionRow(
+                ExpressiveSegmentedActionRow(
                     icon = Icons.Rounded.SignalCellularAlt,
                     title = "When using mobile data",
                     subtitle = if (stealth.autoDownloadEnabled) {
@@ -2526,10 +2678,10 @@ private fun ToolsVaultTab(
                     } else {
                         "Disabled (auto-download is off)"
                     },
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onClick = { editingAutoDlNetwork = AutoDownloadNetwork.MOBILE }
                 )
-                PatchRowDivider()
-                PatchActionRow(
+                ExpressiveSegmentedActionRow(
                     icon = Icons.Rounded.Wifi,
                     title = "When connected on Wi-Fi",
                     subtitle = if (stealth.autoDownloadEnabled) {
@@ -2537,10 +2689,10 @@ private fun ToolsVaultTab(
                     } else {
                         "Disabled (auto-download is off)"
                     },
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onClick = { editingAutoDlNetwork = AutoDownloadNetwork.WIFI }
                 )
-                PatchRowDivider()
-                PatchActionRow(
+                ExpressiveSegmentedActionRow(
                     icon = Icons.Rounded.Flight,
                     title = "When roaming",
                     subtitle = if (stealth.autoDownloadEnabled) {
@@ -2548,18 +2700,18 @@ private fun ToolsVaultTab(
                     } else {
                         "Disabled (auto-download is off)"
                     },
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onClick = { editingAutoDlNetwork = AutoDownloadNetwork.ROAMING }
                 )
-                PatchRowDivider()
-                PatchToggleRow(
+                ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.Collections,
                     title = "Media visibility",
                     subtitle = "Show newly downloaded media in your device's gallery",
                     checked = stealth.mediaVisibilityInGallery,
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onCheckedChange = { viewModel.setMediaVisibilityInGallery(it) }
                 )
-                PatchRowDivider()
-                PatchActionRow(
+                ExpressiveSegmentedActionRow(
                     icon = Icons.Rounded.VisibilityOff,
                     title = "Hide contact media from gallery",
                     subtitle = if (stealth.hiddenGalleryJids.isEmpty()) {
@@ -2567,63 +2719,65 @@ private fun ToolsVaultTab(
                     } else {
                         "${stealth.hiddenGalleryJids.size} contact(s)/group(s) hidden from gallery"
                     },
+                    position = ExpressiveSegmentPosition.BOTTOM,
                     onClick = { showGalleryContactsDialog = true }
                 )
             }
         }
 
         item(key = "patch_section_appearance") {
-            PatchSectionCard(title = "Appearance") {
+            ExpressiveSegmentedGroup(title = "Appearance") {
                 val colors = LocalWaColors.current
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ExpressiveSegmentedContainer(position = ExpressiveSegmentPosition.TOP) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 15.dp, vertical = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Palette,
-                            contentDescription = null,
-                            tint = colors.accentGreen,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "App Theme",
-                                color = colors.textPrimary,
-                                fontSize = 15.5.sp,
-                                fontWeight = FontWeight.Medium
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            ExpressiveIconBadge(
+                                icon = Icons.Rounded.Palette,
+                                contentDescription = "App Theme",
+                                active = true
                             )
-                            Text(
-                                text = "${stealth.themeMode.label} — ${stealth.themeMode.tagline}",
-                                color = colors.textSecondary,
-                                fontSize = 12.5.sp
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "App Theme",
+                                    color = colors.textPrimary,
+                                    fontSize = 15.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "${stealth.themeMode.label} — ${stealth.themeMode.tagline}",
+                                    color = colors.textSecondary,
+                                    fontSize = 12.5.sp
+                                )
+                            }
                         }
+                        ThemeSelectorGrid(
+                            selectedTheme = stealth.themeMode,
+                            onSelectTheme = { viewModel.setThemeMode(it) }
+                        )
                     }
-                    ThemeSelectorGrid(
-                        selectedTheme = stealth.themeMode,
-                        onSelectTheme = { viewModel.setThemeMode(it) }
-                    )
                 }
-                PatchRowDivider()
-                PatchActionRow(
+                ExpressiveSegmentedActionRow(
                     icon = Icons.Rounded.Image,
                     title = "Chat Wallpaper",
                     subtitle = describeChatWallpaper(stealth.chatWallpaperUri),
+                    position = ExpressiveSegmentPosition.BOTTOM,
                     onClick = { showWallpaperDialog = true }
                 )
             }
         }
 
         item(key = "patch_section_notifications_sync") {
-            PatchSectionCard(title = "Notifications & Background Sync") {
-                PatchActionRow(
+            ExpressiveSegmentedGroup(title = "Notifications & Background Sync") {
+                ExpressiveSegmentedActionRow(
                     icon = if (isSyncNotifHidden) Icons.Rounded.NotificationsOff else Icons.Rounded.Notifications,
                     title = if (isSyncNotifHidden) "Persistent Sync Banner" else "Hide Persistent Sync Banner",
                     subtitle = if (isSyncNotifHidden) {
@@ -2632,6 +2786,7 @@ private fun ToolsVaultTab(
                         "Remove the constant notification from your shade without breaking real-time sync or message alerts"
                     },
                     badgeText = if (isSyncNotifHidden) "HIDDEN" else "1-TAP GUIDE",
+                    position = ExpressiveSegmentPosition.TOP,
                     onClick = {
                         if (isSyncNotifHidden) {
                             WaRealtimeService.openNotificationChannelSettings(
@@ -2643,8 +2798,7 @@ private fun ToolsVaultTab(
                         }
                     }
                 )
-                PatchRowDivider()
-                PatchActionRow(
+                ExpressiveSegmentedActionRow(
                     icon = Icons.Rounded.BatteryChargingFull,
                     title = "Unrestricted Battery (24/7 Sync)",
                     subtitle = if (isBatteryUnrestricted) {
@@ -2653,6 +2807,7 @@ private fun ToolsVaultTab(
                         "Allow unrestricted background use so real-time sync and alerts never stop"
                     },
                     badgeText = if (isBatteryUnrestricted) "ACTIVE" else "ALLOW",
+                    position = ExpressiveSegmentPosition.BOTTOM,
                     onClick = {
                         WaRealtimeService.openBatteryOptimizationSettings(context)
                     }
@@ -2679,12 +2834,13 @@ private fun ToolsVaultTab(
                 else -> null
             }
 
-            PatchSectionCard(title = "Updates & GitHub Support") {
-                PatchActionRow(
+            ExpressiveSegmentedGroup(title = "Updates & GitHub Support") {
+                ExpressiveSegmentedActionRow(
                     icon = Icons.Rounded.SystemUpdate,
                     title = "Check for Updates",
                     subtitle = updateSubtitle,
                     badgeText = updateBadge,
+                    position = ExpressiveSegmentPosition.TOP,
                     onClick = {
                         when (updateState) {
                             is UpdateUiState.UpdateAvailable,
@@ -2694,48 +2850,48 @@ private fun ToolsVaultTab(
                         }
                     }
                 )
-                PatchRowDivider()
-                PatchToggleRow(
+                ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.CheckCircle,
                     title = "Auto-Check for Updates",
                     subtitle = "Notify and prompt to download when a new GitHub release ships",
                     checked = autoUpdateEnabled,
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onCheckedChange = { viewModel.setAutoUpdateEnabled(it) }
                 )
-                PatchRowDivider()
-                PatchToggleRow(
+                ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.SystemUpdate,
                     title = "Receive Pre-release Updates",
                     subtitle = "Tester channel — fetch GitHub pre-releases before public rollout",
                     checked = includePreReleases,
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onCheckedChange = { viewModel.setIncludePreReleases(it) }
                 )
-                PatchRowDivider()
-                PatchActionRow(
+                ExpressiveSegmentedActionRow(
                     icon = Icons.Rounded.BugReport,
                     title = "Report a Bug / Issue",
                     subtitle = "Open a pre-filled bug report on GitHub Issues",
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onClick = { onOpenFeedback(GitHubFeedbackType.BUG) }
                 )
-                PatchRowDivider()
-                PatchActionRow(
+                ExpressiveSegmentedActionRow(
                     icon = Icons.Rounded.Lightbulb,
                     title = "Request a Feature",
                     subtitle = "Suggest improvements or new capabilities",
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onClick = { onOpenFeedback(GitHubFeedbackType.FEATURE) }
                 )
-                PatchRowDivider()
-                PatchActionRow(
+                ExpressiveSegmentedActionRow(
                     icon = Icons.Rounded.ChatBubbleOutline,
                     title = "Give Feedback",
                     subtitle = "Share general thoughts directly to GitHub",
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onClick = { onOpenFeedback(GitHubFeedbackType.FEEDBACK) }
                 )
-                PatchRowDivider()
-                PatchActionRow(
+                ExpressiveSegmentedActionRow(
                     icon = Icons.Rounded.Code,
                     title = "GitHub Repository",
                     subtitle = "${BuildConfig.GITHUB_REPO} • v${BuildConfig.VERSION_NAME}",
+                    position = ExpressiveSegmentPosition.BOTTOM,
                     onClick = {
                         val repo = BuildConfig.GITHUB_REPO.trim().trim('/')
                         runCatching {
@@ -2877,183 +3033,6 @@ private fun ToolsVaultTab(
                 }
             }
         )
-    }
-}
-
-@Composable
-private fun PatchSectionCard(
-    title: String,
-    content: @Composable () -> Unit
-) {
-    val colors = LocalWaColors.current
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = title,
-            color = colors.accentGreen,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
-        )
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = colors.elevatedBar.copy(alpha = if (colors.isDark) 0.88f else 0.96f)),
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(
-                    width = 1.dp,
-                    color = if (colors.isDark) Color.White.copy(alpha = 0.08f) else colors.divider,
-                    shape = RoundedCornerShape(20.dp)
-                )
-        ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                content()
-            }
-        }
-    }
-}
-
-@Composable
-private fun PatchRowDivider() {
-    val colors = LocalWaColors.current
-    HorizontalDivider(
-        modifier = Modifier.padding(start = 66.dp, end = 16.dp),
-        thickness = 0.5.dp,
-        color = colors.textSecondary.copy(alpha = 0.14f)
-    )
-}
-
-@Composable
-private fun PatchToggleRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    val colors = LocalWaColors.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
-            .padding(horizontal = 14.dp, vertical = 13.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(38.dp)
-                .clip(RoundedCornerShape(11.dp))
-                .background(
-                    if (checked) colors.accentGreen.copy(alpha = 0.16f)
-                    else colors.textSecondary.copy(alpha = 0.10f)
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = title,
-                tint = if (checked) colors.accentGreen else colors.textSecondary,
-                modifier = Modifier.size(20.dp)
-            )
-        }
-        Spacer(modifier = Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                color = colors.textPrimary,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = subtitle,
-                color = colors.textSecondary,
-                fontSize = 12.5.sp,
-                lineHeight = 16.sp
-            )
-        }
-        Spacer(modifier = Modifier.width(10.dp))
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = colors.accentGreen,
-                uncheckedThumbColor = colors.textSecondary,
-                uncheckedTrackColor = colors.pillInactiveBg,
-                uncheckedBorderColor = colors.textSecondary.copy(alpha = 0.35f)
-            )
-        )
-    }
-}
-
-@Composable
-private fun PatchActionRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String,
-    badgeText: String? = null,
-    onClick: () -> Unit
-) {
-    val colors = LocalWaColors.current
-    val highlighted = !badgeText.isNullOrBlank()
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 13.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(38.dp)
-                .clip(RoundedCornerShape(11.dp))
-                .background(
-                    if (highlighted) colors.accentGreen.copy(alpha = 0.16f)
-                    else colors.textSecondary.copy(alpha = 0.10f)
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = title,
-                tint = if (highlighted) colors.accentGreen else colors.textSecondary,
-                modifier = Modifier.size(20.dp)
-            )
-        }
-        Spacer(modifier = Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                color = colors.textPrimary,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = subtitle,
-                color = colors.textSecondary,
-                fontSize = 12.5.sp,
-                lineHeight = 16.sp,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        if (!badgeText.isNullOrBlank()) {
-            Spacer(modifier = Modifier.width(8.dp))
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(colors.accentGreen)
-                    .padding(horizontal = 9.dp, vertical = 3.dp)
-            ) {
-                Text(
-                    text = badgeText,
-                    color = Color(0xFF0B141A),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
     }
 }
 

@@ -11,11 +11,24 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -72,15 +85,18 @@ import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -89,6 +105,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ToggleButton
+import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -148,6 +166,7 @@ import com.wa.beastclient.ui.components.WallpaperPickerDialog
 import com.wa.beastclient.ui.components.WhatsAppBubbleShape
 import com.wa.beastclient.ui.components.WhatsAppClusterInnerShape
 import com.wa.beastclient.ui.components.WuppGlassContainer
+import com.wa.beastclient.ui.components.expressivePressScale
 import com.wa.beastclient.ui.components.formatMessageClock
 import com.wa.beastclient.ui.components.rememberWuppBackdropState
 import com.wa.beastclient.ui.theme.LocalWaColors
@@ -162,7 +181,11 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(
+    ExperimentalMaterial3Api::class,
+    ExperimentalFoundationApi::class,
+    ExperimentalMaterial3ExpressiveApi::class
+)
 @Composable
 fun ChatScreen(
     chatJid: String,
@@ -322,9 +345,18 @@ fun ChatScreen(
     Scaffold(
         containerColor = colors.chatCanvas,
         topBar = {
+            val topMotion = MaterialTheme.motionScheme
             Column {
-                val selectedMsg = actionMenuTarget
-                if (selectedMsg != null) {
+                AnimatedContent(
+                    targetState = actionMenuTarget,
+                    transitionSpec = {
+                        (fadeIn(topMotion.fastEffectsSpec()) + slideInVertically(topMotion.fastSpatialSpec()) { -it / 4 }) togetherWith
+                            (fadeOut(topMotion.fastEffectsSpec()) + slideOutVertically(topMotion.fastSpatialSpec()) { -it / 4 })
+                    },
+                    contentKey = { it?.id ?: "chat_normal_topbar" },
+                    label = "chat_topbar_transition"
+                ) { selectedMsg ->
+                    if (selectedMsg != null) {
                     TopAppBar(
                         colors = TopAppBarDefaults.topAppBarColors(
                             containerColor = colors.appSurface,
@@ -461,8 +493,8 @@ fun ChatScreen(
                             }
                         }
                     )
-                } else {
-                TopAppBar(
+                    } else {
+                    TopAppBar(
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = colors.appSurface,
                         titleContentColor = colors.textPrimary
@@ -612,8 +644,10 @@ fun ChatScreen(
                         }
                     }
                 )
+                    }
+                }
 
-                AnimatedVisibility(visible = showSearchInChat) {
+                AnimatedVisibility(visible = showSearchInChat && actionMenuTarget == null) {
                     Column(modifier = Modifier.background(colors.elevatedBar).padding(horizontal = 12.dp, vertical = 6.dp)) {
                         OutlinedTextField(
                             value = inChatQuery,
@@ -638,7 +672,6 @@ fun ChatScreen(
                             )
                         }
                     }
-                }
                 }
             }
         }
@@ -819,13 +852,23 @@ fun ChatScreen(
                     }
                 }
 
-                // Floating WhatsApp Emoji Reaction Picker Pill when a message is long-pressed
-                actionMenuTarget?.let { target ->
+                // Floating WhatsApp Emoji Reaction Picker Pill with M3 Expressive spring scale & bounce
+                var lastReactionTarget by remember { mutableStateOf<MessageEntity?>(null) }
+                LaunchedEffect(actionMenuTarget) {
+                    if (actionMenuTarget != null) lastReactionTarget = actionMenuTarget
+                }
+                val reactionMotion = MaterialTheme.motionScheme
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = actionMenuTarget != null,
+                    enter = fadeIn(reactionMotion.fastEffectsSpec()),
+                    exit = fadeOut(reactionMotion.fastEffectsSpec())
+                ) {
+                    val target = actionMenuTarget ?: lastReactionTarget
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .clickable(
-                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                interactionSource = remember { MutableInteractionSource() },
                                 indication = null
                             ) {
                                 actionMenuTarget = null
@@ -834,13 +877,37 @@ fun ChatScreen(
                             },
                         contentAlignment = Alignment.BottomCenter
                     ) {
+                        if (target != null) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 18.dp)
+                            modifier = Modifier
+                                .padding(horizontal = 14.dp, vertical = 18.dp)
+                                .animateEnterExit(
+                                    enter = scaleIn(
+                                        animationSpec = reactionMotion.fastSpatialSpec(),
+                                        initialScale = 0.86f
+                                    ) + slideInVertically(
+                                        animationSpec = reactionMotion.fastSpatialSpec()
+                                    ) { it / 3 },
+                                    exit = scaleOut(
+                                        animationSpec = reactionMotion.fastEffectsSpec(),
+                                        targetScale = 0.90f
+                                    )
+                                )
                         ) {
-                            AnimatedVisibility(visible = showMoreReactionEmojis) {
+                            AnimatedVisibility(
+                                visible = showMoreReactionEmojis,
+                                enter = fadeIn(reactionMotion.fastEffectsSpec()) + scaleIn(
+                                    animationSpec = reactionMotion.fastSpatialSpec(),
+                                    initialScale = 0.88f
+                                ),
+                                exit = fadeOut(reactionMotion.fastEffectsSpec()) + scaleOut(
+                                    animationSpec = reactionMotion.fastEffectsSpec(),
+                                    targetScale = 0.92f
+                                )
+                            ) {
                                 Surface(
-                                    shape = RoundedCornerShape(20.dp),
+                                    shape = RoundedCornerShape(24.dp),
                                     color = if (colors.isDark) Color(0xFF233138) else Color.White,
                                     shadowElevation = 10.dp,
                                     modifier = Modifier.padding(bottom = 8.dp)
@@ -857,12 +924,17 @@ fun ChatScreen(
                                         extraRows.forEach { rowEmojis ->
                                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                                 rowEmojis.forEach { emoji ->
+                                                    val extraInteraction = remember(emoji) { MutableInteractionSource() }
                                                     Text(
                                                         text = emoji,
                                                         fontSize = 24.sp,
                                                         modifier = Modifier
+                                                            .expressivePressScale(extraInteraction, pressedScale = 0.80f)
                                                             .clip(CircleShape)
-                                                            .clickable {
+                                                            .clickable(
+                                                                interactionSource = extraInteraction,
+                                                                indication = null
+                                                            ) {
                                                                 viewModel.sendReaction(chatJid, target, emoji)
                                                                 actionMenuTarget = null
                                                                 showMoreReactionEmojis = false
@@ -887,12 +959,17 @@ fun ChatScreen(
                                 ) {
                                     listOf("👍", "❤️", "😂", "😮", "😢", "🙏", "😊").forEach { emoji ->
                                         val isCurrent = target.reactionSummary.contains(emoji)
+                                        val emojiInteraction = remember(emoji) { MutableInteractionSource() }
                                         Box(
                                             modifier = Modifier
                                                 .size(38.dp)
+                                                .expressivePressScale(emojiInteraction, pressedScale = 0.80f)
                                                 .clip(CircleShape)
-                                                .background(if (isCurrent) colors.brightGreen.copy(alpha = 0.22f) else Color.Transparent)
-                                                .clickable {
+                                                .background(if (isCurrent) colors.brightGreen.copy(alpha = 0.24f) else Color.Transparent)
+                                                .clickable(
+                                                    interactionSource = emojiInteraction,
+                                                    indication = null
+                                                ) {
                                                     viewModel.sendReaction(chatJid, target, emoji)
                                                     actionMenuTarget = null
                                                     showMoreReactionEmojis = false
@@ -902,12 +979,17 @@ fun ChatScreen(
                                             Text(text = emoji, fontSize = 23.sp)
                                         }
                                     }
+                                    val moreInteraction = remember { MutableInteractionSource() }
                                     Box(
                                         modifier = Modifier
                                             .size(34.dp)
+                                            .expressivePressScale(moreInteraction, pressedScale = 0.84f)
                                             .clip(CircleShape)
                                             .background(colors.quotedBg)
-                                            .clickable { showMoreReactionEmojis = !showMoreReactionEmojis },
+                                            .clickable(
+                                                interactionSource = moreInteraction,
+                                                indication = null
+                                            ) { showMoreReactionEmojis = !showMoreReactionEmojis },
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
@@ -919,6 +1001,7 @@ fun ChatScreen(
                                     }
                                 }
                             }
+                        }
                         }
                     }
                 }
@@ -965,31 +1048,66 @@ fun ChatScreen(
                         }
                     }
                 } else if (!isChannel) {
-                // Attachment & Quality Mode Tray
-                AnimatedVisibility(visible = showAttachTray) {
-                    Card(
+                // Attachment & Quality Mode Tray (M3 Expressive connected button group)
+                val trayMotion = MaterialTheme.motionScheme
+                AnimatedVisibility(
+                    visible = showAttachTray,
+                    enter = fadeIn(trayMotion.fastEffectsSpec()) + slideInVertically(trayMotion.fastSpatialSpec()) { it / 4 },
+                    exit = fadeOut(trayMotion.fastEffectsSpec()) + slideOutVertically(trayMotion.fastSpatialSpec()) { it / 4 }
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = colors.elevatedBar,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
-                        colors = CardDefaults.cardColors(containerColor = colors.elevatedBar)
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                            .border(
+                                width = 1.dp,
+                                color = if (colors.isDark) Color.White.copy(alpha = 0.08f) else colors.divider,
+                                shape = RoundedCornerShape(24.dp)
+                            )
                     ) {
-                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Outbound Media Quality", fontWeight = FontWeight.Bold, color = colors.textPrimary, fontSize = 13.sp)
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutboundQualityMode.entries.forEach { mode ->
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "Outbound Media Quality",
+                                fontWeight = FontWeight.Bold,
+                                color = colors.textPrimary,
+                                fontSize = 13.sp
+                            )
+                            val qualityToggleColors = ToggleButtonDefaults.colors(
+                                containerColor = colors.pillInactiveBg,
+                                contentColor = colors.textSecondary,
+                                checkedContainerColor = colors.accentGreen,
+                                checkedContentColor = Color(0xFF0B141A)
+                            )
+                            val modes = OutboundQualityMode.entries
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)
+                            ) {
+                                modes.forEachIndexed { index, mode ->
                                     val selected = mode == qualityMode
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(14.dp))
-                                            .background(if (selected) colors.pillActiveBg else colors.pillInactiveBg)
-                                            .clickable { qualityMode = mode }
-                                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                                    val shapes = when (index) {
+                                        0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                                        modes.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                                        else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                                    }
+                                    ToggleButton(
+                                        checked = selected,
+                                        onCheckedChange = { if (it) qualityMode = mode },
+                                        shapes = shapes,
+                                        colors = qualityToggleColors
                                     ) {
                                         Text(
                                             text = mode.label,
                                             fontSize = 11.5.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = if (selected) colors.pillActiveText else colors.textSecondary
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                            maxLines = 1
                                         )
                                     }
                                 }
@@ -998,14 +1116,24 @@ fun ChatScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
+                                val pickInteraction = remember { MutableInteractionSource() }
                                 Button(
                                     onClick = { pickMediaLauncher.launch("*/*") },
-                                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
+                                    interactionSource = pickInteraction,
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen),
+                                    modifier = Modifier.expressivePressScale(pickInteraction, pressedScale = 0.96f)
                                 ) {
-                                    Text("Pick File / Photo", fontSize = 12.sp, color = Color.White)
+                                    Text("Pick File / Photo", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
                                 }
                                 if (chat?.isGroup == true) {
-                                    OutlinedButton(onClick = { ghostMentionEveryone = !ghostMentionEveryone }) {
+                                    val mentionInteraction = remember { MutableInteractionSource() }
+                                    OutlinedButton(
+                                        onClick = { ghostMentionEveryone = !ghostMentionEveryone },
+                                        interactionSource = mentionInteraction,
+                                        shape = RoundedCornerShape(16.dp),
+                                        modifier = Modifier.expressivePressScale(mentionInteraction, pressedScale = 0.96f)
+                                    ) {
                                         Icon(Icons.Rounded.AlternateEmail, null, modifier = Modifier.size(16.dp))
                                         Spacer(modifier = Modifier.width(4.dp))
                                         Text(
@@ -1175,16 +1303,36 @@ fun ChatScreen(
 
                     Spacer(modifier = Modifier.width(6.dp))
 
+                    // Morphing Mic / Send / Stop FAB with M3 Expressive shape + spring physics
+                    val fabMotion = MaterialTheme.motionScheme
+                    val fabCorner by animateDpAsState(
+                        targetValue = when {
+                            isRecordingVoice -> 14.dp
+                            draftText.isNotBlank() -> 16.dp
+                            else -> 24.dp
+                        },
+                        animationSpec = fabMotion.fastSpatialSpec(),
+                        label = "composer_fab_corner"
+                    )
+                    val fabBg by animateColorAsState(
+                        targetValue = if (!canSendOutbound) colors.textSecondary
+                        else if (isRecordingVoice) colors.antiDeleteRed
+                        else colors.brightGreen,
+                        animationSpec = fabMotion.fastEffectsSpec(),
+                        label = "composer_fab_bg"
+                    )
+                    val fabInteraction = remember { MutableInteractionSource() }
                     Box(
                         modifier = Modifier
                             .size(48.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (!canSendOutbound) colors.textSecondary
-                                else if (isRecordingVoice) colors.antiDeleteRed
-                                else colors.brightGreen
-                            )
-                            .clickable(enabled = canSendOutbound) {
+                            .expressivePressScale(fabInteraction, pressedScale = 0.88f)
+                            .clip(RoundedCornerShape(fabCorner))
+                            .background(fabBg)
+                            .clickable(
+                                enabled = canSendOutbound,
+                                interactionSource = fabInteraction,
+                                indication = null
+                            ) {
                                 when {
                                     isRecordingVoice -> {
                                         scrollToBottomPending = true
@@ -1219,6 +1367,16 @@ fun ChatScreen(
                                 isRecordingVoice -> 2
                                 draftText.isNotBlank() -> 1
                                 else -> 0
+                            },
+                            transitionSpec = {
+                                (scaleIn(
+                                    animationSpec = fabMotion.fastSpatialSpec(),
+                                    initialScale = 0.72f
+                                ) + fadeIn(fabMotion.fastEffectsSpec())) togetherWith
+                                    (scaleOut(
+                                        animationSpec = fabMotion.fastEffectsSpec(),
+                                        targetScale = 0.72f
+                                    ) + fadeOut(fabMotion.fastEffectsSpec()))
                             },
                             label = "morph_fab"
                         ) { mode ->
@@ -1534,7 +1692,7 @@ private fun ActionSheetRow(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun MessageBubbleRow(
     msg: MessageEntity,
@@ -2108,10 +2266,9 @@ private fun MessageBubbleRow(
                                             contentAlignment = Alignment.Center
                                         ) {
                                             if (isDownloadingMedia) {
-                                                CircularProgressIndicator(
+                                                LoadingIndicator(
                                                     color = colors.accentGreen,
-                                                    strokeWidth = 2.5.dp,
-                                                    modifier = Modifier.size(24.dp)
+                                                    modifier = Modifier.size(28.dp)
                                                 )
                                             } else {
                                                 Icon(

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.3.0-pre.2] - 2026-11-16
+
+✨ Major Material 3 Expressive UI, UX, motion, and loading makeover — still compatible down to Android 8.0+.
+
+### 🎨 What's new
+- 🧩 **Android 16 Segmented Settings:** Redesigned Settings into crisp grouped segmented cards with active cookie-shaped icon badges and Material 3 Expressive `✓`/`✕` switches.
+- 🏠 **Alive Home & Chats:** Bold expressive header with a live status pill, pull-to-refresh morphing indicator, directional tab slides, tactile spring-press chat rows, and animated unread badges.
+- 💬 **Expressive Chat Screen:** Smooth selection-to-chat top bar transitions, bouncy spring reaction bar, connected media quality button group, and a shape-morphing Mic ↔ Send ↔ Recording button.
+- 🌀 **Fluid Transitions & Morphing Loaders:** Directional slide-and-scale navigation between Home and Chat (keeping scroll position) plus M3 Expressive morphing loaders across boot, empty states, and media downloads.
+
 ## [0.3.0-pre.1] - 2026-11-16
 
 ✨ Material 3 Expressive upgrade across Wupp — with full Android 8.0+ compatibility intact.
