@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-15
+
+✨ Real frosted Liquid Glass UI, per-chat wallpapers, synced chat deletes, and status/chat fixes.
+
+### ✨ What's new
+- 🫧 **Liquid Glass UI:** Real-time frosted blur behind the floating pill nav bar and chat composer on Android 12+, with a borderless active capsule, edge-to-edge scrolling, live connection dot, and single-line `Communities` tab.
+- 🎨 **Per-Chat Wallpapers:** Set a custom background for any specific chat while keeping your global wallpaper everywhere else.
+- 🗑️ **Two-Way Chat Delete:** Deleting a chat in Wupp can now sync to your primary WhatsApp (and phone deletes sync back).
+
+### 🛠️ Fixes
+- 👤 **Status Contact Names:** Fixed status cards and stories showing raw phone numbers instead of saved contact names.
+- 👻 **Empty Random-Number Chats:** Removed phantom unchatted `@lid` rows from your chat list and unread badge.
+- 🔋 **Battery & Settings Cleanup:** Fixed *Unrestricted Battery (24/7 Sync)* opening the wrong settings page and removed the extra *Incoming Message Alerts* row.
+
 ## [0.2.3-pre.2] - 2026-11-15
 
 ✨ True frosted Liquid Glass blur and complete cleanup of empty random-number chats.
