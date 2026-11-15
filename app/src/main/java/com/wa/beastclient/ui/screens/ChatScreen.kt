@@ -1722,6 +1722,15 @@ private fun MessageBubbleRow(
                                     if (hasVaultFile) colors.pillActiveBg.copy(alpha = 0.55f)
                                     else Color.Transparent
                                 )
+                                .clickable {
+                                    if (!hasVaultFile) {
+                                        Toast.makeText(
+                                            context,
+                                            "View-Once media can only be opened in official WhatsApp",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
                                 .padding(horizontal = 4.dp, vertical = 3.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {

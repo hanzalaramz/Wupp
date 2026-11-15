@@ -1,5 +1,6 @@
 package com.wa.beastclient.core.service
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
@@ -180,6 +182,7 @@ class WaRealtimeService : Service() {
                 setShowBadge(false)
             }
             mgr.createNotificationChannel(ch)
+            ensureMessageNotificationChannel(mgr)
         }
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -577,8 +580,97 @@ class WaRealtimeService : Service() {
             }
         }
         if (insertedNew && !isSync && !msg.isFromMe && !isActiveChat && !msg.chatJid.endsWith("@newsletter")) {
-            SoundPoolManager.playIncoming()
+            if (isUiForeground) {
+                SoundPoolManager.playIncoming()
+            }
+            postIncomingMessageNotification(msg, isGrp)
         }
+    }
+
+    private fun ensureMessageNotificationChannel(mgr: NotificationManager) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val msgCh = NotificationChannel(
+                MESSAGES_CHANNEL_ID,
+                "Messages",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Incoming WhatsApp chat and group message alerts"
+                enableVibration(true)
+                setShowBadge(true)
+            }
+            mgr.createNotificationChannel(msgCh)
+        }
+    }
+
+    private suspend fun postIncomingMessageNotification(msg: MessageEntity, isGroup: Boolean) {
+        if (msg.chatJid == "status@broadcast" || msg.chatJid.endsWith("@newsletter")) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        val chat = dao.getChat(msg.chatJid)
+        if (chat?.isMuted == true || chat?.isArchived == true) return
+
+        val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        ensureMessageNotificationChannel(mgr)
+
+        val chatTitle = chat?.name?.takeIf { it.isNotBlank() }
+            ?: msg.senderName.takeIf { it.isNotBlank() && !isGroup }
+            ?: msg.chatJid.substringBefore("@")
+
+        val bodyPreview = when {
+            msg.isViewOnce -> when (msg.msgType.uppercase()) {
+                "VIDEO" -> "View-once video"
+                "PTT", "AUDIO" -> "View-once voice message"
+                else -> "View-once photo"
+            }
+            msg.body.isNotBlank() -> msg.body
+            msg.msgType == "IMAGE" -> "Photo"
+            msg.msgType == "VIDEO" -> "Video"
+            msg.msgType == "PTT" || msg.msgType == "AUDIO" -> "Voice message"
+            msg.msgType == "DOCUMENT" -> "Document"
+            msg.msgType == "STICKER" -> "Sticker"
+            else -> "New message"
+        }
+
+        val contentText = if (isGroup) {
+            val senderLabel = msg.senderName.takeIf { it.isNotBlank() }
+                ?: msg.senderJid.substringBefore("@").substringBefore(":")
+            if (senderLabel.isNotBlank()) "$senderLabel: $bodyPreview" else bodyPreview
+        } else {
+            bodyPreview
+        }
+
+        val notifId = notificationIdForChat(msg.chatJid)
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("open_chat_jid", msg.chatJid)
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            this,
+            notifId,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, MESSAGES_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_wupp)
+            .setContentTitle(chatTitle)
+            .setContentText(contentText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(contentText))
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setSilent(isUiForeground)
+            .setWhen(msg.timestamp)
+            .setShowWhen(true)
+            .setGroup("wupp_messages")
+            .setContentIntent(contentPendingIntent)
+            .build()
+
+        runCatching { mgr.notify(notifId, notification) }
+            .onFailure { Log.w(TAG, "Failed to post message notification: ${it.message}") }
     }
 
     private suspend fun handleStatusUpsert(json: JSONObject) {
@@ -1096,9 +1188,16 @@ class WaRealtimeService : Service() {
     companion object {
         private const val TAG = "WaRealtimeService"
         private const val CHANNEL_ID = "wa_realtime_channel"
+        private const val MESSAGES_CHANNEL_ID = "wa_messages_channel"
         private const val NOTIF_ID = 1042
         const val ACTION_RECONNECT = "com.wupp.app.action.RECONNECT"
         const val ACTION_DISCONNECT = "com.wupp.app.action.DISCONNECT"
+
+        @Volatile
+        var isUiForeground: Boolean = false
+
+        private fun notificationIdForChat(chatJid: String): Int =
+            20_000 + (chatJid.hashCode() and 0x0FFFFFFF)
 
         @Volatile
         var instance: WaRealtimeService? = null
@@ -1149,6 +1248,10 @@ class WaRealtimeService : Service() {
 
         fun onChatOpened(context: Context, chatJid: String) {
             val appCtx = context.applicationContext
+            runCatching {
+                val mgr = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                mgr.cancel(notificationIdForChat(chatJid))
+            }
             companionScope.launch {
                 val dao = WaUiDatabase.getInstance(appCtx).waDao()
                 val privacy = StealthMatrixManager.getEffectivePrivacy(dao, chatJid)

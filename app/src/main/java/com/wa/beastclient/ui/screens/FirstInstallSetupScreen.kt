@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,6 +34,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.PermMedia
@@ -247,7 +249,44 @@ fun FirstInstallSetupScreen(
                     modifier = Modifier.padding(horizontal = 8.dp)
                 )
 
-                Spacer(modifier = Modifier.height(22.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(colors.brightGreen.copy(alpha = 0.12f))
+                        .border(1.dp, colors.brightGreen.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Info,
+                        contentDescription = null,
+                        tint = colors.brightGreen,
+                        modifier = Modifier
+                            .padding(top = 1.dp)
+                            .size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = "Install alongside WhatsApp — don't replace it",
+                            color = colors.textPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Wupp works as a linked companion app. Keep official WhatsApp installed for calls, View-Once media, unknown-number DMs, and your 14-day device link.",
+                            color = colors.textSecondary,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
 
                 Surface(
                     shape = RoundedCornerShape(16.dp),

@@ -3,6 +3,7 @@ package com.wa.beastclient
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -47,10 +48,15 @@ import com.wa.beastclient.ui.theme.WhatsAppTheme
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+    private val pendingOpenChatJid = MutableStateFlow<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        intent?.getStringExtra("open_chat_jid")?.takeIf { it.isNotBlank() }?.let { jid ->
+            pendingOpenChatJid.value = jid
+            intent?.removeExtra("open_chat_jid")
+        }
 
         val setupPrefs = getSharedPreferences("wupp_setup_prefs", Context.MODE_PRIVATE)
         val initialSetupDone = setupPrefs.getBoolean("setup_completed_v1", false)
@@ -66,6 +72,15 @@ class MainActivity : ComponentActivity() {
             val showUpdatePrompt by vm.showUpdatePrompt.collectAsState()
             var setupDone by remember { mutableStateOf(initialSetupDone) }
             var selectedChatJid by rememberSaveable { mutableStateOf<String?>(null) }
+            val requestedChatJid by pendingOpenChatJid.collectAsState()
+
+            LaunchedEffect(requestedChatJid, setupDone, bridgeStatus.isLoggedIn) {
+                val target = requestedChatJid
+                if (!target.isNullOrBlank() && setupDone && bridgeStatus.isLoggedIn) {
+                    selectedChatJid = target
+                    pendingOpenChatJid.value = null
+                }
+            }
 
             LaunchedEffect(intent?.getBooleanExtra("open_update_prompt", false)) {
                 if (intent?.getBooleanExtra("open_update_prompt", false) == true) {
@@ -169,10 +184,15 @@ class MainActivity : ComponentActivity() {
         if (intent.getBooleanExtra("open_update_prompt", false)) {
             WuppUpdater.openPromptDialog()
         }
+        intent.getStringExtra("open_chat_jid")?.takeIf { it.isNotBlank() }?.let { jid ->
+            pendingOpenChatJid.value = jid
+            intent.removeExtra("open_chat_jid")
+        }
     }
 
     override fun onStart() {
         super.onStart()
+        WaRealtimeService.isUiForeground = true
         val setupDone = getSharedPreferences("wupp_setup_prefs", Context.MODE_PRIVATE)
             .getBoolean("setup_completed_v1", false)
         if (setupDone) {
@@ -185,6 +205,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        WaRealtimeService.isUiForeground = false
         WuppUpdater.onAppBackgrounded()
     }
 }

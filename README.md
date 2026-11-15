@@ -21,6 +21,10 @@
 
 Use your existing WhatsApp account, chats, groups, status updates, and channels in a native Jetpack Compose client, built with **anti-ban rate-limit protection**, per-feature privacy switches, and built-in GitHub updates.
 
+> [!IMPORTANT]
+> **Install alongside official WhatsApp — do not replace it.**
+> Wupp is a **linked companion client**, not a standalone WhatsApp replacement. Keep the official WhatsApp app installed on your phone: you still need it to verify your account, open/send **View-Once** media, make voice/video calls, start chats with unknown numbers (Error 463 protection), and keep your 14-day linked session active.
+
 ## Why Wupp
 
 ### **Privacy & Ghost Mode**
@@ -57,9 +61,10 @@ Under the hood, a Go library (`whatsbridge`, built on `whatsmeow` and compiled t
 
 ## Get started
 
-1. Download an APK from [Releases](https://github.com/hanzalaramz/Wupp/releases) (`arm64-v8a` for modern 64-bit phones, or `universal` for older 32-bit, x86, or mixed devices) and open it on an Android 8.0 or newer phone. Android will ask once to allow app installs from your browser or file manager.
-2. Walk through the first-launch setup screen so notification, media, and background-running permissions are granted.
-3. Link your WhatsApp account on the setup login screen using either a QR code scan or a phone number link code from **Linked devices** in your primary WhatsApp app.
+1. Keep your **official WhatsApp app installed and logged in** on your primary phone.
+2. Download an APK from [Releases](https://github.com/hanzalaramz/Wupp/releases) (`arm64-v8a` for modern 64-bit phones, or `universal` for older 32-bit, x86, or mixed devices) and open it on an Android 8.0 or newer phone. Android will ask once to allow app installs from your browser or file manager.
+3. Walk through the first-launch setup screen so notification, media, and background-running permissions are granted.
+4. Link your WhatsApp account on the setup login screen using either a QR code scan or a phone number link code from **Linked devices** in your primary WhatsApp app.
 
 Future versions prompt inside the app, automatically match your phone's CPU architecture, and update in place without logging you out of WhatsApp. If you track releases with [Obtainium](https://github.com/ImranR98/Obtainium), point it at `https://github.com/hanzalaramz/Wupp` and filter assets with `^Wupp-.*-arm64-v8a\.apk$` (or `-universal`; turn on "Include prereleases" for alpha/beta builds).
 

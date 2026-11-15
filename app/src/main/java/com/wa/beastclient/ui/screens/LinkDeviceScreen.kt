@@ -28,6 +28,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.QrCode2
@@ -132,14 +133,40 @@ fun LinkDeviceScreen(
             Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = "Connect your account as a companion device before opening chats.",
+                text = "Connect Wupp alongside your main WhatsApp app.",
                 color = colors.textSecondary,
                 fontSize = 13.5.sp,
                 textAlign = TextAlign.Center,
                 lineHeight = 19.sp
             )
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.brightGreen.copy(alpha = 0.12f))
+                    .border(1.dp, colors.brightGreen.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Info,
+                    contentDescription = null,
+                    tint = colors.brightGreen,
+                    modifier = Modifier.size(17.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Keep official WhatsApp installed — Wupp is a companion client, not a standalone replacement.",
+                    color = colors.textSecondary,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Minimalist segmented switcher matching WhatsApp's clean companion toggle
             Row(
