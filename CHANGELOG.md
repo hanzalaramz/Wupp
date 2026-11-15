@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-16
+
+✨ Material 3 Expressive & Liquid Glass redesign, Local App Lock, Customize Looks, Turkish support, custom reactions, and sync & stability fixes.
+
+### ✨ What's new
+- 🎨 **Material 3 Expressive & Liquid Glass UI:** Frosted-glass bottom bar and chat composer, expressive spring motion, Android 16-style segmented Settings cards, and morphing loading/filter controls (Android 8.0+ compatible).
+- 🔒 **Local App Lock (#18):** Lock Wupp with biometrics/screen lock or a custom PIN, auto-lock timers, and optional Recents/screenshot hiding.
+- 🔐 **Archived & Locked Chats (#20):** Preserves local archive state, supports synced locked chats behind App Lock, and adds an Archived banner row on Home.
+- 🎛️ **Customize Looks (#16):** Toggles for Vertical Status Layout, Always Show Cached Bio, Classic Navigation, Compact Chat List, Seconds in Timestamps, Hide Camera Shortcut, and Hide Stealth Badges.
+- 🖼️ **Per-Chat Wallpapers & Framing (#21):** Set per-chat backgrounds and pinch, drag, zoom, and reset fit for wallpapers.
+- 😄 **Custom Quick Reactions (#24):** Personalize all 7 quick-reaction emojis in Settings.
+- 🌍 **Turkish Language & System Font (#17, #14):** Added Turkish (`Türkçe`) translations, an in-app language picker, and a Use System Font option.
+- 🗑️ **Two-Way Chat Delete:** Deleting a chat syncs with your primary WhatsApp, and phone deletes sync back.
+
+### 🛠️ Fixes
+- ⚡ **24/7 Sync Reliability (#22):** Improved timeout reconnect, boot restore, and background sync watchdog for reliable real-time updates.
+- 📦 **In-App Updater (#23):** Switched APK installation to Android PackageInstaller with cleaner fallback handling.
+- 👻 **Empty `@lid` & Phantom Chats:** Cleaned up unmapped random-number chats stuck in the chat list and unread count.
+- 👤 **Status Names & Battery Settings:** Fixed contact names on status cards/stories, removed extra alert clutter, and fixed the Unrestricted Battery settings shortcut.
+
 ## [0.3.0-pre.2] - 2026-11-16
 
 ✨ App Lock, archived & locked chat fixes, Turkish language support, Customize Looks, and sync/updater improvements.
