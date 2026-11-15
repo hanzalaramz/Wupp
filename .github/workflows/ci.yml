@@ -37,7 +37,7 @@ jobs:
         with:
           go-version-file: whatsbridge/go.mod
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
 
