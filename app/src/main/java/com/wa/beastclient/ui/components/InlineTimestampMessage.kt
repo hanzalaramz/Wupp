@@ -39,6 +39,7 @@ import com.wa.beastclient.R
 import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
+import com.wa.beastclient.ui.theme.LocalWuppShowSeconds
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -57,10 +58,11 @@ fun InlineTimestampMessage(
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
+    val showSeconds = LocalWuppShowSeconds.current
     var lastLayout: TextLayoutResult? = null
 
     val displayText = msg.body
-    val timeText = formatMessageClock(msg.timestamp)
+    val timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds)
     val linkColor = colors.accentGreen
     val codeBg = colors.elevatedBar.copy(alpha = 0.65f)
     val styledText = androidx.compose.runtime.remember(displayText, linkColor, codeBg) {
@@ -84,7 +86,7 @@ fun InlineTimestampMessage(
                     modifier = Modifier.size(13.dp)
                 )
                 Text(
-                    text = "Deleted · ${formatMessageClock(msg.deletedAt.takeIf { it > 0L } ?: msg.timestamp)}",
+                    text = "Deleted · ${formatMessageClock(msg.deletedAt.takeIf { it > 0L } ?: msg.timestamp, includeSeconds = showSeconds)}",
                     color = colors.antiDeleteRed,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -236,9 +238,13 @@ fun DeliveryTickIcon(
     )
 }
 
-fun formatMessageClock(epochMs: Long): String {
+fun formatMessageClock(
+    epochMs: Long,
+    includeSeconds: Boolean = com.wa.beastclient.domain.stealth.StealthMatrixManager.config.value.showSecondsInTimestamps
+): String {
     if (epochMs <= 0L) return ""
-    return SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(epochMs))
+    val pattern = if (includeSeconds) "h:mm:ss a" else "h:mm a"
+    return SimpleDateFormat(pattern, Locale.getDefault()).format(Date(epochMs))
 }
 
 private val WA_URL_REGEX = Regex("""(?:https?://|www\.)[^\s<>\]\[()"']+""")

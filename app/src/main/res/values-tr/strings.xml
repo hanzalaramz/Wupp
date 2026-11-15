@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Wupp</string>
+    <string name="channel_realtime_name">Gerçek Zamanlı Senkronizasyon</string>
+    <string name="channel_realtime_desc">WhatsApp mesajlarını, durumları ve silinen içerikleri arka planda sürekli senkronize eder.</string>
+
+    <!-- Common -->
+    <string name="common_cancel">İptal</string>
+    <string name="common_save">Kaydet</string>
+    <string name="common_done">Bitti</string>
+    <string name="common_close">Kapat</string>
+    <string name="common_reset">Sıfırla</string>
+    <string name="common_enabled">Açık</string>
+    <string name="common_disabled">Kapalı</string>
+
+    <!-- Navigation & Home -->
+    <string name="nav_chats">Sohbetler</string>
+    <string name="nav_updates">Güncellemeler</string>
+    <string name="nav_communities">Topluluklar</string>
+    <string name="nav_settings">Ayarlar</string>
+    <string name="home_search_placeholder">Sohbet veya kişi ara…</string>
+    <string name="home_archived_chats">Arşivlenmiş</string>
+    <string name="home_archived_row_title">Arşivlenmiş (%1$d)</string>
+    <string name="home_back_to_active_chats">Aktif sohbetlere dön</string>
+    <string name="home_locked_chats_banner">Kilitli sohbetler (%1$d gizli)</string>
+    <string name="home_locked_chats_unlock_action">Görmek için aç</string>
+    <string name="home_locked_chats_unlocked_banner">Kilitli sohbetler görünür (gizlemek için dokun)</string>
+    <string name="home_filter_all">Tümü</string>
+    <string name="home_filter_unread">Okunmamış</string>
+    <string name="home_filter_groups">Gruplar</string>
+    <string name="home_filter_contacts">Kişiler</string>
+    <string name="home_filter_channels">Kanallar</string>
+    <string name="home_filter_pinned">Sabitlenen</string>
+    <string name="home_filter_locked">Kilitli</string>
+    <string name="home_empty_chats">Henüz sohbet yok</string>
+    <string name="home_empty_archived">Arşivlenmiş sohbet yok</string>
+    <string name="home_empty_updates">Henüz durum güncellemesi yok</string>
+    <string name="home_empty_communities">Henüz topluluk yok</string>
+
+    <!-- Chat Actions -->
+    <string name="chat_action_pin">Sohbeti sabitle</string>
+    <string name="chat_action_unpin">Sabitlemeyi kaldır</string>
+    <string name="chat_action_mute">Bildirimleri sessize al</string>
+    <string name="chat_action_unmute">Sesi aç</string>
+    <string name="chat_action_archive">Yerel olarak arşivle</string>
+    <string name="chat_action_unarchive">Arşivden çıkar</string>
+    <string name="chat_action_delete_local">Yerel kopyayı sil</string>
+    <string name="chat_input_placeholder">Mesaj</string>
+    <string name="chat_announce_only_hint">Yalnızca yöneticiler mesaj gönderebilir</string>
+    <string name="chat_no_messages">Bu sohbette henüz senkronize mesaj yok</string>
+    <string name="chat_replying_to">%1$s yanıtlanıyor</string>
+    <string name="chat_status_online">çevrimiçi</string>
+    <string name="chat_status_typing">yazıyor…</string>
+    <string name="chat_status_recording">ses kaydediyor…</string>
+
+    <!-- Reaction Customizer (#24) -->
+    <string name="reaction_dialog_title">Hızlı Tepki Emojileri</string>
+    <string name="reaction_dialog_subtitle">Değiştirmek için #%1$d yuvasına dokun veya aşağıdan bir emoji seç/yaz.</string>
+    <string name="reaction_custom_hint">İstediğiniz emojiyi yazın veya yapıştırın…</string>
+    <string name="reaction_presets_label">Popüler emojiler</string>
+    <string name="reaction_reset_defaults">Varsayılanlara sıfırla</string>
+
+    <!-- App Lock (#18 & #20) -->
+    <string name="applock_prompt_title">Wupp Kilidini Aç</string>
+    <string name="applock_prompt_subtitle">Cihaz ekran kilidinizi veya biyometriği doğrulayın</string>
+    <string name="applock_no_device_lock">Android Ayarlarında cihaz ekran kilidi ayarlanmamış.</string>
+    <string name="applock_wrong_pin">Hatalı PIN. Tekrar deneyin.</string>
+    <string name="applock_overlay_title">Wupp Kilitli</string>
+    <string name="applock_overlay_device_hint">Arka plan senkronizasyonu çalışmaya devam ederken parmak izi, yüz tanıma veya cihaz kilidi ile açın.</string>
+    <string name="applock_overlay_pin_hint">Wupp PIN kodunuzu girin. Kilitliyken arka plan senkronizasyonu aktif kalır.</string>
+    <string name="applock_unlock_button">Cihaz Kilidi ile Aç</string>
+    <string name="applock_config_title">Uygulama Kilidi ve Gizlilik</string>
+    <string name="applock_config_subtitle">Sıfır WhatsApp ban riski ile yalnızca cihaz içi koruma. Gerçek zamanlı senkronizasyon arka planda açık kalır.</string>
+    <string name="applock_mode_label">Kilit Yöntemi</string>
+    <string name="applock_mode_off">Kapalı</string>
+    <string name="applock_mode_device">Cihaz Kilidi (Biyometrik / Ekran Kilidi)</string>
+    <string name="applock_mode_pin">Özel PIN (4–8 haneli)</string>
+    <string name="applock_change_pin">Özel PIN Kodunu Değiştir</string>
+    <string name="applock_timeout_label">Arka plana geçince tekrar kilitle</string>
+    <string name="applock_timeout_immediate">Hemen</string>
+    <string name="applock_timeout_1m">1 dk</string>
+    <string name="applock_timeout_5m">5 dk</string>
+    <string name="applock_timeout_30m">30 dk</string>
+    <string name="applock_hide_recents_title">Son Kullanılanlarda İçeriği Gizle</string>
+    <string name="applock_hide_recents_subtitle">FLAG_SECURE ile uygulama önizlemesini ve ekran görüntüsünü engeller</string>
+    <string name="applock_hide_locked_chats_title">Kilitli Sohbetleri Kilit Arkasında Gizle</string>
+    <string name="applock_hide_locked_chats_subtitle">WhatsApp kilitli sohbetlerini yerel olarak açılana kadar Ana Ekranda gizler</string>
+    <string name="applock_set_pin_title">Özel PIN Belirle</string>
+    <string name="applock_pin_enter_label">PIN girin (4–8 rakam)</string>
+    <string name="applock_pin_confirm_label">PIN kodunu doğrulayın</string>
+    <string name="applock_pin_length_error">PIN 4 ile 8 rakam arasında olmalıdır.</string>
+    <string name="applock_pin_mismatch_error">PIN kodları eşleşmiyor.</string>
+
+    <!-- Language (#17) -->
+    <string name="language_dialog_title">Uygulama Dili</string>
+    <string name="language_system">Sistem Dilini Takip Et</string>
+    <string name="language_english">English (İngilizce)</string>
+    <string name="language_turkish">Türkçe</string>
+
+    <!-- Settings / Appearance / Looks (#14, #16, #17, #18, #21, #24) -->
+    <string name="settings_section_security">GÜVENLİK VE KİLİT</string>
+    <string name="settings_applock_row_title">Uygulama Kilidi ve Kilitli Sohbetler</string>
+    <string name="settings_applock_row_subtitle_off">Kapalı · Cihaz Kilidi veya Özel PIN ayarlamak için dokun</string>
+    <string name="settings_applock_row_subtitle_device">Cihaz Kilidi aktif · Sıfır hesap riski</string>
+    <string name="settings_applock_row_subtitle_pin">Özel PIN aktif · Sıfır hesap riski</string>
+    <string name="settings_lock_now_title">Wupp\'ı Şimdi Kilitle</string>
+    <string name="settings_lock_now_subtitle">Kilit ekranını hemen göster</string>
+
+    <string name="settings_section_appearance">GÖRÜNÜM VE STİL</string>
+    <string name="settings_theme_title">Uygulama Teması</string>
+    <string name="settings_wallpaper_title">Sohbet Duvar Kağıdı ve Konumu</string>
+    <string name="settings_wallpaper_subtitle">Görsel seçin, yakınlaştırıp hizalayın, karartma ve desen</string>
+    <string name="settings_system_font_title">Sistem Yazı Tipini Kullan</string>
+    <string name="settings_system_font_subtitle">Paket içi Roboto yerine cihazınızın Android yazı tipini kullanır</string>
+    <string name="settings_reactions_title">Hızlı Tepki Emojileri</string>
+    <string name="settings_reactions_subtitle">Sohbetlerde görünen 7 hızlı tepki emojisini özelleştirin</string>
+    <string name="settings_language_title">Uygulama Dili</string>
+
+    <string name="settings_section_looks">GÖRÜNÜM AYARLARI (RİSKSİZ)</string>
+    <string name="settings_look_vertical_status_title">Dikey Durum Düzeni</string>
+    <string name="settings_look_vertical_status_subtitle">Güncellemeler sekmesinde durumları yatay kartlar yerine dikey liste halinde gösterir</string>
+    <string name="settings_look_always_bio_title">Önbellekteki Hakkında\'yı Her Zaman Göster</string>
+    <string name="settings_look_always_bio_subtitle">Sohbet üst çubuğu ve profil önizlemesinde senkronize Hakkında yazısını gösterir (ekstra sunucu sorgusu yok)</string>
+    <string name="settings_look_classic_ui_title">Klasik WhatsApp Gezinme Çubuğu</string>
+    <string name="settings_look_classic_ui_subtitle">Yüzen cam kapsül yerine daha düz klasik alt gezinme çubuğu</string>
+    <string name="settings_look_compact_rows_title">Sıkıştırılmış Sohbet Listesi</string>
+    <string name="settings_look_compact_rows_subtitle">Ekrana daha fazla sohbet sığması için satır boşluğunu azaltır</string>
+    <string name="settings_look_seconds_title">Saatlerde Saniyeyi Göster</string>
+    <string name="settings_look_seconds_subtitle">Mesajlarda ve sohbet satırlarında SS:DD:sn biçimini gösterir</string>
+    <string name="settings_look_hide_camera_title">Ana Sayfa Kamera Kısayolunu Gizle</string>
+    <string name="settings_look_hide_camera_subtitle">Sohbetler sekmesindeki üst çubuğu sadeleştirir</string>
+    <string name="settings_look_hide_badges_title">Gizlilik Durum Rozetlerini Gizle</string>
+    <string name="settings_look_hide_badges_subtitle">Stok görünüm için Ana Ekrandaki Hayalet / Çevrimiçi rozetlerini gizler</string>
+
+    <!-- Wallpaper Positioning (#21) -->
+    <string name="wallpaper_zoom_label">Yakınlaştırma (%1$.2fx)</string>
+    <string name="wallpaper_pan_hint">Fotoğrafı hizalamak için yukarıdaki önizlemeyi sürükleyin veya yakınlaştırın</string>
+    <string name="wallpaper_reset_fit">Hizalamayı sıfırla</string>
+
+    <!-- Onboarding & Device Linking (#17) -->
+    <string name="setup_welcome_title">Wupp\'a Hoş Geldiniz</string>
+    <string name="setup_welcome_subtitle">Başlamadan önce Wupp\'ın mesajları güvenilir şekilde iletmesi, medyayı oynatıp kaydetmesi ve arka planda bağlı kalması için izin verin.</string>
+    <string name="link_title">WhatsApp\'a Bağla</string>
+    <string name="link_subtitle">Wupp\'ı ana WhatsApp uygulamanızla birlikte eşleştirin.</string>
+    <string name="link_companion_notice">Resmi WhatsApp\'ı yüklü tutun — Wupp bağımsız bir uygulama değil, eşlikçi bir istemcidir.</string>
+    <string name="link_mode_qr">QR kodu</string>
+    <string name="link_mode_phone">Telefon numarası</string>
+</resources>

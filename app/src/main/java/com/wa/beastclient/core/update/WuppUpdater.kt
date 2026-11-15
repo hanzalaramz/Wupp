@@ -6,10 +6,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -18,6 +18,7 @@ import com.wa.beastclient.BuildConfig
 import com.wa.beastclient.MainActivity
 import com.wa.beastclient.R
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,6 +26,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -54,7 +56,12 @@ sealed interface UpdateUiState {
         val totalBytes: Long
     ) : UpdateUiState
     data class ReadyToInstall(val release: AppReleaseInfo, val apkPath: String) : UpdateUiState
-    data class Error(val message: String, val silent: Boolean) : UpdateUiState
+    data class Error(
+        val message: String,
+        val silent: Boolean,
+        val release: AppReleaseInfo? = null,
+        val apkPath: String? = null
+    ) : UpdateUiState
 }
 
 object WuppUpdater {
@@ -87,6 +94,41 @@ object WuppUpdater {
 
     @Volatile
     private var checkInFlight = false
+
+    @Volatile
+    private var activeInstallRelease: AppReleaseInfo? = null
+
+    @Volatile
+    private var activeInstallApkPath: String? = null
+
+    fun onPackageInstallSucceeded() {
+        val curRelease = activeInstallRelease
+        activeInstallRelease = null
+        activeInstallApkPath = null
+        _showPromptDialog.value = false
+        if (curRelease != null) {
+            _state.value = UpdateUiState.UpToDate(curRelease.versionName, System.currentTimeMillis())
+        }
+    }
+
+    fun onPackageInstallCancelled() {
+        val rel = activeInstallRelease
+        val path = activeInstallApkPath
+        if (rel != null && !path.isNullOrBlank() && File(path).exists()) {
+            _state.value = UpdateUiState.ReadyToInstall(rel, path)
+            _showPromptDialog.value = true
+        }
+    }
+
+    fun onPackageInstallFailed(message: String) {
+        _state.value = UpdateUiState.Error(
+            message = message,
+            silent = false,
+            release = activeInstallRelease,
+            apkPath = activeInstallApkPath?.takeIf { File(it).exists() }
+        )
+        _showPromptDialog.value = true
+    }
 
     fun init(context: Context) {
         if (initialized) return
@@ -250,12 +292,22 @@ object WuppUpdater {
         }
     }
 
+    private fun updatesDir(context: Context): File {
+        val dir = File(context.applicationContext.filesDir, "updates")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
     private fun findExistingDownloadedApk(context: Context, release: AppReleaseInfo): File? {
-        val downloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            ?: File(context.filesDir, "updates")
+        val dir = updatesDir(context)
         val safeTag = release.tagName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-        val outFile = File(downloadsDir, "Wupp-$safeTag.apk")
-        return outFile.takeIf { it.exists() && it.length() > 1_000_000L }
+        val internalFile = File(dir, "Wupp-$safeTag.apk")
+        if (internalFile.exists() && internalFile.length() > 1_000_000L &&
+            (release.apkSizeBytes <= 0L || internalFile.length() == release.apkSizeBytes)
+        ) {
+            return internalFile
+        }
+        return null
     }
 
     suspend fun downloadUpdate(context: Context, release: AppReleaseInfo) {
@@ -263,8 +315,9 @@ object WuppUpdater {
         val downloadUrl = release.apkDownloadUrl
         if (downloadUrl.isNullOrBlank()) {
             _state.value = UpdateUiState.Error(
-                message = "No APK asset attached to ${release.tagName}. Open the GitHub release page to download.",
-                silent = false
+                message = "No APK asset attached to ${release.tagName}. Open the release page in your browser to download.",
+                silent = false,
+                release = release
             )
             return
         }
@@ -278,72 +331,98 @@ object WuppUpdater {
 
         val result = withContext(Dispatchers.IO) {
             runCatching {
-                val downloadsDir = appCtx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-                    ?: File(appCtx.filesDir, "updates")
-                if (!downloadsDir.exists()) downloadsDir.mkdirs()
-
+                val dir = updatesDir(appCtx)
                 val safeTag = release.tagName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-                val outFile = File(downloadsDir, "Wupp-$safeTag.apk")
-                val tmpFile = File(downloadsDir, "Wupp-$safeTag.apk.part")
-                if (tmpFile.exists()) tmpFile.delete()
+                val outFile = File(dir, "Wupp-$safeTag.apk")
+                val tmpFile = File(dir, "Wupp-$safeTag.apk.part")
 
-                val conn = openFollowingRedirects(downloadUrl)
-                try {
-                    val code = conn.responseCode
-                    if (code !in 200..299) {
-                        throw IllegalStateException("Download failed (HTTP $code)")
+                // Remove old cached APKs / leftover partial files so internal storage stays clean
+                dir.listFiles()?.forEach { child ->
+                    if (child.name != outFile.name && (child.name.endsWith(".apk") || child.name.endsWith(".part"))) {
+                        runCatching { child.delete() }
                     }
-                    val total = conn.contentLengthLong.takeIf { it > 0L } ?: release.apkSizeBytes
-                    conn.inputStream.use { input ->
-                        FileOutputStream(tmpFile).use { output ->
-                            val buf = ByteArray(16 * 1024)
-                            var downloaded = 0L
-                            var lastEmitMs = 0L
-                            while (true) {
-                                val read = input.read(buf)
-                                if (read <= 0) break
-                                output.write(buf, 0, read)
-                                downloaded += read
-                                val now = System.currentTimeMillis()
-                                if (now - lastEmitMs >= 120L || (total > 0 && downloaded >= total)) {
-                                    lastEmitMs = now
-                                    val pct = if (total > 0L) ((downloaded * 100L) / total).toInt().coerceIn(0, 100) else -1
-                                    _state.value = UpdateUiState.Downloading(
-                                        release = release,
-                                        progressPercent = pct,
-                                        downloadedBytes = downloaded,
-                                        totalBytes = total
-                                    )
+                }
+
+                var lastErr: Throwable? = null
+                var downloadedFile: File? = null
+                for (attempt in 1..2) {
+                    try {
+                        if (tmpFile.exists()) tmpFile.delete()
+                        val conn = openFollowingRedirects(downloadUrl)
+                        try {
+                            val code = conn.responseCode
+                            if (code !in 200..299) {
+                                throw IllegalStateException("Download error (HTTP $code)")
+                            }
+                            val total = conn.contentLengthLong.takeIf { it > 0L } ?: release.apkSizeBytes
+                            conn.inputStream.use { input ->
+                                FileOutputStream(tmpFile).use { output ->
+                                    val buf = ByteArray(16 * 1024)
+                                    var downloaded = 0L
+                                    var lastEmitMs = 0L
+                                    while (true) {
+                                        val read = input.read(buf)
+                                        if (read <= 0) break
+                                        output.write(buf, 0, read)
+                                        downloaded += read
+                                        val now = System.currentTimeMillis()
+                                        if (now - lastEmitMs >= 120L || (total > 0 && downloaded >= total)) {
+                                            lastEmitMs = now
+                                            val pct = if (total > 0L) ((downloaded * 100L) / total).toInt().coerceIn(0, 100) else -1
+                                            _state.value = UpdateUiState.Downloading(
+                                                release = release,
+                                                progressPercent = pct,
+                                                downloadedBytes = downloaded,
+                                                totalBytes = total
+                                            )
+                                        }
+                                    }
+                                    output.flush()
                                 }
                             }
-                            output.flush()
+                        } finally {
+                            conn.disconnect()
                         }
-                    }
-                } finally {
-                    conn.disconnect()
-                }
 
-                if (!tmpFile.exists() || tmpFile.length() < 1024L) {
-                    throw IllegalStateException("Downloaded APK appears incomplete")
+                        if (!tmpFile.exists() || tmpFile.length() < 100_000L) {
+                            throw IllegalStateException("Downloaded APK is incomplete")
+                        }
+                        if (outFile.exists()) outFile.delete()
+                        if (!tmpFile.renameTo(outFile)) {
+                            tmpFile.copyTo(outFile, overwrite = true)
+                            tmpFile.delete()
+                        }
+                        downloadedFile = outFile
+                        break
+                    } catch (err: Throwable) {
+                        lastErr = err
+                        if (tmpFile.exists()) tmpFile.delete()
+                        if (attempt < 2) delay(900L)
+                    }
                 }
-                if (outFile.exists()) outFile.delete()
-                if (!tmpFile.renameTo(outFile)) {
-                    tmpFile.copyTo(outFile, overwrite = true)
-                    tmpFile.delete()
-                }
-                outFile
+                downloadedFile ?: throw (lastErr ?: IllegalStateException("APK download failed"))
             }
         }
 
         result.fold(
             onSuccess = { apkFile ->
+                activeInstallRelease = release
+                activeInstallApkPath = apkFile.absolutePath
                 _state.value = UpdateUiState.ReadyToInstall(release, apkFile.absolutePath)
-                installApk(appCtx, apkFile)
+                installApk(appCtx, apkFile).onFailure { err ->
+                    _state.value = UpdateUiState.Error(
+                        message = err.message ?: "Unable to start update installer",
+                        silent = false,
+                        release = release,
+                        apkPath = apkFile.absolutePath
+                    )
+                }
             },
             onFailure = { err ->
                 _state.value = UpdateUiState.Error(
-                    message = err.message ?: "APK download failed",
-                    silent = false
+                    message = err.message ?: "Download error — tap Retry or Open the web.",
+                    silent = false,
+                    release = release
                 )
             }
         )
@@ -354,6 +433,15 @@ object WuppUpdater {
         if (!apkFile.exists()) {
             throw IllegalStateException("APK file not found: ${apkFile.name}")
         }
+        val cur = _state.value
+        val curRel = when (cur) {
+            is UpdateUiState.ReadyToInstall -> cur.release
+            is UpdateUiState.Error -> cur.release
+            else -> null
+        }
+        if (curRel != null) activeInstallRelease = curRel
+        activeInstallApkPath = apkFile.absolutePath
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             !appCtx.packageManager.canRequestPackageInstalls()
         ) {
@@ -364,9 +452,44 @@ object WuppUpdater {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             appCtx.startActivity(permissionIntent)
-            throw IllegalStateException("Allow \"Install unknown apps\" for Wupp, then tap Install APK again.")
+            throw IllegalStateException("Allow \"Install unknown apps\" for Wupp, then tap Install now again.")
         }
 
+        val installer = appCtx.packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
+            setSize(apkFile.length())
+        }
+        val sessionId = installer.createSession(params)
+        val session = installer.openSession(sessionId)
+        try {
+            session.openWrite("wupp_update.apk", 0L, apkFile.length()).use { out ->
+                FileInputStream(apkFile).use { input ->
+                    input.copyTo(out, bufferSize = 32 * 1024)
+                }
+                session.fsync(out)
+            }
+            val callbackIntent = Intent(appCtx, UpdateInstallReceiver::class.java)
+            val mutableFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+            val pendingIntent = PendingIntent.getBroadcast(
+                appCtx,
+                sessionId,
+                callbackIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or mutableFlag
+            )
+            session.commit(pendingIntent.intentSender)
+        } catch (err: Throwable) {
+            runCatching { session.abandon() }
+            throw err
+        } finally {
+            runCatching { session.close() }
+        }
+    }
+
+    fun installViaExternalChooser(context: Context, apkFile: File): Result<Unit> = runCatching {
+        val appCtx = context.applicationContext
+        if (!apkFile.exists()) {
+            throw IllegalStateException("APK file not found: ${apkFile.name}")
+        }
         val apkUri = FileProvider.getUriForFile(
             appCtx,
             "${BuildConfig.APPLICATION_ID}.fileprovider",
@@ -523,11 +646,12 @@ object WuppUpdater {
 
     private fun openFollowingRedirects(urlStr: String): HttpURLConnection {
         var currentUrl = urlStr
-        repeat(6) {
+        repeat(8) {
             val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = false
-                connectTimeout = 15_000
-                readTimeout = 30_000
+                connectTimeout = 20_000
+                readTimeout = 45_000
+                setRequestProperty("Accept", "application/octet-stream, */*")
                 setRequestProperty("User-Agent", "Wupp-Android/${BuildConfig.VERSION_NAME}")
             }
             val code = conn.responseCode

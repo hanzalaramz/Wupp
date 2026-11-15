@@ -8,6 +8,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.NightlightRound
 import androidx.compose.material.icons.rounded.RestartAlt
+import androidx.compose.material.icons.rounded.ZoomIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -51,10 +53,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.WuppThemeMode
 import com.wa.beastclient.ui.theme.colorsForTheme
@@ -329,20 +335,28 @@ fun WallpaperPickerDialog(
     currentUri: String,
     currentDim: Float,
     showDoodleOnPresets: Boolean,
+    currentScale: Float = 1f,
+    currentOffsetX: Float = 0f,
+    currentOffsetY: Float = 0f,
     onSelectUri: (String) -> Unit,
     onPickCustomImage: (Uri) -> Unit,
     onDimChange: (Float) -> Unit,
     onToggleDoodle: (Boolean) -> Unit,
+    onPositionChange: ((scale: Float, offsetX: Float, offsetY: Float) -> Unit)? = null,
     onDismiss: () -> Unit,
     chatTitle: String? = null,
     hasChatOverride: Boolean = false,
     chatUri: String = currentUri,
     chatDim: Float = currentDim,
     chatShowDoodle: Boolean = showDoodleOnPresets,
+    chatScale: Float = currentScale,
+    chatOffsetX: Float = currentOffsetX,
+    chatOffsetY: Float = currentOffsetY,
     onSelectChatUri: ((String) -> Unit)? = null,
     onPickChatCustomImage: ((Uri) -> Unit)? = null,
     onChatDimChange: ((Float) -> Unit)? = null,
     onToggleChatDoodle: ((Boolean) -> Unit)? = null,
+    onChatPositionChange: ((scale: Float, offsetX: Float, offsetY: Float) -> Unit)? = null,
     onResetChatToGlobal: (() -> Unit)? = null
 ) {
     val colors = LocalWaColors.current
@@ -352,6 +366,21 @@ fun WallpaperPickerDialog(
     val activeUri = if (supportsPerChat && editThisChat) chatUri else currentUri
     val activeDim = if (supportsPerChat && editThisChat) chatDim else currentDim
     val activeShowDoodle = if (supportsPerChat && editThisChat) chatShowDoodle else showDoodleOnPresets
+    val activeScale = (if (supportsPerChat && editThisChat) chatScale else currentScale).coerceIn(1f, 3f)
+    val activeOffsetX = (if (supportsPerChat && editThisChat) chatOffsetX else currentOffsetX).coerceIn(-1f, 1f)
+    val activeOffsetY = (if (supportsPerChat && editThisChat) chatOffsetY else currentOffsetY).coerceIn(-1f, 1f)
+    var previewSize by remember { mutableStateOf(IntSize.Zero) }
+
+    val updatePosition: (Float, Float, Float) -> Unit = { s, ox, oy ->
+        val ns = s.coerceIn(1f, 3f)
+        val nox = ox.coerceIn(-1f, 1f)
+        val noy = oy.coerceIn(-1f, 1f)
+        if (supportsPerChat && editThisChat) {
+            onChatPositionChange?.invoke(ns, nox, noy)
+        } else {
+            onPositionChange?.invoke(ns, nox, noy)
+        }
+    }
 
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -420,19 +449,39 @@ fun WallpaperPickerDialog(
                     }
                 }
 
-                // Live chat preview banner
+                // Live chat preview banner (pinch-to-zoom & drag-to-pan when custom photo active)
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = colors.chatCanvas,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(124.dp)
+                        .height(if (activeUri.startsWith("file:")) 168.dp else 124.dp)
                         .border(1.dp, colors.divider, RoundedCornerShape(14.dp))
+                        .onSizeChanged { previewSize = it }
+                        .then(
+                            if (activeUri.startsWith("file:")) {
+                                Modifier.pointerInput(activeUri, editThisChat, activeScale, activeOffsetX, activeOffsetY) {
+                                    detectTransformGestures { _, pan, zoom, _ ->
+                                        val w = previewSize.width.coerceAtLeast(1).toFloat()
+                                        val h = previewSize.height.coerceAtLeast(1).toFloat()
+                                        val nextScale = (activeScale * zoom).coerceIn(1f, 3f)
+                                        val nextX = (activeOffsetX + pan.x / w).coerceIn(-0.85f, 0.85f)
+                                        val nextY = (activeOffsetY + pan.y / h).coerceIn(-0.85f, 0.85f)
+                                        updatePosition(nextScale, nextX, nextY)
+                                    }
+                                }
+                            } else {
+                                Modifier
+                            }
+                        )
                 ) {
                     DoodleBackground(
                         wallpaperUriOverride = activeUri,
                         wallpaperDimOverride = activeDim,
                         showDoodleOverride = activeShowDoodle,
+                        wallpaperScaleOverride = activeScale,
+                        wallpaperOffsetXOverride = activeOffsetX,
+                        wallpaperOffsetYOverride = activeOffsetY,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(
@@ -485,6 +534,7 @@ fun WallpaperPickerDialog(
                 ) {
                     Button(
                         onClick = {
+                            AppLockManager.suspendNextBackgroundLock()
                             galleryLauncher.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                             )
@@ -588,6 +638,49 @@ fun WallpaperPickerDialog(
 
                 if (activeUri.startsWith("file:")) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.ZoomIn,
+                                    contentDescription = null,
+                                    tint = colors.textSecondary,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Text(
+                                    text = "Zoom (${String.format("%.1f", activeScale)}x) • drag preview to pan",
+                                    color = colors.textSecondary,
+                                    fontSize = 11.5.sp
+                                )
+                            }
+                            if (activeScale != 1f || activeOffsetX != 0f || activeOffsetY != 0f) {
+                                Text(
+                                    text = "Reset fit",
+                                    color = colors.brightGreen,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.clickable { updatePosition(1f, 0f, 0f) }
+                                )
+                            }
+                        }
+                        Slider(
+                            value = activeScale.coerceIn(1f, 3f),
+                            onValueChange = { scaleVal ->
+                                updatePosition(scaleVal, activeOffsetX, activeOffsetY)
+                            },
+                            valueRange = 1f..3f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = colors.brightGreen,
+                                activeTrackColor = colors.accentGreen,
+                                inactiveTrackColor = colors.divider
+                            )
+                        )
                         Text(
                             text = "Overlay dimness (${(activeDim * 100).toInt()}%)",
                             color = colors.textSecondary,

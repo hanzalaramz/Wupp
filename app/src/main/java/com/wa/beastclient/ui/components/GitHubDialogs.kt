@@ -300,6 +300,7 @@ fun AppUpdateDialog(
     state: UpdateUiState,
     onDownload: (AppReleaseInfo) -> Unit,
     onInstall: (File) -> Unit,
+    onInstallExternal: (File) -> Unit = {},
     onSkipVersion: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
@@ -310,11 +311,12 @@ fun AppUpdateDialog(
         is UpdateUiState.UpdateAvailable -> state.release
         is UpdateUiState.Downloading -> state.release
         is UpdateUiState.ReadyToInstall -> state.release
+        is UpdateUiState.Error -> state.release ?: return
         else -> return
     }
 
     val isDownloading = state is UpdateUiState.Downloading
-    val isReady = state is UpdateUiState.ReadyToInstall
+    val isReady = state is UpdateUiState.ReadyToInstall || (state is UpdateUiState.Error && !state.apkPath.isNullOrBlank())
     val apkSizeLabel = remember(release.apkSizeBytes) {
         WuppUpdater.formatByteSize(release.apkSizeBytes)
     }
@@ -566,8 +568,83 @@ fun AppUpdateDialog(
 
             Spacer(modifier = Modifier.height(18.dp))
 
-            // Primary CTA pill ("Install here" / "Install now" / "Download in background")
+            // Primary CTA pill ("Install here" / "Install now" / "Retry download" / "Download in background")
             when (state) {
+                is UpdateUiState.Error -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(colors.antiDeleteRed.copy(alpha = 0.14f))
+                            .border(0.8.dp, colors.antiDeleteRed.copy(alpha = 0.38f), RoundedCornerShape(16.dp))
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                    ) {
+                        Text(
+                            text = state.message,
+                            color = colors.antiDeleteRed,
+                            fontSize = 12.5.sp,
+                            lineHeight = 17.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    val readyFile = state.apkPath?.let { File(it) }?.takeIf { it.exists() }
+                    if (readyFile != null) {
+                        Button(
+                            onClick = { onInstall(readyFile) },
+                            shape = RoundedCornerShape(26.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.accentGreen,
+                                contentColor = Color(0xFF0B141A)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                        ) {
+                            Text(
+                                text = "Try system installer",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = { onInstallExternal(readyFile) },
+                            shape = RoundedCornerShape(26.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.elevatedBar,
+                                contentColor = colors.textPrimary
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                        ) {
+                            Text(
+                                text = "Open with external installer",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    } else if (!release.apkDownloadUrl.isNullOrBlank()) {
+                        Button(
+                            onClick = { onDownload(release) },
+                            shape = RoundedCornerShape(26.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.accentGreen,
+                                contentColor = Color(0xFF0B141A)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                        ) {
+                            Text(
+                                text = "Retry download",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
                 is UpdateUiState.ReadyToInstall -> {
                     Button(
                         onClick = { onInstall(File(state.apkPath)) },

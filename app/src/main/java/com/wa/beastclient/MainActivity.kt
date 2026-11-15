@@ -4,8 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import kotlinx.coroutines.flow.MutableStateFlow
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedContent
@@ -47,18 +47,25 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.core.update.WuppUpdater
+import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.ui.MainViewModel
+import com.wa.beastclient.ui.components.AppLockOverlay
 import com.wa.beastclient.ui.components.AppUpdateDialog
 import com.wa.beastclient.ui.screens.ChatScreen
 import com.wa.beastclient.ui.screens.FirstInstallSetupScreen
 import com.wa.beastclient.ui.screens.HomeScreen
 import com.wa.beastclient.ui.screens.LinkDeviceScreen
 import com.wa.beastclient.ui.theme.LocalWaColors
+import com.wa.beastclient.ui.theme.LocaleHelper
 import com.wa.beastclient.ui.theme.WhatsAppTheme
 import kotlinx.coroutines.launch
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private val pendingOpenChatJid = MutableStateFlow<String?>(null)
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(LocaleHelper.wrapContext(newBase))
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,6 +84,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             val vm: MainViewModel = viewModel()
             val stealth by vm.stealthConfig.collectAsState()
+            val appLockConfig by vm.appLockConfig.collectAsState()
+            val isAppLocked by vm.isAppLocked.collectAsState()
             val bridgeStatus by vm.bridgeStatus.collectAsState()
             val updateState by vm.updateState.collectAsState()
             val showUpdatePrompt by vm.showUpdatePrompt.collectAsState()
@@ -84,9 +93,13 @@ class MainActivity : ComponentActivity() {
             var selectedChatJid by rememberSaveable { mutableStateOf<String?>(null) }
             val requestedChatJid by pendingOpenChatJid.collectAsState()
 
-            LaunchedEffect(requestedChatJid, setupDone, bridgeStatus.isLoggedIn) {
+            LaunchedEffect(appLockConfig) {
+                AppLockManager.applyWindowSecureFlag(this@MainActivity, appLockConfig)
+            }
+
+            LaunchedEffect(requestedChatJid, setupDone, bridgeStatus.isLoggedIn, isAppLocked) {
                 val target = requestedChatJid
-                if (!target.isNullOrBlank() && setupDone && bridgeStatus.isLoggedIn) {
+                if (!target.isNullOrBlank() && setupDone && bridgeStatus.isLoggedIn && !isAppLocked) {
                     selectedChatJid = target
                     pendingOpenChatJid.value = null
                 }
@@ -99,12 +112,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            BackHandler(enabled = setupDone && bridgeStatus.isLoggedIn && selectedChatJid != null) {
+            BackHandler(enabled = setupDone && bridgeStatus.isLoggedIn && selectedChatJid != null && !isAppLocked) {
                 selectedChatJid = null
             }
 
             WhatsAppTheme(
                 themeMode = stealth.themeMode,
+                useSystemFont = stealth.useSystemFont,
+                showSecondsInTimestamps = stealth.showSecondsInTimestamps,
                 assetManager = assets
             ) {
                 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -214,14 +229,19 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                if (showUpdatePrompt && setupDone) {
+                if (showUpdatePrompt && setupDone && !isAppLocked) {
                     AppUpdateDialog(
                         state = updateState,
                         onDownload = { release -> vm.downloadUpdate(release) },
                         onInstall = { apkFile -> vm.installDownloadedApk(apkFile) },
+                        onInstallExternal = { apkFile -> vm.installExternalApkFallback(apkFile) },
                         onSkipVersion = { vm.dismissUpdatePrompt(skipVersion = false) },
                         onDismiss = { vm.dismissUpdatePrompt(skipVersion = false) }
                     )
+                }
+
+                if (setupDone && isAppLocked) {
+                    AppLockOverlay(config = appLockConfig)
                 }
             }
         }
@@ -241,6 +261,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        AppLockManager.onAppForegrounded()
         WaRealtimeService.isUiForeground = true
         val setupDone = getSharedPreferences("wupp_setup_prefs", Context.MODE_PRIVATE)
             .getBoolean("setup_completed_v1", false)
@@ -254,6 +275,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        AppLockManager.onAppBackgrounded()
         WaRealtimeService.isUiForeground = false
         WuppUpdater.onAppBackgrounded()
     }

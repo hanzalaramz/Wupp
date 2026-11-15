@@ -17,6 +17,7 @@ import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -24,6 +25,7 @@ import androidx.core.content.ContextCompat
 import com.wa.beastclient.MainActivity
 import com.wa.beastclient.R
 import com.wa.beastclient.data.db.ChatEntity
+import com.wa.beastclient.data.db.ContactEntity
 import com.wa.beastclient.data.db.GroupReceiptEntity
 import com.wa.beastclient.data.db.MessageEditEntity
 import com.wa.beastclient.data.db.MessageEntity
@@ -83,6 +85,10 @@ class WaRealtimeService : Service() {
     private var hasSeenInitialNetwork = false
     private val pushnameCache = ConcurrentHashMap<String, String>()
     private val requestedAvatarJids = ConcurrentHashMap.newKeySet<String>()
+    @Volatile
+    private var lastWatchdogReconnectMs: Long = 0L
+    @Volatile
+    private var watchdogConsecutiveFailures: Int = 0
     private val typingExpiryJobs = ConcurrentHashMap<String, Job>()
     private val pendingReactions = ConcurrentHashMap<String, MutableList<JSONObject>>()
     private val chatAliasToCanonical = ConcurrentHashMap<String, String>()
@@ -215,18 +221,30 @@ class WaRealtimeService : Service() {
         startEventConsumer()
         registerNetworkWatcher()
         initializeGoBridge()
+        startSocketWatchdog()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_RECONNECT -> serviceScope.launch {
-                runCatching { Whatsbridge.connectClient() }
+                if (hasValidatedInternet() && runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+                    runCatching { Whatsbridge.connectClient() }
+                }
             }
             ACTION_DISCONNECT -> serviceScope.launch {
                 runCatching { Whatsbridge.disconnectClient() }
             }
         }
         return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        val setupDone = getSharedPreferences("wupp_setup_prefs", Context.MODE_PRIVATE)
+            .getBoolean("setup_completed_v1", false)
+        if (setupDone && runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+            SyncWatchdogJobService.scheduleTaskRemovedBounce(applicationContext)
+        }
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -285,7 +303,50 @@ class WaRealtimeService : Service() {
             }
         }.onFailure { err ->
             Log.w(TAG, "Unable to elevate foreground service in current process state: ${err.message}")
+            SyncWatchdogJobService.scheduleOneShotRetry(applicationContext, delayMs = 15_000L)
             stopSelf()
+        }
+    }
+
+    private fun hasValidatedInternet(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
+        val active = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(active) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    private fun startSocketWatchdog() {
+        serviceScope.launch {
+            delay(20_000L)
+            while (true) {
+                delay(45_000L)
+                nudgeReconnectIfNeeded()
+            }
+        }
+    }
+
+    fun nudgeReconnectIfNeeded() {
+        serviceScope.launch {
+            val loggedIn = runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)
+            if (!loggedIn) return@launch
+            val connected = runCatching { Whatsbridge.isConnected() }.getOrDefault(false)
+            if (connected) {
+                watchdogConsecutiveFailures = 0
+                return@launch
+            }
+            if (!hasValidatedInternet()) return@launch
+            val cooldownMs = when (watchdogConsecutiveFailures) {
+                0 -> 60_000L
+                1 -> 120_000L
+                else -> 300_000L
+            }
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastWatchdogReconnectMs < cooldownMs) return@launch
+            lastWatchdogReconnectMs = now
+            watchdogConsecutiveFailures = (watchdogConsecutiveFailures + 1).coerceAtMost(5)
+            Log.i(TAG, "Self-healing socket reconnect (attempt=$watchdogConsecutiveFailures)")
+            runCatching { Whatsbridge.connectClient() }
         }
     }
 
@@ -456,6 +517,8 @@ class WaRealtimeService : Service() {
                 }
                 promoteForeground(statusLine)
                 if (st == "CONNECTED") {
+                    watchdogConsecutiveFailures = 0
+                    SyncWatchdogJobService.schedulePeriodic(applicationContext)
                     runCatching {
                         Whatsbridge.setGhostPresence(StealthMatrixManager.config.value.ghostPresence)
                     }
@@ -508,6 +571,7 @@ class WaRealtimeService : Service() {
             syncProgressPct = progress
         )
         try {
+            val syncedContacts = ArrayList<ContactEntity>(128)
             val pushArr = json.optJSONArray("pushnames")
             if (pushArr != null) {
                 for (i in 0 until pushArr.length()) {
@@ -520,6 +584,14 @@ class WaRealtimeService : Service() {
                         pushnameCache[canonicalJid] = name
                         dao.updateChatName(canonicalJid, name, overwrite = false)
                         propagateStatusAndSenderName(canonicalJid, name, overwriteStatus = false)
+                        syncedContacts.add(
+                            ContactEntity(
+                                jid = canonicalJid,
+                                name = name,
+                                isSaved = false,
+                                updatedAt = System.currentTimeMillis()
+                            )
+                        )
                     }
                     if (jid != canonicalJid && jid.isNotBlank() && name.isNotBlank() && name != jid && name != jid.substringBefore("@")) {
                         pushnameCache[jid] = name
@@ -585,11 +657,31 @@ class WaRealtimeService : Service() {
                         ephemeralDuration = c.optInt("ephemeralSec", 0),
                         isCommunityParent = c.optBoolean("isCommunityParent", false),
                         parentGroupJid = c.optString("parentGroupJid", ""),
-                        isDefaultSubgroup = c.optBoolean("isDefaultSubgroup", false)
+                        isDefaultSubgroup = c.optBoolean("isDefaultSubgroup", false),
+                        isLocked = c.optBoolean("locked", false)
                     )
                 }
             }
             val chatsList = chatsMap.values.toList()
+            for (ch in chatsList) {
+                if (!ch.isGroup && !ch.isCommunityParent && !ch.jid.endsWith("@newsletter")) {
+                    val bare = ch.jid.substringBefore("@")
+                    val savedName = ch.name.isNotBlank() && ch.name != bare && ch.name != ch.jid && !ch.name.startsWith("+")
+                    syncedContacts.add(
+                        ContactEntity(
+                            jid = ch.jid,
+                            name = ch.name.ifBlank { bare },
+                            aboutText = ch.aboutText,
+                            avatarPath = ch.avatarPath,
+                            isSaved = savedName,
+                            updatedAt = maxOf(ch.lastMessageTimestamp, System.currentTimeMillis())
+                        )
+                    )
+                }
+            }
+            if (syncedContacts.isNotEmpty()) {
+                dao.upsertContacts(syncedContacts)
+            }
 
             val msgList = mutableListOf<MessageEntity>()
             val msgsArr = json.optJSONArray("messages")
@@ -676,6 +768,18 @@ class WaRealtimeService : Service() {
             isGroup = isGrp,
             incrementUnread = !isSync && !isActiveChat
         )
+        if (!isGrp && !msg.isFromMe && !msg.chatJid.endsWith("@newsletter") && nameHint.isNotBlank()) {
+            dao.upsertContacts(
+                listOf(
+                    ContactEntity(
+                        jid = msg.chatJid,
+                        name = nameHint,
+                        isSaved = false,
+                        updatedAt = msg.timestamp
+                    )
+                )
+            )
+        }
         drainPendingReactions(msg.id)
         if (dao.getChat(msg.chatJid)?.avatarPath.isNullOrBlank()) {
             requestSingleAvatarIfNeeded(msg.chatJid)
@@ -1161,6 +1265,8 @@ class WaRealtimeService : Service() {
 
     private suspend fun handleContactsSyncBatch(json: JSONObject) {
         val arr = json.optJSONArray("contacts") ?: return
+        val contactEntities = ArrayList<ContactEntity>(arr.length())
+        val now = System.currentTimeMillis()
         for (i in 0 until arr.length()) {
             val item = arr.optJSONObject(i) ?: continue
             val rawJid = item.optString("jid")
@@ -1173,12 +1279,23 @@ class WaRealtimeService : Service() {
                 pushnameCache[canonicalJid] = name
                 dao.updateChatName(canonicalJid, name, overwrite = isCustom)
                 propagateStatusAndSenderName(canonicalJid, name, overwriteStatus = isCustom)
+                contactEntities.add(
+                    ContactEntity(
+                        jid = canonicalJid,
+                        name = name,
+                        isSaved = isCustom,
+                        updatedAt = now
+                    )
+                )
             }
             if (altJid.isNotBlank() && name != altJid && name != altJid.substringBefore("@")) {
                 pushnameCache[altJid] = name
                 dao.updateChatName(altJid, name, overwrite = isCustom)
                 propagateStatusAndSenderName(altJid, name, overwriteStatus = isCustom)
             }
+        }
+        if (contactEntities.isNotEmpty()) {
+            dao.upsertContacts(contactEntities)
         }
     }
 
@@ -1259,10 +1376,14 @@ class WaRealtimeService : Service() {
         when (kind) {
             "CONTACT" -> {
                 val name = json.optString("name").trim()
+                val ts = json.optLong("timestamp", System.currentTimeMillis())
                 if (name.isNotBlank()) {
                     pushnameCache[jid] = name
                     dao.updateChatName(jid, name, overwrite = true)
                     propagateStatusAndSenderName(jid, name, overwriteStatus = true)
+                    dao.upsertContacts(
+                        listOf(ContactEntity(jid = jid, name = name, isSaved = true, updatedAt = ts))
+                    )
                     if (altJid.isNotBlank()) {
                         pushnameCache[altJid] = name
                         dao.updateChatName(altJid, name, overwrite = true)
@@ -1272,10 +1393,14 @@ class WaRealtimeService : Service() {
             }
             "PUSHNAME" -> {
                 val name = json.optString("name").trim()
+                val ts = json.optLong("timestamp", System.currentTimeMillis())
                 if (name.isNotBlank()) {
                     pushnameCache[jid] = name
                     dao.updateChatName(jid, name, overwrite = false)
                     propagateStatusAndSenderName(jid, name, overwriteStatus = false)
+                    dao.upsertContacts(
+                        listOf(ContactEntity(jid = jid, name = name, isSaved = false, updatedAt = ts))
+                    )
                     if (altJid.isNotBlank()) {
                         pushnameCache[altJid] = name
                         dao.updateChatName(altJid, name, overwrite = false)
@@ -1285,7 +1410,7 @@ class WaRealtimeService : Service() {
             }
             "MUTE" -> dao.updateMuted(jid, json.optBoolean("muted"), json.optLong("muteEnd"))
             "PIN" -> dao.updatePinned(jid, json.optBoolean("pinned"), json.optLong("timestamp"))
-            "ARCHIVE" -> dao.updateArchived(jid, json.optBoolean("archived"))
+            "ARCHIVE" -> dao.updateArchivedFromSync(jid, json.optBoolean("archived"))
             "GROUP_ANNOUNCE" -> setGroupAnnounceLocked(applicationContext, jid, json.optBoolean("locked", false))
             "MARK_READ" -> {
                 StealthMatrixManager.recordPrimaryHeartbeat(json.optLong("timestamp", System.currentTimeMillis()))
@@ -1347,10 +1472,12 @@ class WaRealtimeService : Service() {
         val ts = json.optLong("timestamp", System.currentTimeMillis())
         if (avatarPath.isNotBlank()) {
             dao.updateChatAvatar(jid, avatarPath)
+            dao.updateContactAvatar(jid, avatarPath)
             if (altJid.isNotBlank()) dao.updateChatAvatar(altJid, avatarPath)
         }
         if (aboutText.isNotBlank()) {
             dao.updateChatAbout(jid, aboutText)
+            dao.updateContactAbout(jid, aboutText)
             if (altJid.isNotBlank()) dao.updateChatAbout(altJid, aboutText)
         }
         val name = dao.getChat(jid)?.name ?: pushnameCache[jid] ?: jid.substringBefore("@")

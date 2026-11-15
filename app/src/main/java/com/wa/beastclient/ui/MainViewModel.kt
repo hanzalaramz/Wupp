@@ -18,6 +18,7 @@ import com.wa.beastclient.core.update.AppReleaseInfo
 import com.wa.beastclient.core.update.UpdateUiState
 import com.wa.beastclient.core.update.WuppUpdater
 import com.wa.beastclient.data.db.ChatEntity
+import com.wa.beastclient.data.db.ContactEntity
 import com.wa.beastclient.data.db.GroupReceiptEntity
 import com.wa.beastclient.data.db.MessageEditEntity
 import com.wa.beastclient.data.db.MessageEntity
@@ -28,11 +29,14 @@ import com.wa.beastclient.data.db.WaUiDatabase
 import com.wa.beastclient.data.media.EagerMediaVault
 import com.wa.beastclient.data.media.OutboundQualityMode
 import com.wa.beastclient.data.media.SoundPoolManager
+import com.wa.beastclient.domain.security.AppLockConfig
+import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.domain.stealth.AutoDownloadNetwork
 import com.wa.beastclient.domain.stealth.EffectiveChatPrivacy
 import com.wa.beastclient.domain.stealth.GlobalStealthConfig
 import com.wa.beastclient.domain.stealth.PrimaryHeartbeatStatus
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
+import com.wa.beastclient.ui.theme.LocaleHelper
 import com.wa.beastclient.ui.theme.WuppThemeMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -55,6 +59,7 @@ enum class HomeFilterChip(val label: String) {
     UNREAD("Unread"),
     FAVORITES("Favorites"),
     GROUPS("Groups"),
+    LOCKED("Locked"),
     DELETED("Deleted"),
     EDITED("Edited")
 }
@@ -64,16 +69,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val dao = WaUiDatabase.getInstance(appContext).waDao()
 
     val stealthConfig: StateFlow<GlobalStealthConfig> = StealthMatrixManager.config
+    val appLockConfig: StateFlow<AppLockConfig> = AppLockManager.config
+    val isAppLocked: StateFlow<Boolean> = AppLockManager.isLocked
     val bridgeStatus: StateFlow<BridgeStatus> = WaRealtimeService.bridgeStatus
     val updateState: StateFlow<UpdateUiState> = WuppUpdater.state
     val autoUpdateEnabled: StateFlow<Boolean> = WuppUpdater.autoCheckEnabled
     val includePreReleases: StateFlow<Boolean> = WuppUpdater.includePreReleases
     val showUpdatePrompt: StateFlow<Boolean> = WuppUpdater.showPromptDialog
 
+    private val _lockedChatsRevealed = MutableStateFlow(false)
+    val lockedChatsRevealed: StateFlow<Boolean> = _lockedChatsRevealed.asStateFlow()
+
     init {
         WuppUpdater.init(appContext)
         viewModelScope.launch {
             WuppUpdater.checkForUpdates(appContext, silent = true)
+        }
+        viewModelScope.launch {
+            AppLockManager.isLocked.collect { locked ->
+                if (locked) {
+                    _lockedChatsRevealed.value = false
+                }
+            }
         }
     }
 
@@ -107,11 +124,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .flatMapLatest { dao.observeChats(it) }
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
+    val allContacts: StateFlow<List<ContactEntity>> = dao.observeContacts()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val archivedCount: StateFlow<Int> = dao.observeArchivedCount()
+        .stateIn(viewModelScope, SharingStarted.Lazily, 0)
+
+    val hiddenLockedChatsCount: StateFlow<Int> = combine(
+        allChats,
+        appLockConfig,
+        lockedChatsRevealed
+    ) { chats, lockCfg, revealed ->
+        if (!lockCfg.hideLockedChatsBehindLock || revealed) 0
+        else chats.count {
+            it.isLocked &&
+                !it.isCommunityParent &&
+                !it.jid.endsWith("@newsletter") &&
+                it.jid != "status@broadcast" &&
+                !it.jid.endsWith("@broadcast") &&
+                !it.isPhantomEmptyDm() &&
+                !(it.name.startsWith("@") && it.lastMessagePreview.isBlank())
+        }
+    }.stateIn(viewModelScope, SharingStarted.Lazily, 0)
+
     val filteredChats: StateFlow<List<ChatEntity>> = combine(
         allChats,
         _selectedFilter,
-        _homeSearchQuery
-    ) { chats, chip, query ->
+        _homeSearchQuery,
+        appLockConfig,
+        lockedChatsRevealed
+    ) { chats, chip, query, lockCfg, revealed ->
+        val hideLocked = lockCfg.hideLockedChatsBehindLock && !revealed
         val chatThreads = chats.filter {
             !it.isCommunityParent &&
                 !it.jid.endsWith("@newsletter") &&
@@ -121,12 +164,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 !(it.name.startsWith("@") && it.lastMessagePreview.isBlank())
         }
         val byChip = when (chip) {
-            HomeFilterChip.ALL -> chatThreads
-            HomeFilterChip.UNREAD -> chatThreads.filter { it.unreadCount > 0 }
-            HomeFilterChip.FAVORITES -> chatThreads.filter { it.isFavorite }
-            HomeFilterChip.GROUPS -> chatThreads.filter { it.isGroup }
-            HomeFilterChip.DELETED -> chatThreads.filter { it.hasDeletedMessages || it.lastMessageIsDeleted }
-            HomeFilterChip.EDITED -> chatThreads.filter { it.hasEditedMessages }
+            HomeFilterChip.ALL -> chatThreads.filter { !hideLocked || !it.isLocked }
+            HomeFilterChip.UNREAD -> chatThreads.filter { (!hideLocked || !it.isLocked) && it.unreadCount > 0 }
+            HomeFilterChip.FAVORITES -> chatThreads.filter { (!hideLocked || !it.isLocked) && it.isFavorite }
+            HomeFilterChip.GROUPS -> chatThreads.filter { (!hideLocked || !it.isLocked) && it.isGroup }
+            HomeFilterChip.LOCKED -> if (hideLocked) emptyList() else chatThreads.filter { it.isLocked }
+            HomeFilterChip.DELETED -> chatThreads.filter { (!hideLocked || !it.isLocked) && (it.hasDeletedMessages || it.lastMessageIsDeleted) }
+            HomeFilterChip.EDITED -> chatThreads.filter { (!hideLocked || !it.isLocked) && it.hasEditedMessages }
         }
         val q = query.trim().lowercase()
         if (q.isEmpty()) byChip
@@ -169,6 +213,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _includeArchived.value = !_includeArchived.value
     }
 
+    fun setIncludeArchived(include: Boolean) {
+        _includeArchived.value = include
+    }
+
+    fun setLockedChatsRevealed(revealed: Boolean) {
+        _lockedChatsRevealed.value = revealed
+    }
+
     fun updateHomeSearch(query: String) {
         _homeSearchQuery.value = query
         viewModelScope.launch(Dispatchers.IO) {
@@ -199,6 +251,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun observeChat(chatJid: String): Flow<ChatEntity?> = dao.observeChat(chatJid)
+
+    fun observeContact(jid: String): Flow<ContactEntity?> = dao.observeContact(jid)
 
     fun observeEffectivePrivacy(chatJid: String): Flow<EffectiveChatPrivacy> =
         StealthMatrixManager.observeEffectivePrivacy(dao, chatJid)
@@ -252,6 +306,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         StealthMatrixManager.updateConfig { it.copy(themeMode = themeMode) }
     }
 
+    fun setUseSystemFont(enabled: Boolean) {
+        StealthMatrixManager.updateConfig { it.copy(useSystemFont = enabled) }
+    }
+
+    fun setQuickReactionEmojis(emojis: List<String>) {
+        StealthMatrixManager.updateConfig {
+            it.copy(quickReactionEmojis = StealthMatrixManager.sanitizeQuickReactions(emojis))
+        }
+    }
+
+    fun resetQuickReactionEmojis() {
+        StealthMatrixManager.updateConfig {
+            it.copy(quickReactionEmojis = StealthMatrixManager.DEFAULT_QUICK_REACTIONS)
+        }
+    }
+
+    fun setAppLanguage(languageCode: String) {
+        val normalized = when (languageCode) {
+            LocaleHelper.LANG_EN, LocaleHelper.LANG_TR -> languageCode
+            else -> LocaleHelper.LANG_SYSTEM
+        }
+        StealthMatrixManager.updateConfig { it.copy(appLanguage = normalized) }
+    }
+
     fun setChatWallpaper(uri: String) {
         StealthMatrixManager.updateConfig { it.copy(chatWallpaperUri = uri) }
     }
@@ -262,6 +340,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setChatWallpaperShowDoodle(show: Boolean) {
         StealthMatrixManager.updateConfig { it.copy(chatWallpaperShowDoodle = show) }
+    }
+
+    fun setChatWallpaperPosition(scale: Float, offsetX: Float, offsetY: Float) {
+        StealthMatrixManager.updateConfig {
+            it.copy(
+                chatWallpaperScale = scale.coerceIn(1f, 3f),
+                chatWallpaperOffsetX = offsetX.coerceIn(-1f, 1f),
+                chatWallpaperOffsetY = offsetY.coerceIn(-1f, 1f)
+            )
+        }
     }
 
     fun importChatWallpaperFromUri(uri: Uri) {
@@ -292,6 +380,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setPerChatWallpaperShowDoodle(chatJid: String, show: Boolean) {
         StealthMatrixManager.setChatWallpaperOverride(chatJid) { prev ->
             prev.copy(showDoodle = show)
+        }
+    }
+
+    fun setPerChatWallpaperPosition(chatJid: String, scale: Float, offsetX: Float, offsetY: Float) {
+        StealthMatrixManager.setChatWallpaperOverride(chatJid) { prev ->
+            prev.copy(
+                scale = scale.coerceIn(1f, 3f),
+                offsetXFraction = offsetX.coerceIn(-1f, 1f),
+                offsetYFraction = offsetY.coerceIn(-1f, 1f)
+            )
         }
     }
 
@@ -727,6 +825,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun installDownloadedApk(apkFile: File) {
         WuppUpdater.installApk(appContext, apkFile).onFailure { err ->
             showToast(err.message ?: "Unable to launch APK installer")
+        }
+    }
+
+    fun installExternalApkFallback(apkFile: File) {
+        WuppUpdater.installViaExternalChooser(appContext, apkFile).onFailure { err ->
+            showToast(err.message ?: "Unable to open external APK installer")
         }
     }
 

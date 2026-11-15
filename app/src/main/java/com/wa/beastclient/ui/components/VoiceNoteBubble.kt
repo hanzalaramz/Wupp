@@ -60,6 +60,7 @@ import com.wa.beastclient.R
 import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
+import com.wa.beastclient.ui.theme.LocalWuppShowSeconds
 import kotlinx.coroutines.delay
 import java.io.File
 import kotlin.math.max
@@ -173,6 +174,7 @@ fun VoiceNoteBubble(
         }
     }
 
+    val showSeconds = LocalWuppShowSeconds.current
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -302,7 +304,7 @@ fun VoiceNoteBubble(
                         modifier = Modifier.weight(1f)
                     )
                     MessageMetaCluster(
-                        timeText = formatMessageClock(msg.timestamp),
+                        timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
                         isEdited = msg.isEdited,
                         isEphemeral = msg.isEphemeral,
                         isFromMe = msg.isFromMe,

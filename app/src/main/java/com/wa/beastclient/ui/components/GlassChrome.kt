@@ -360,16 +360,102 @@ fun WuppGlassNavBar(
     unreadChatsCount: Int,
     onSelectTab: (Int) -> Unit,
     backdropState: WuppBackdropState? = null,
+    classicMode: Boolean = false,
+    chatsLabel: String = "Chats",
+    updatesLabel: String = "Updates",
+    communitiesLabel: String = "Communities",
+    settingsLabel: String = "Settings",
     modifier: Modifier = Modifier
 ) {
     val colors = LocalWaColors.current
-    val tabs = remember(unreadChatsCount) {
+    val tabs = remember(unreadChatsCount, chatsLabel, updatesLabel, communitiesLabel, settingsLabel) {
         listOf(
-            GlassNavTab(0, "Chats", drawableRes = R.drawable.vec_ic_chat_filled, badgeCount = unreadChatsCount),
-            GlassNavTab(1, "Updates", drawableRes = R.drawable.vec_ic_status),
-            GlassNavTab(2, "Communities", drawableRes = R.drawable.vec_ic_avatar_community),
-            GlassNavTab(3, "Settings", imageVector = Icons.Rounded.Shield)
+            GlassNavTab(0, chatsLabel, drawableRes = R.drawable.vec_ic_chat_filled, badgeCount = unreadChatsCount),
+            GlassNavTab(1, updatesLabel, drawableRes = R.drawable.vec_ic_status),
+            GlassNavTab(2, communitiesLabel, drawableRes = R.drawable.vec_ic_avatar_community),
+            GlassNavTab(3, settingsLabel, imageVector = Icons.Rounded.Shield)
         )
+    }
+
+    if (classicMode) {
+        androidx.compose.material3.Surface(
+            color = colors.elevatedBar,
+            tonalElevation = 0.dp,
+            modifier = modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
+                androidx.compose.material3.HorizontalDivider(color = colors.divider, thickness = 0.6.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(64.dp)
+                        .padding(horizontal = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    tabs.forEach { tab ->
+                        val selected = tab.index == currentTab
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clickable { onSelectTab(tab.index) },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(if (selected) colors.pillActiveBg else Color.Transparent)
+                                    .padding(horizontal = 16.dp, vertical = 5.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (tab.drawableRes != null) {
+                                    androidx.compose.material3.Icon(
+                                        painter = androidx.compose.ui.res.painterResource(tab.drawableRes),
+                                        contentDescription = tab.label,
+                                        tint = if (selected) colors.pillActiveText else colors.textSecondary,
+                                        modifier = Modifier.size(21.dp)
+                                    )
+                                } else if (tab.imageVector != null) {
+                                    androidx.compose.material3.Icon(
+                                        imageVector = tab.imageVector,
+                                        contentDescription = tab.label,
+                                        tint = if (selected) colors.pillActiveText else colors.textSecondary,
+                                        modifier = Modifier.size(21.dp)
+                                    )
+                                }
+                                if (tab.badgeCount > 0) {
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .offset(x = 8.dp, y = (-3).dp)
+                                            .clip(CircleShape)
+                                            .background(colors.brightGreen)
+                                            .padding(horizontal = 5.dp, vertical = 1.dp)
+                                    ) {
+                                        Text(
+                                            text = if (tab.badgeCount > 99) "99+" else tab.badgeCount.toString(),
+                                            color = if (colors.isDark) Color(0xFF0B141A) else Color.White,
+                                            fontSize = 9.5.sp,
+                                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = tab.label,
+                                color = if (selected) colors.textPrimary else colors.textSecondary,
+                                fontSize = 11.sp,
+                                fontWeight = if (selected) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        return
     }
 
     Box(

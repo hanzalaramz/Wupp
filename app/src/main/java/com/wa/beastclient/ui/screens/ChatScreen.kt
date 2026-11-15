@@ -133,6 +133,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -150,6 +151,7 @@ import com.wa.beastclient.R
 import com.wa.beastclient.data.db.ChatEntity
 import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.data.media.OutboundQualityMode
+import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.MainViewModel
 import com.wa.beastclient.ui.QuotedSenderMeta
@@ -171,6 +173,7 @@ import com.wa.beastclient.ui.components.formatMessageClock
 import com.wa.beastclient.ui.components.rememberWuppBackdropState
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
+import com.wa.beastclient.ui.theme.LocalWuppShowSeconds
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -194,6 +197,7 @@ fun ChatScreen(
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
+    val showSeconds = LocalWuppShowSeconds.current
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
@@ -204,6 +208,7 @@ fun ChatScreen(
     }
 
     val chat by remember(chatJid) { viewModel.observeChat(chatJid) }.collectAsState(initial = null)
+    val contact by remember(chatJid) { viewModel.observeContact(chatJid) }.collectAsState(initial = null)
     val isChannel = chatJid.endsWith("@newsletter")
     val isGroupAnnounceLocked by remember(chatJid) { viewModel.isGroupAnnounceLocked(chatJid) }.collectAsState(initial = false)
     val effectivePrivacy by remember(chatJid) { viewModel.observeEffectivePrivacy(chatJid) }.collectAsState(initial = null)
@@ -528,6 +533,9 @@ fun ChatScreen(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
+                                val effectiveAbout = remember(chat?.aboutText, contact?.aboutText) {
+                                    chat?.aboutText?.takeIf { it.isNotBlank() } ?: contact?.aboutText.orEmpty()
+                                }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     val presence = chat?.chatPresence.orEmpty()
                                     if (presence.isNotBlank()) {
@@ -547,9 +555,9 @@ fun ChatScreen(
                                     } else {
                                         val sub = when {
                                             isChannel -> "Public channel"
-                                            chat?.isOnline == true -> "online"
-                                            (chat?.lastSeen ?: 0L) > 0L -> "last seen ${formatMessageClock(chat!!.lastSeen)}"
-                                            !chat?.aboutText.isNullOrBlank() -> chat!!.aboutText
+                                            chat?.isOnline == true -> stringResource(R.string.chat_status_online)
+                                            (chat?.lastSeen ?: 0L) > 0L -> "last seen ${formatMessageClock(chat!!.lastSeen, includeSeconds = showSeconds)}"
+                                            effectiveAbout.isNotBlank() -> effectiveAbout
                                             else -> ""
                                         }
                                         if (sub.isNotBlank()) {
@@ -562,6 +570,20 @@ fun ChatScreen(
                                             )
                                         }
                                     }
+                                }
+                                if (stealthConfig.alwaysShowContactBio &&
+                                    effectiveAbout.isNotBlank() &&
+                                    !isChannel &&
+                                    !chatJid.endsWith("@g.us") &&
+                                    (chat?.isOnline == true || (chat?.lastSeen ?: 0L) > 0L || !chat?.chatPresence.isNullOrBlank())
+                                ) {
+                                    Text(
+                                        text = effectiveAbout,
+                                        fontSize = 11.sp,
+                                        color = colors.textSecondary.copy(alpha = 0.85f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                             }
                         }
@@ -621,7 +643,12 @@ fun ChatScreen(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text(if (chat?.isPinned == true) "Unpin chat" else "Pin chat") },
+                                text = {
+                                    Text(
+                                        if (chat?.isPinned == true) stringResource(R.string.chat_action_unpin)
+                                        else stringResource(R.string.chat_action_pin)
+                                    )
+                                },
                                 onClick = {
                                     showOverflow = false
                                     chat?.let { viewModel.togglePinChat(it) }
@@ -680,6 +707,9 @@ fun ChatScreen(
             wallpaperUriOverride = effectiveWallpaper.uri,
             wallpaperDimOverride = effectiveWallpaper.dim,
             showDoodleOverride = effectiveWallpaper.showDoodle,
+            wallpaperScaleOverride = effectiveWallpaper.scale,
+            wallpaperOffsetXOverride = effectiveWallpaper.offsetXFraction,
+            wallpaperOffsetYOverride = effectiveWallpaper.offsetYFraction,
             backdropState = wallpaperBackdropState,
             modifier = Modifier
                 .fillMaxSize()
@@ -957,7 +987,10 @@ fun ChatScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    listOf("👍", "❤️", "😂", "😮", "😢", "🙏", "😊").forEach { emoji ->
+                                    val activeReactions = stealthConfig.quickReactionEmojis.ifEmpty {
+                                        StealthMatrixManager.DEFAULT_QUICK_REACTIONS
+                                    }
+                                    activeReactions.forEach { emoji ->
                                         val isCurrent = target.reactionSummary.contains(emoji)
                                         val emojiInteraction = remember(emoji) { MutableInteractionSource() }
                                         Box(
@@ -1118,7 +1151,10 @@ fun ChatScreen(
                             ) {
                                 val pickInteraction = remember { MutableInteractionSource() }
                                 Button(
-                                    onClick = { pickMediaLauncher.launch("*/*") },
+                                    onClick = {
+                                        AppLockManager.suspendNextBackgroundLock()
+                                        pickMediaLauncher.launch("*/*")
+                                    },
                                     interactionSource = pickInteraction,
                                     shape = RoundedCornerShape(16.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen),
@@ -1259,7 +1295,7 @@ fun ChatScreen(
                             Box(modifier = Modifier.weight(1f).padding(vertical = 6.dp, horizontal = 4.dp)) {
                                 if (draftText.isEmpty()) {
                                     Text(
-                                        text = if (canSendOutbound) "Message" else "Blocked by Error 463 guard",
+                                        text = if (canSendOutbound) stringResource(R.string.chat_input_placeholder) else "Blocked by Error 463 guard",
                                         color = colors.textSecondary,
                                         fontSize = 15.5.sp
                                     )
@@ -1286,7 +1322,10 @@ fun ChatScreen(
                             }
                             AnimatedVisibility(visible = draftText.isBlank()) {
                                 IconButton(
-                                    onClick = { pickMediaLauncher.launch("image/*") },
+                                    onClick = {
+                                        AppLockManager.suspendNextBackgroundLock()
+                                        pickMediaLauncher.launch("image/*")
+                                    },
                                     modifier = Modifier.size(34.dp)
                                 ) {
                                     Icon(
@@ -1481,20 +1520,28 @@ fun ChatScreen(
             currentUri = stealthConfig.chatWallpaperUri,
             currentDim = stealthConfig.chatWallpaperDim,
             showDoodleOnPresets = stealthConfig.chatWallpaperShowDoodle,
+            currentScale = stealthConfig.chatWallpaperScale,
+            currentOffsetX = stealthConfig.chatWallpaperOffsetX,
+            currentOffsetY = stealthConfig.chatWallpaperOffsetY,
             onSelectUri = { viewModel.setChatWallpaper(it) },
             onPickCustomImage = { viewModel.importChatWallpaperFromUri(it) },
             onDimChange = { viewModel.setChatWallpaperDim(it) },
             onToggleDoodle = { viewModel.setChatWallpaperShowDoodle(it) },
+            onPositionChange = { scale, ox, oy -> viewModel.setChatWallpaperPosition(scale, ox, oy) },
             onDismiss = { showWallpaperDialog = false },
             chatTitle = chatTitle,
             hasChatOverride = hasChatWallpaperOverride,
             chatUri = effectiveWallpaper.uri,
             chatDim = effectiveWallpaper.dim,
             chatShowDoodle = effectiveWallpaper.showDoodle,
+            chatScale = effectiveWallpaper.scale,
+            chatOffsetX = effectiveWallpaper.offsetXFraction,
+            chatOffsetY = effectiveWallpaper.offsetYFraction,
             onSelectChatUri = { viewModel.setPerChatWallpaper(chatJid, it) },
             onPickChatCustomImage = { viewModel.importPerChatWallpaperFromUri(chatJid, it) },
             onChatDimChange = { viewModel.setPerChatWallpaperDim(chatJid, it) },
             onToggleChatDoodle = { viewModel.setPerChatWallpaperShowDoodle(chatJid, it) },
+            onChatPositionChange = { scale, ox, oy -> viewModel.setPerChatWallpaperPosition(chatJid, scale, ox, oy) },
             onResetChatToGlobal = { viewModel.clearPerChatWallpaper(chatJid) }
         )
     }
@@ -1520,7 +1567,7 @@ fun ChatScreen(
                 )
                 Card(colors = CardDefaults.cardColors(containerColor = colors.pillActiveBg)) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Text("Current Version · ${formatMessageClock(target.editedAt)}", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = colors.pillActiveText)
+                        Text("Current Version · ${formatMessageClock(target.editedAt, includeSeconds = showSeconds)}", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = colors.pillActiveText)
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(target.body, color = colors.textPrimary, fontSize = 14.sp)
                     }
@@ -1532,7 +1579,7 @@ fun ChatScreen(
                         Card(colors = CardDefaults.cardColors(containerColor = colors.pillInactiveBg)) {
                             Column(modifier = Modifier.padding(12.dp)) {
                                 Text(
-                                    text = "Revision #${edits.size - idx} · ${formatMessageClock(rev.editedAt)}",
+                                    text = "Revision #${edits.size - idx} · ${formatMessageClock(rev.editedAt, includeSeconds = showSeconds)}",
                                     fontSize = 11.sp,
                                     fontFamily = mono,
                                     color = colors.textSecondary
@@ -1571,7 +1618,7 @@ fun ChatScreen(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(r.participantName.ifBlank { r.participantJid }, color = colors.textPrimary)
-                            Text("${r.status} · ${formatMessageClock(r.timestamp)}", color = colors.blueTick, fontFamily = mono, fontSize = 12.sp)
+                            Text("${r.status} · ${formatMessageClock(r.timestamp, includeSeconds = showSeconds)}", color = colors.blueTick, fontFamily = mono, fontSize = 12.sp)
                         }
                     }
                 }
@@ -1716,6 +1763,7 @@ private fun MessageBubbleRow(
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
+    val showSeconds = LocalWuppShowSeconds.current
     val context = LocalContext.current
     val effectiveOutgoing = msg.isFromMe && !isChannel
     val bubbleColor = if (effectiveOutgoing) colors.outgoingBubble else colors.incomingBubble
@@ -1976,7 +2024,7 @@ private fun MessageBubbleRow(
                         Spacer(modifier = Modifier.height(3.dp))
                         Row(modifier = Modifier.align(Alignment.End)) {
                             MessageMetaCluster(
-                                timeText = formatMessageClock(msg.timestamp),
+                                timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
                                 isEdited = false,
                                 isEphemeral = msg.isEphemeral,
                                 isFromMe = msg.isFromMe,
@@ -2042,7 +2090,7 @@ private fun MessageBubbleRow(
                         Spacer(modifier = Modifier.height(3.dp))
                         Row(modifier = Modifier.align(Alignment.End)) {
                             MessageMetaCluster(
-                                timeText = formatMessageClock(msg.timestamp),
+                                timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
                                 isEdited = msg.isEdited,
                                 isEphemeral = msg.isEphemeral,
                                 isFromMe = msg.isFromMe,
@@ -2135,7 +2183,7 @@ private fun MessageBubbleRow(
                             Spacer(modifier = Modifier.height(3.dp))
                             Row(modifier = Modifier.align(Alignment.End).padding(horizontal = 2.dp)) {
                                 MessageMetaCluster(
-                                    timeText = formatMessageClock(msg.timestamp),
+                                    timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
                                     isEdited = false,
                                     isEphemeral = false,
                                     isFromMe = false,
@@ -2319,7 +2367,7 @@ private fun MessageBubbleRow(
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
                                     MessageMetaCluster(
-                                        timeText = formatMessageClock(msg.timestamp),
+                                        timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
                                         isEdited = msg.isEdited,
                                         isEphemeral = msg.isEphemeral,
                                         isFromMe = msg.isFromMe,

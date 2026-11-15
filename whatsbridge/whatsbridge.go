@@ -108,9 +108,10 @@ var (
 	avatarQueue          chan types.JID
 	workersOnce          sync.Once
 	ghostPresence        atomic.Bool
-	contactsSyncRunning  atomic.Bool
-	lastContactsSyncUnix atomic.Int64
-	verifyBulkLastMs     atomic.Int64
+	contactsSyncRunning    atomic.Bool
+	lastContactsSyncUnix   atomic.Int64
+	lastKeepAliveResetUnix atomic.Int64
+	verifyBulkLastMs       atomic.Int64
 	retryCounts          sync.Map
 	seenMediaMap         sync.Map
 	mediaJobsById        sync.Map
@@ -2261,6 +2262,29 @@ func handleWhatsmeowEvent(rawEvt any) {
 			"timestamp": time.Now().UnixMilli(),
 		})
 
+	case *events.KeepAliveTimeout:
+		emitJSON("CONNECTION_STATE", map[string]any{
+			"state":     "RECONNECTING",
+			"timestamp": time.Now().UnixMilli(),
+		})
+		emitJSON("BRIDGE_LOG", map[string]any{
+			"level":  "WARN",
+			"module": "KeepAlive",
+			"msg":    fmt.Sprintf("KeepAliveTimeout errorCount=%d", evt.ErrorCount),
+		})
+		if evt.ErrorCount >= 2 {
+			nowSec := time.Now().Unix()
+			prevReset := lastKeepAliveResetUnix.Load()
+			if nowSec-prevReset >= 60 && lastKeepAliveResetUnix.CompareAndSwap(prevReset, nowSec) {
+				mu.Lock()
+				kaCli := client
+				mu.Unlock()
+				if kaCli != nil {
+					go kaCli.ResetConnection()
+				}
+			}
+		}
+
 	case *events.LoggedOut:
 		emitJSON("CONNECTION_STATE", map[string]any{
 			"state":     "LOGGED_OUT",
@@ -2969,6 +2993,7 @@ func processHistorySync(evt *events.HistorySync) {
 		IsDefaultSubgroup bool   `json:"isDefaultSubgroup"`
 		UnreadCount       uint32 `json:"unreadCount"`
 		Archived          bool   `json:"archived"`
+		Locked            bool   `json:"locked"`
 		Pinned            uint32 `json:"pinned"`
 		MuteEndTime       uint64 `json:"muteEndTime"`
 		LastTimestampMs   int64  `json:"lastTimestampMs"`
@@ -3058,6 +3083,7 @@ func processHistorySync(evt *events.HistorySync) {
 			IsDefaultSubgroup: conv.GetIsDefaultSubgroup(),
 			UnreadCount:       conv.GetUnreadCount(),
 			Archived:          conv.GetArchived(),
+			Locked:            conv.GetLocked(),
 			Pinned:            conv.GetPinned(),
 			MuteEndTime:       conv.GetMuteEndTime(),
 			LastTimestampMs:   int64(conv.GetConversationTimestamp()) * 1000,
@@ -3257,6 +3283,7 @@ func processHistorySync(evt *events.HistorySync) {
 				prev.LastTimestampMs = cm.LastTimestampMs
 			}
 			prev.Archived = prev.Archived || cm.Archived
+			prev.Locked = prev.Locked || cm.Locked
 			if cm.Pinned > prev.Pinned {
 				prev.Pinned = cm.Pinned
 			}

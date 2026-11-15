@@ -6,13 +6,16 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import com.wa.beastclient.data.db.PrivacyRuleEntity
 import com.wa.beastclient.data.db.WaDao
+import com.wa.beastclient.ui.theme.LocaleHelper
 import com.wa.beastclient.ui.theme.WuppThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import org.json.JSONArray
 import org.json.JSONObject
+import java.text.BreakIterator
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
 
@@ -25,7 +28,10 @@ enum class AutoDownloadNetwork(val label: String) {
 data class ChatWallpaperOverride(
     val uri: String = "",
     val dim: Float = 0.28f,
-    val showDoodle: Boolean = true
+    val showDoodle: Boolean = true,
+    val scale: Float = 1f,
+    val offsetXFraction: Float = 0f,
+    val offsetYFraction: Float = 0f
 )
 
 data class GlobalStealthConfig(
@@ -37,9 +43,22 @@ data class GlobalStealthConfig(
     val viewOnceVaultEnabled: Boolean = true,
     val disappearingImmunity: Boolean = true,
     val themeMode: WuppThemeMode = WuppThemeMode.DARK,
+    val useSystemFont: Boolean = false,
+    val quickReactionEmojis: List<String> = StealthMatrixManager.DEFAULT_QUICK_REACTIONS,
+    val classicWhatsAppLook: Boolean = false,
+    val statusVerticalLayout: Boolean = false,
+    val alwaysShowContactBio: Boolean = true,
+    val compactChatRows: Boolean = false,
+    val showSecondsInTimestamps: Boolean = false,
+    val hideHomeCameraShortcut: Boolean = false,
+    val hideStealthStatusBadges: Boolean = false,
+    val appLanguage: String = LocaleHelper.LANG_SYSTEM,
     val chatWallpaperUri: String = "",
     val chatWallpaperDim: Float = 0.28f,
     val chatWallpaperShowDoodle: Boolean = true,
+    val chatWallpaperScale: Float = 1f,
+    val chatWallpaperOffsetX: Float = 0f,
+    val chatWallpaperOffsetY: Float = 0f,
     val perChatWallpapers: Map<String, ChatWallpaperOverride> = emptyMap(),
     val autoDownloadEnabled: Boolean = true,
     val autoDownloadMobileMask: Int = StealthMatrixManager.MEDIA_ALL,
@@ -92,7 +111,22 @@ object StealthMatrixManager {
     private const val KEY_CHAT_WALLPAPER_URI = "chat_wallpaper_uri"
     private const val KEY_CHAT_WALLPAPER_DIM = "chat_wallpaper_dim"
     private const val KEY_CHAT_WALLPAPER_DOODLE = "chat_wallpaper_doodle"
+    private const val KEY_CHAT_WALLPAPER_SCALE = "chat_wallpaper_scale"
+    private const val KEY_CHAT_WALLPAPER_OFFSET_X = "chat_wallpaper_offset_x"
+    private const val KEY_CHAT_WALLPAPER_OFFSET_Y = "chat_wallpaper_offset_y"
     private const val KEY_CHAT_WALLPAPER_OVERRIDES = "chat_wallpaper_overrides_json"
+    private const val KEY_USE_SYSTEM_FONT = "use_system_font"
+    private const val KEY_QUICK_REACTIONS = "quick_reaction_emojis_json"
+    private const val KEY_CLASSIC_LOOK = "classic_whatsapp_look"
+    private const val KEY_STATUS_VERTICAL = "status_vertical_layout"
+    private const val KEY_ALWAYS_SHOW_BIO = "always_show_contact_bio"
+    private const val KEY_COMPACT_CHAT_ROWS = "compact_chat_rows"
+    private const val KEY_SHOW_SECONDS_TIME = "show_seconds_timestamps"
+    private const val KEY_HIDE_HOME_CAMERA = "hide_home_camera_shortcut"
+    private const val KEY_HIDE_STEALTH_BADGES = "hide_stealth_status_badges"
+    private const val KEY_APP_LANGUAGE = "app_language"
+
+    val DEFAULT_QUICK_REACTIONS: List<String> = listOf("👍", "❤️", "😂", "😮", "😢", "🙏", "😊")
     private const val KEY_AUTO_DL_ENABLED = "auto_download_enabled"
     private const val KEY_AUTO_DL_MOBILE = "auto_download_mobile_mask"
     private const val KEY_AUTO_DL_WIFI = "auto_download_wifi_mask"
@@ -133,9 +167,22 @@ object StealthMatrixManager {
                     prefs.getString(KEY_THEME_MODE, null),
                     prefs.getBoolean(KEY_DARK_THEME, true)
                 ),
+                useSystemFont = prefs.getBoolean(KEY_USE_SYSTEM_FONT, false),
+                quickReactionEmojis = parseQuickReactions(prefs.getString(KEY_QUICK_REACTIONS, null)),
+                classicWhatsAppLook = prefs.getBoolean(KEY_CLASSIC_LOOK, false),
+                statusVerticalLayout = prefs.getBoolean(KEY_STATUS_VERTICAL, false),
+                alwaysShowContactBio = prefs.getBoolean(KEY_ALWAYS_SHOW_BIO, true),
+                compactChatRows = prefs.getBoolean(KEY_COMPACT_CHAT_ROWS, false),
+                showSecondsInTimestamps = prefs.getBoolean(KEY_SHOW_SECONDS_TIME, false),
+                hideHomeCameraShortcut = prefs.getBoolean(KEY_HIDE_HOME_CAMERA, false),
+                hideStealthStatusBadges = prefs.getBoolean(KEY_HIDE_STEALTH_BADGES, false),
+                appLanguage = prefs.getString(KEY_APP_LANGUAGE, LocaleHelper.LANG_SYSTEM) ?: LocaleHelper.LANG_SYSTEM,
                 chatWallpaperUri = prefs.getString(KEY_CHAT_WALLPAPER_URI, "") ?: "",
                 chatWallpaperDim = prefs.getFloat(KEY_CHAT_WALLPAPER_DIM, 0.28f),
                 chatWallpaperShowDoodle = prefs.getBoolean(KEY_CHAT_WALLPAPER_DOODLE, true),
+                chatWallpaperScale = prefs.getFloat(KEY_CHAT_WALLPAPER_SCALE, 1f).coerceIn(1f, 3f),
+                chatWallpaperOffsetX = prefs.getFloat(KEY_CHAT_WALLPAPER_OFFSET_X, 0f).coerceIn(-1f, 1f),
+                chatWallpaperOffsetY = prefs.getFloat(KEY_CHAT_WALLPAPER_OFFSET_Y, 0f).coerceIn(-1f, 1f),
                 perChatWallpapers = parsePerChatWallpapers(prefs.getString(KEY_CHAT_WALLPAPER_OVERRIDES, null)),
                 autoDownloadEnabled = prefs.getBoolean(KEY_AUTO_DL_ENABLED, true),
                 autoDownloadMobileMask = prefs.getInt(KEY_AUTO_DL_MOBILE, MEDIA_ALL),
@@ -164,9 +211,22 @@ object StealthMatrixManager {
                 .putBoolean(KEY_DISAPPEARING_IMMUNITY, updated.disappearingImmunity)
                 .putString(KEY_THEME_MODE, updated.themeMode.storageKey)
                 .putBoolean(KEY_DARK_THEME, updated.themeMode != WuppThemeMode.LIGHT)
+                .putBoolean(KEY_USE_SYSTEM_FONT, updated.useSystemFont)
+                .putString(KEY_QUICK_REACTIONS, encodeQuickReactions(updated.quickReactionEmojis))
+                .putBoolean(KEY_CLASSIC_LOOK, updated.classicWhatsAppLook)
+                .putBoolean(KEY_STATUS_VERTICAL, updated.statusVerticalLayout)
+                .putBoolean(KEY_ALWAYS_SHOW_BIO, updated.alwaysShowContactBio)
+                .putBoolean(KEY_COMPACT_CHAT_ROWS, updated.compactChatRows)
+                .putBoolean(KEY_SHOW_SECONDS_TIME, updated.showSecondsInTimestamps)
+                .putBoolean(KEY_HIDE_HOME_CAMERA, updated.hideHomeCameraShortcut)
+                .putBoolean(KEY_HIDE_STEALTH_BADGES, updated.hideStealthStatusBadges)
+                .putString(KEY_APP_LANGUAGE, updated.appLanguage)
                 .putString(KEY_CHAT_WALLPAPER_URI, updated.chatWallpaperUri)
                 .putFloat(KEY_CHAT_WALLPAPER_DIM, updated.chatWallpaperDim)
                 .putBoolean(KEY_CHAT_WALLPAPER_DOODLE, updated.chatWallpaperShowDoodle)
+                .putFloat(KEY_CHAT_WALLPAPER_SCALE, updated.chatWallpaperScale)
+                .putFloat(KEY_CHAT_WALLPAPER_OFFSET_X, updated.chatWallpaperOffsetX)
+                .putFloat(KEY_CHAT_WALLPAPER_OFFSET_Y, updated.chatWallpaperOffsetY)
                 .putString(KEY_CHAT_WALLPAPER_OVERRIDES, encodePerChatWallpapers(updated.perChatWallpapers))
                 .putBoolean(KEY_AUTO_DL_ENABLED, updated.autoDownloadEnabled)
                 .putInt(KEY_AUTO_DL_MOBILE, updated.autoDownloadMobileMask)
@@ -355,7 +415,10 @@ object StealthMatrixManager {
         return ChatWallpaperOverride(
             uri = cfg.chatWallpaperUri,
             dim = cfg.chatWallpaperDim,
-            showDoodle = cfg.chatWallpaperShowDoodle
+            showDoodle = cfg.chatWallpaperShowDoodle,
+            scale = cfg.chatWallpaperScale,
+            offsetXFraction = cfg.chatWallpaperOffsetX,
+            offsetYFraction = cfg.chatWallpaperOffsetY
         )
     }
 
@@ -368,7 +431,10 @@ object StealthMatrixManager {
             val current = cfg.perChatWallpapers[chatJid] ?: ChatWallpaperOverride(
                 uri = cfg.chatWallpaperUri,
                 dim = cfg.chatWallpaperDim,
-                showDoodle = cfg.chatWallpaperShowDoodle
+                showDoodle = cfg.chatWallpaperShowDoodle,
+                scale = cfg.chatWallpaperScale,
+                offsetXFraction = cfg.chatWallpaperOffsetX,
+                offsetYFraction = cfg.chatWallpaperOffsetY
             )
             val updated = transform(current)
             val nextMap = cfg.perChatWallpapers.toMutableMap()
@@ -415,7 +481,10 @@ object StealthMatrixManager {
                         ChatWallpaperOverride(
                             uri = item.optString("uri", ""),
                             dim = item.optDouble("dim", 0.28).toFloat().coerceIn(0f, 0.75f),
-                            showDoodle = item.optBoolean("showDoodle", true)
+                            showDoodle = item.optBoolean("showDoodle", true),
+                            scale = item.optDouble("scale", 1.0).toFloat().coerceIn(1f, 3f),
+                            offsetXFraction = item.optDouble("offsetX", 0.0).toFloat().coerceIn(-1f, 1f),
+                            offsetYFraction = item.optDouble("offsetY", 0.0).toFloat().coerceIn(-1f, 1f)
                         )
                     )
                 }
@@ -433,9 +502,53 @@ object StealthMatrixManager {
                     .put("uri", entry.uri)
                     .put("dim", entry.dim.toDouble())
                     .put("showDoodle", entry.showDoodle)
+                    .put("scale", entry.scale.toDouble())
+                    .put("offsetX", entry.offsetXFraction.toDouble())
+                    .put("offsetY", entry.offsetYFraction.toDouble())
             )
         }
         return root.toString()
+    }
+
+    fun extractFirstGrapheme(input: String): String {
+        val trimmed = input.trim()
+        if (trimmed.isEmpty()) return ""
+        val bi = BreakIterator.getCharacterInstance()
+        bi.setText(trimmed)
+        val start = bi.first()
+        val end = bi.next()
+        return if (start != BreakIterator.DONE && end != BreakIterator.DONE) {
+            trimmed.substring(start, end)
+        } else {
+            trimmed.take(2)
+        }
+    }
+
+    fun sanitizeQuickReactions(raw: List<String>): List<String> {
+        val clean = raw.mapNotNull { candidate ->
+            extractFirstGrapheme(candidate).takeIf { it.isNotBlank() }
+        }.distinct().take(7)
+        return if (clean.isEmpty()) DEFAULT_QUICK_REACTIONS else clean
+    }
+
+    private fun parseQuickReactions(rawJson: String?): List<String> {
+        if (rawJson.isNullOrBlank()) return DEFAULT_QUICK_REACTIONS
+        return runCatching {
+            val arr = JSONArray(rawJson)
+            val parsed = buildList {
+                for (i in 0 until arr.length()) {
+                    val item = arr.optString(i, "")
+                    if (item.isNotBlank()) add(item)
+                }
+            }
+            sanitizeQuickReactions(parsed)
+        }.getOrDefault(DEFAULT_QUICK_REACTIONS)
+    }
+
+    private fun encodeQuickReactions(list: List<String>): String {
+        val arr = JSONArray()
+        sanitizeQuickReactions(list).forEach { arr.put(it) }
+        return arr.toString()
     }
 
     private fun resolvePrivacy(

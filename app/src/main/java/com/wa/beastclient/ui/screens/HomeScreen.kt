@@ -4,6 +4,8 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -44,6 +46,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
@@ -61,12 +64,14 @@ import androidx.compose.material.icons.rounded.Collections
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.EmojiEmotions
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Flight
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.NotificationsOff
@@ -74,10 +79,14 @@ import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.QrCode2
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SignalCellularAlt
 import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.TextFields
+import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Unarchive
+import androidx.compose.material.icons.rounded.ViewAgenda
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material.icons.rounded.Wifi
@@ -142,8 +151,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -154,11 +166,16 @@ import com.wa.beastclient.R
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.core.update.UpdateUiState
 import com.wa.beastclient.data.db.ChatEntity
+import com.wa.beastclient.data.db.ContactEntity
 import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.data.db.StatusEntity
+import com.wa.beastclient.domain.security.AppLockManager
+import com.wa.beastclient.domain.security.AppLockMode
 import com.wa.beastclient.domain.stealth.AutoDownloadNetwork
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.HomeFilterChip
+import com.wa.beastclient.ui.components.AppLanguageDialog
+import com.wa.beastclient.ui.components.AppLockConfigDialog
 import com.wa.beastclient.ui.components.AutoDownloadNetworkDialog
 import com.wa.beastclient.ui.components.ExpressiveIconBadge
 import com.wa.beastclient.ui.components.ExpressiveSegmentPosition
@@ -175,18 +192,23 @@ import com.wa.beastclient.ui.components.GitHubFeedbackType
 import com.wa.beastclient.ui.MainViewModel
 import com.wa.beastclient.ui.components.DeliveryTickIcon
 import com.wa.beastclient.ui.components.QuickContactDialog
+import com.wa.beastclient.ui.components.ReactionEmojiCustomizerDialog
 import com.wa.beastclient.ui.components.ThemePickerDialog
 import com.wa.beastclient.ui.components.ThemeSelectorGrid
 import com.wa.beastclient.ui.components.WallpaperPickerDialog
 import com.wa.beastclient.ui.components.WuppGlassNavBar
 import com.wa.beastclient.ui.components.describeChatWallpaper
 import com.wa.beastclient.ui.components.expressivePressScale
+import com.wa.beastclient.ui.components.findFragmentActivity
 import com.wa.beastclient.ui.components.formatMessageClock
+import com.wa.beastclient.ui.components.launchDeviceAuthPrompt
 import com.wa.beastclient.ui.components.rememberWuppBackdropState
 import com.wa.beastclient.ui.components.wuppBackdropSource
 import com.wa.beastclient.ui.components.wuppGlassSurface
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
+import com.wa.beastclient.ui.theme.LocalWuppShowSeconds
+import com.wa.beastclient.ui.theme.LocaleHelper
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
@@ -214,11 +236,18 @@ fun HomeScreen(
 
     val chats by viewModel.filteredChats.collectAsState()
     val allChats by viewModel.allChats.collectAsState()
+    val allContacts by viewModel.allContacts.collectAsState()
     val channels by viewModel.channels.collectAsState()
     val selectedChip by viewModel.selectedFilter.collectAsState()
     val searchQuery by viewModel.homeSearchQuery.collectAsState()
     val ftsHits by viewModel.ftsSearchResults.collectAsState()
     val stealth by viewModel.stealthConfig.collectAsState()
+    val appLockConfig by viewModel.appLockConfig.collectAsState()
+    val includeArchived by viewModel.includeArchived.collectAsState()
+    val archivedCount by viewModel.archivedCount.collectAsState()
+    val lockedChatsRevealed by viewModel.lockedChatsRevealed.collectAsState()
+    val hiddenLockedCount by viewModel.hiddenLockedChatsCount.collectAsState()
+    val showSeconds = LocalWuppShowSeconds.current
     val bridgeStatus by viewModel.bridgeStatus.collectAsState()
     val heartbeat by viewModel.heartbeatStatus.collectAsState()
     val statuses by viewModel.statuses.collectAsState()
@@ -252,9 +281,54 @@ fun HomeScreen(
     var activeVaultViewer by remember { mutableStateOf<MessageEntity?>(null) }
     var activeFeedbackType by remember { mutableStateOf<GitHubFeedbackType?>(null) }
     var showThemePickerDialog by remember { mutableStateOf(false) }
+    var showLockedChatsPinPrompt by remember { mutableStateOf(false) }
     var selectedChatJids by remember { mutableStateOf(setOf<String>()) }
     var selectionOverflowExpanded by remember { mutableStateOf(false) }
     var pendingDeleteJids by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    val hostActivity = remember(context) { context.findFragmentActivity() }
+    val lockedDeviceAuthLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            viewModel.setLockedChatsRevealed(true)
+        }
+    }
+    val unlockPromptTitle = stringResource(R.string.applock_prompt_title)
+    val unlockPromptSubtitle = stringResource(R.string.applock_prompt_subtitle)
+    val unlockNoDeviceLock = stringResource(R.string.applock_no_device_lock)
+    fun requestRevealLockedChats() {
+        if (!appLockConfig.hideLockedChatsBehindLock || lockedChatsRevealed) {
+            viewModel.setLockedChatsRevealed(true)
+            return
+        }
+        when (appLockConfig.mode) {
+            AppLockMode.DEVICE -> {
+                val host = hostActivity
+                if (host != null) {
+                    launchDeviceAuthPrompt(
+                        activity = host,
+                        title = unlockPromptTitle,
+                        subtitle = unlockPromptSubtitle,
+                        cancelText = unlockNoDeviceLock,
+                        keyguardFallbackLauncher = { intent -> lockedDeviceAuthLauncher.launch(intent) },
+                        onAuthenticated = { viewModel.setLockedChatsRevealed(true) },
+                        onErrorMessage = { msg ->
+                            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                } else {
+                    viewModel.setLockedChatsRevealed(true)
+                }
+            }
+            AppLockMode.CUSTOM_PIN -> {
+                showLockedChatsPinPrompt = true
+            }
+            AppLockMode.OFF -> {
+                viewModel.setLockedChatsRevealed(true)
+            }
+        }
+    }
 
     val selectedChats = remember(selectedChatJids, allChats, chats) {
         val merged = (allChats + chats).associateBy { it.jid }
@@ -458,35 +532,37 @@ fun HomeScreen(
                                     fontWeight = FontWeight.ExtraBold,
                                     letterSpacing = (-0.5).sp
                                 )
-                                Row(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(999.dp))
-                                        .background(statusColor.copy(alpha = 0.14f))
-                                        .padding(horizontal = 8.dp, vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                                ) {
-                                    Box(
+                                if (!stealth.hideStealthStatusBadges) {
+                                    Row(
                                         modifier = Modifier
-                                            .size(6.5.dp)
-                                            .clip(CircleShape)
-                                            .background(statusColor)
-                                    )
-                                    Text(
-                                        text = statusWord,
-                                        color = statusColor,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        lineHeight = 12.sp
-                                    )
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .background(statusColor.copy(alpha = 0.14f))
+                                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(6.5.dp)
+                                                .clip(CircleShape)
+                                                .background(statusColor)
+                                        )
+                                        Text(
+                                            text = statusWord,
+                                            color = statusColor,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            lineHeight = 12.sp
+                                        )
+                                    }
                                 }
                             }
                         } else {
                             Text(
                                 text = when (currentTab) {
-                                    1 -> "Updates"
-                                    2 -> "Communities"
-                                    else -> "Settings"
+                                    1 -> stringResource(R.string.nav_updates)
+                                    2 -> stringResource(R.string.nav_communities)
+                                    else -> stringResource(R.string.nav_settings)
                                 },
                                 fontSize = 25.sp,
                                 fontWeight = FontWeight.ExtraBold,
@@ -495,7 +571,7 @@ fun HomeScreen(
                         }
                     },
                     actions = {
-                        if (currentTab == 0) {
+                        if (currentTab == 0 && !stealth.hideHomeCameraShortcut) {
                             IconButton(onClick = { showPairingDialog = true }) {
                                 Icon(
                                     painter = painterResource(R.drawable.vec_ic_camera_reply),
@@ -548,7 +624,12 @@ fun HomeScreen(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Archived chats") },
+                                text = {
+                                    Text(
+                                        if (includeArchived) stringResource(R.string.home_back_to_active_chats)
+                                        else stringResource(R.string.home_archived_chats)
+                                    )
+                                },
                                 leadingIcon = { Icon(Icons.Rounded.Archive, null) },
                                 onClick = {
                                     overflowExpanded = false
@@ -556,7 +637,7 @@ fun HomeScreen(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Settings") },
+                                text = { Text(stringResource(R.string.nav_settings)) },
                                 onClick = {
                                     overflowExpanded = false
                                     onSelectTab(3)
@@ -620,7 +701,12 @@ fun HomeScreen(
                 currentTab = currentTab,
                 unreadChatsCount = unreadChatsCount,
                 onSelectTab = onSelectTab,
-                backdropState = backdropState
+                backdropState = backdropState,
+                classicMode = stealth.classicWhatsAppLook,
+                chatsLabel = stringResource(R.string.nav_chats),
+                updatesLabel = stringResource(R.string.nav_updates),
+                communitiesLabel = stringResource(R.string.nav_communities),
+                settingsLabel = stringResource(R.string.nav_settings)
             )
         },
         floatingActionButton = {
@@ -734,10 +820,29 @@ fun HomeScreen(
                         listState = chatsListState,
                         selectedChatJids = selectedChatJids,
                         bottomPadding = contentBottomPad,
+                        archivedCount = archivedCount,
+                        includeArchived = includeArchived,
+                        hiddenLockedCount = hiddenLockedCount,
+                        hideLockedBehindLock = appLockConfig.hideLockedChatsBehindLock,
+                        lockedChatsRevealed = lockedChatsRevealed,
+                        compactRows = stealth.compactChatRows,
+                        showSeconds = showSeconds,
+                        hideStealthBadges = stealth.hideStealthStatusBadges,
                         onSearchChange = { viewModel.updateHomeSearch(it) },
                         heartbeat = heartbeat,
                         bridgeStatus = bridgeStatus,
-                        onSelectChip = { viewModel.selectFilter(it) },
+                        onSelectChip = { chip ->
+                            if (chip == HomeFilterChip.LOCKED &&
+                                appLockConfig.hideLockedChatsBehindLock &&
+                                !lockedChatsRevealed
+                            ) {
+                                requestRevealLockedChats()
+                            }
+                            viewModel.selectFilter(chip)
+                        },
+                        onToggleIncludeArchived = { viewModel.setIncludeArchived(it) },
+                        onRequestRevealLockedChats = { requestRevealLockedChats() },
+                        onHideRevealedLockedChats = { viewModel.setLockedChatsRevealed(false) },
                         onResetHeartbeat = { viewModel.recordPrimaryHeartbeatNow() },
                         onSeedShowcase = { viewModel.seedShowcaseData() },
                         onAvatarClick = { chat ->
@@ -778,6 +883,8 @@ fun HomeScreen(
                         searchQuery = searchQuery,
                         listState = updatesListState,
                         bottomPadding = contentBottomPad,
+                        verticalStatusLayout = stealth.statusVerticalLayout,
+                        showSeconds = showSeconds,
                         onOpenStatus = { activeStatusViewer = it },
                         onOpenChannel = { onOpenChat(it) }
                     )
@@ -801,8 +908,13 @@ fun HomeScreen(
     }
 
     quickContactChat?.let { target ->
+        val cachedBio = remember(target.jid, target.aboutText, allContacts) {
+            target.aboutText.takeIf { it.isNotBlank() }
+                ?: allContacts.firstOrNull { it.jid == target.jid }?.aboutText.orEmpty()
+        }
         QuickContactDialog(
             chat = target,
+            aboutOverride = if (stealth.alwaysShowContactBio) cachedBio else "",
             onDismiss = { quickContactTarget = null },
             onOpenChat = { onOpenChat(target.jid) },
             onOpenGhostInfo = { onSelectTab(3) },
@@ -812,6 +924,69 @@ fun HomeScreen(
             onSaveAvatar = {
                 val safeName = target.name.ifBlank { target.jid.substringBefore("@") }
                 viewModel.exportMediaToGallery(target.avatarPath, "${safeName}_avatar.jpg", "image/jpeg")
+            }
+        )
+    }
+
+    if (showLockedChatsPinPrompt) {
+        var pinAttempt by remember { mutableStateOf("") }
+        var pinErr by remember { mutableStateOf<String?>(null) }
+        val wrongMsg = stringResource(R.string.applock_wrong_pin)
+        val colors = LocalWaColors.current
+        AlertDialog(
+            onDismissRequest = { showLockedChatsPinPrompt = false },
+            containerColor = colors.elevatedBar,
+            title = {
+                Text(
+                    text = stringResource(R.string.applock_prompt_title),
+                    color = colors.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = pinAttempt,
+                        onValueChange = { raw ->
+                            pinErr = null
+                            val clean = raw.filter { it.isDigit() }.take(8)
+                            pinAttempt = clean
+                            if (clean.length >= 4 && AppLockManager.verifyCustomPin(clean)) {
+                                viewModel.setLockedChatsRevealed(true)
+                                showLockedChatsPinPrompt = false
+                            }
+                        },
+                        label = { Text(stringResource(R.string.applock_pin_enter_label)) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (!pinErr.isNullOrBlank()) {
+                        Text(pinErr.orEmpty(), color = colors.antiDeleteRed, fontSize = 12.sp)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLockedChatsPinPrompt = false }) {
+                    Text(stringResource(R.string.common_cancel), color = colors.textSecondary)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (AppLockManager.verifyCustomPin(pinAttempt)) {
+                            viewModel.setLockedChatsRevealed(true)
+                            showLockedChatsPinPrompt = false
+                        } else {
+                            pinErr = wrongMsg
+                            pinAttempt = ""
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen)
+                ) {
+                    Text(stringResource(R.string.applock_unlock_button), color = Color.White)
+                }
             }
         )
     }
@@ -828,6 +1003,7 @@ fun HomeScreen(
     if (showQuickContactPicker) {
         NewChatPickerDialog(
             chats = allChats,
+            contacts = allContacts,
             onDismiss = { showQuickContactPicker = false },
             onSelectChat = { jid ->
                 showQuickContactPicker = false
@@ -1104,10 +1280,21 @@ private fun ChatsTabContent(
     listState: LazyListState,
     selectedChatJids: Set<String> = emptySet(),
     bottomPadding: Dp = 96.dp,
+    archivedCount: Int = 0,
+    includeArchived: Boolean = false,
+    hiddenLockedCount: Int = 0,
+    hideLockedBehindLock: Boolean = false,
+    lockedChatsRevealed: Boolean = false,
+    compactRows: Boolean = false,
+    showSeconds: Boolean = false,
+    hideStealthBadges: Boolean = false,
     onSearchChange: (String) -> Unit,
     heartbeat: com.wa.beastclient.domain.stealth.PrimaryHeartbeatStatus,
     bridgeStatus: com.wa.beastclient.core.service.BridgeStatus,
     onSelectChip: (HomeFilterChip) -> Unit,
+    onToggleIncludeArchived: (Boolean) -> Unit = {},
+    onRequestRevealLockedChats: () -> Unit = {},
+    onHideRevealedLockedChats: () -> Unit = {},
     onResetHeartbeat: () -> Unit,
     onSeedShowcase: () -> Unit,
     onAvatarClick: (ChatEntity) -> Unit,
@@ -1191,7 +1378,7 @@ private fun ChatsTabContent(
                     decorationBox = { innerTextField ->
                         if (searchQuery.isEmpty()) {
                             Text(
-                                text = "Ask Meta AI or Search",
+                                text = stringResource(R.string.home_search_placeholder),
                                 color = colors.textSecondary,
                                 fontSize = 15.5.sp
                             )
@@ -1254,23 +1441,28 @@ private fun ChatsTabContent(
 
         // Filter Chips Row (All / Unread N / Favorites / Groups N / +)
         item(key = "filter_chips") {
-            val visibleChips = remember(showExtraFilters) {
+            val hasLockedChats = remember(nonCommunityChats, hiddenLockedCount) {
+                hiddenLockedCount > 0 || nonCommunityChats.any { it.isLocked }
+            }
+            val visibleChips = remember(showExtraFilters, hasLockedChats) {
                 if (showExtraFilters) {
-                    listOf(
-                        HomeFilterChip.ALL,
-                        HomeFilterChip.UNREAD,
-                        HomeFilterChip.FAVORITES,
-                        HomeFilterChip.GROUPS,
-                        HomeFilterChip.DELETED,
-                        HomeFilterChip.EDITED
-                    )
+                    buildList {
+                        add(HomeFilterChip.ALL)
+                        add(HomeFilterChip.UNREAD)
+                        add(HomeFilterChip.FAVORITES)
+                        add(HomeFilterChip.GROUPS)
+                        if (hasLockedChats) add(HomeFilterChip.LOCKED)
+                        add(HomeFilterChip.DELETED)
+                        add(HomeFilterChip.EDITED)
+                    }
                 } else {
-                    listOf(
-                        HomeFilterChip.ALL,
-                        HomeFilterChip.UNREAD,
-                        HomeFilterChip.FAVORITES,
-                        HomeFilterChip.GROUPS
-                    )
+                    buildList {
+                        add(HomeFilterChip.ALL)
+                        add(HomeFilterChip.UNREAD)
+                        add(HomeFilterChip.FAVORITES)
+                        add(HomeFilterChip.GROUPS)
+                        if (hasLockedChats) add(HomeFilterChip.LOCKED)
+                    }
                 }
             }
             LazyRow(
@@ -1283,6 +1475,7 @@ private fun ChatsTabContent(
                         HomeFilterChip.UNREAD -> nonCommunityChats.count { it.unreadCount > 0 }
                         HomeFilterChip.FAVORITES -> nonCommunityChats.count { it.isFavorite }
                         HomeFilterChip.GROUPS -> nonCommunityChats.count { it.isGroup }
+                        HomeFilterChip.LOCKED -> maxOf(hiddenLockedCount, nonCommunityChats.count { it.isLocked })
                         HomeFilterChip.DELETED -> nonCommunityChats.count { it.hasDeletedMessages || it.lastMessageIsDeleted }
                         HomeFilterChip.EDITED -> nonCommunityChats.count { it.hasEditedMessages }
                     }
@@ -1315,10 +1508,20 @@ private fun ChatsTabContent(
                             .clickable { onSelectChip(chip) }
                             .padding(horizontal = 14.dp, vertical = 7.dp)
                     ) {
+                        val baseLabel = when (chip) {
+                            HomeFilterChip.ALL -> stringResource(R.string.home_filter_all)
+                            HomeFilterChip.UNREAD -> stringResource(R.string.home_filter_unread)
+                            HomeFilterChip.FAVORITES -> stringResource(R.string.home_filter_pinned)
+                            HomeFilterChip.GROUPS -> stringResource(R.string.home_filter_groups)
+                            HomeFilterChip.LOCKED -> stringResource(R.string.home_filter_locked)
+                            HomeFilterChip.DELETED -> chip.label
+                            HomeFilterChip.EDITED -> chip.label
+                        }
                         val chipLabel = when (chip) {
-                            HomeFilterChip.UNREAD -> if (count > 0) "Unread $count" else "Unread"
-                            HomeFilterChip.GROUPS -> if (count > 0) "Groups $count" else "Groups"
-                            else -> chip.label
+                            HomeFilterChip.UNREAD -> if (count > 0) "$baseLabel $count" else baseLabel
+                            HomeFilterChip.GROUPS -> if (count > 0) "$baseLabel $count" else baseLabel
+                            HomeFilterChip.LOCKED -> if (count > 0) "$baseLabel $count" else baseLabel
+                            else -> baseLabel
                         }
                         Text(
                             text = chipLabel,
@@ -1349,6 +1552,122 @@ private fun ChatsTabContent(
                             modifier = Modifier.size(18.dp)
                         )
                     }
+                }
+            }
+        }
+
+        if (archivedCount > 0 || includeArchived) {
+            item(key = "archived_banner_row") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onToggleIncludeArchived(!includeArchived) }
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (includeArchived) colors.accentGreen.copy(alpha = 0.18f)
+                                else colors.elevatedBar
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (includeArchived) Icons.Rounded.Unarchive else Icons.Rounded.Archive,
+                            contentDescription = null,
+                            tint = colors.accentGreen,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Text(
+                        text = if (includeArchived) {
+                            stringResource(R.string.home_back_to_active_chats)
+                        } else {
+                            stringResource(R.string.home_archived_chats)
+                        },
+                        color = colors.textPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (archivedCount > 0) {
+                        Text(
+                            text = archivedCount.toString(),
+                            color = colors.accentGreen,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = mono
+                        )
+                    }
+                }
+            }
+        }
+
+        if (hiddenLockedCount > 0) {
+            item(key = "locked_chats_hidden_banner") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onRequestRevealLockedChats)
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(colors.accentGreen.copy(alpha = 0.16f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Lock,
+                            contentDescription = null,
+                            tint = colors.accentGreen,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.home_locked_chats_banner, hiddenLockedCount),
+                            color = colors.textPrimary,
+                            fontSize = 14.5.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = stringResource(R.string.home_locked_chats_unlock_action),
+                            color = colors.accentGreen,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+        } else if (hideLockedBehindLock && lockedChatsRevealed && nonCommunityChats.any { it.isLocked }) {
+            item(key = "locked_chats_revealed_banner") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onHideRevealedLockedChats)
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.LockOpen,
+                        contentDescription = null,
+                        tint = colors.accentGreen,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = stringResource(R.string.home_locked_chats_unlocked_banner),
+                        color = colors.accentGreen,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
             }
         }
@@ -1388,7 +1707,7 @@ private fun ChatsTabContent(
                         )
                     }
                     Text(
-                        text = formatMessageClock(hit.timestamp),
+                        text = formatMessageClock(hit.timestamp, includeSeconds = showSeconds),
                         fontFamily = mono,
                         fontSize = 11.sp,
                         color = colors.textSecondary
@@ -1455,6 +1774,9 @@ private fun ChatsTabContent(
                 ChatListRow(
                     chat = chat,
                     selected = chat.jid in selectedChatJids,
+                    compactRows = compactRows,
+                    showSeconds = showSeconds,
+                    hideStealthBadges = hideStealthBadges,
                     onAvatarClick = { onAvatarClick(chat) },
                     onRowClick = { onChatClick(chat) },
                     onRowLongClick = { onChatLongClick(chat) }
@@ -1470,6 +1792,9 @@ private fun ChatsTabContent(
 private fun ChatListRow(
     chat: ChatEntity,
     selected: Boolean = false,
+    compactRows: Boolean = false,
+    showSeconds: Boolean = false,
+    hideStealthBadges: Boolean = false,
     onAvatarClick: () -> Unit,
     onRowClick: () -> Unit,
     onRowLongClick: () -> Unit = {}
@@ -1487,6 +1812,9 @@ private fun ChatListRow(
         animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
         label = "chat_row_radius"
     )
+    val avatarSize = if (compactRows) 46.dp else 52.dp
+    val rowHeight = if (compactRows) 64.dp else 76.dp
+    val rowVerticalPad = if (compactRows) 6.dp else 10.dp
 
     Row(
         modifier = Modifier
@@ -1494,7 +1822,7 @@ private fun ChatListRow(
             .expressivePressScale(rowInteraction, pressedScale = 0.985f)
             .padding(horizontal = if (selected) 8.dp else 0.dp, vertical = 1.dp)
             .clip(RoundedCornerShape(rowRadius))
-            .height(76.dp)
+            .height(rowHeight)
             .background(rowBg)
             .then(
                 if (selected) {
@@ -1513,12 +1841,12 @@ private fun ChatListRow(
                 onClick = onRowClick,
                 onLongClick = onRowLongClick
             )
-            .padding(horizontal = if (selected) 10.dp else 14.dp, vertical = 10.dp),
+            .padding(horizontal = if (selected) 10.dp else 14.dp, vertical = rowVerticalPad),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(52.dp)
+                .size(avatarSize)
                 .combinedClickable(
                     onClick = onAvatarClick,
                     onLongClick = onRowLongClick
@@ -1528,7 +1856,7 @@ private fun ChatListRow(
                 jid = chat.jid,
                 avatarPath = chat.avatarPath,
                 isGroup = chat.isGroup,
-                size = 52.dp
+                size = avatarSize
             )
             if (selected) {
                 Box(
@@ -1547,7 +1875,7 @@ private fun ChatListRow(
                         modifier = Modifier.size(13.dp)
                     )
                 }
-            } else if (chat.isOnline) {
+            } else if (chat.isOnline && !hideStealthBadges) {
                 Box(
                     modifier = Modifier
                         .size(13.dp)
@@ -1563,7 +1891,7 @@ private fun ChatListRow(
 
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
+            verticalArrangement = Arrangement.spacedBy(if (compactRows) 1.5.dp else 3.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1574,14 +1902,14 @@ private fun ChatListRow(
                     text = chat.name.ifBlank { chat.jid.substringBefore("@") },
                     color = colors.textPrimary,
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 16.sp,
+                    fontSize = if (compactRows) 15.sp else 16.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = formatMessageClock(chat.lastMessageTimestamp),
+                    text = formatMessageClock(chat.lastMessageTimestamp, includeSeconds = showSeconds),
                     fontFamily = mono,
                     fontSize = 11.5.sp,
                     color = if (chat.unreadCount > 0) colors.brightGreen else colors.textSecondary
@@ -1661,6 +1989,22 @@ private fun ChatListRow(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    if (chat.isLocked) {
+                        Icon(
+                            imageVector = Icons.Rounded.Lock,
+                            contentDescription = "Locked",
+                            tint = colors.accentGreen,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                    if (chat.isArchived) {
+                        Icon(
+                            imageVector = Icons.Rounded.Archive,
+                            contentDescription = "Archived",
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
                     if (chat.isMuted) {
                         Icon(
                             painter = painterResource(R.drawable.vec_ic_mute_list),
@@ -1709,6 +2053,8 @@ private fun UpdatesStatusTab(
     searchQuery: String,
     listState: LazyListState,
     bottomPadding: Dp = 96.dp,
+    verticalStatusLayout: Boolean = false,
+    showSeconds: Boolean = false,
     onOpenStatus: (StatusEntity) -> Unit,
     onOpenChannel: (String) -> Unit
 ) {
@@ -1749,21 +2095,140 @@ private fun UpdatesStatusTab(
             )
         }
 
-        item(key = "updates_status_cards_row") {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                item(key = "add_status_card") {
-                    AddStatusStoryCard()
+        if (verticalStatusLayout) {
+            item(key = "updates_my_status_vertical") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(modifier = Modifier.size(50.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF4A2531)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Person,
+                                contentDescription = null,
+                                tint = Color(0xFFF48FB1),
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(19.dp)
+                                .align(Alignment.BottomEnd)
+                                .clip(CircleShape)
+                                .background(colors.brightGreen)
+                                .border(2.dp, colors.appSurface, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Add,
+                                contentDescription = null,
+                                tint = Color(0xFF0B141A),
+                                modifier = Modifier.size(12.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "My status",
+                            color = colors.textPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 15.5.sp
+                        )
+                        Text(
+                            text = "Managed on official WhatsApp",
+                            color = colors.textSecondary,
+                            fontSize = 12.5.sp
+                        )
+                    }
                 }
-                items(groupedStatuses, key = { "status_card_${it.id}" }) { st ->
-                    val senderChat = resolveStatusSenderChat(st.senderJid, chatsByJid, chatsByUser)
-                    StatusStoryCard(
-                        status = st,
-                        senderChat = senderChat,
-                        onClick = { onOpenStatus(st) }
+            }
+            if (groupedStatuses.isEmpty()) {
+                item(key = "updates_status_empty_vertical") {
+                    Text(
+                        text = stringResource(R.string.home_empty_updates),
+                        color = colors.textSecondary,
+                        fontSize = 13.5.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
                     )
+                }
+            } else {
+                items(groupedStatuses, key = { "status_vert_${it.id}" }) { st ->
+                    val senderChat = resolveStatusSenderChat(st.senderJid, chatsByJid, chatsByUser)
+                    val displayName = resolveStatusDisplayName(st.senderJid, st.senderName, senderChat)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpenStatus(st) }
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(52.dp)
+                                .clip(CircleShape)
+                                .border(2.dp, colors.brightGreen, CircleShape)
+                                .padding(3.dp)
+                        ) {
+                            WhatsAppAvatar(
+                                jid = senderChat?.jid ?: st.senderJid,
+                                avatarPath = senderChat?.avatarPath,
+                                isGroup = false,
+                                size = 46.dp
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = displayName,
+                                color = colors.textPrimary,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 15.5.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = buildString {
+                                    append(formatMessageClock(st.timestamp, includeSeconds = showSeconds))
+                                    if (st.caption.isNotBlank()) {
+                                        append(" · ")
+                                        append(st.caption)
+                                    }
+                                },
+                                color = colors.textSecondary,
+                                fontSize = 12.5.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            item(key = "updates_status_cards_row") {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    item(key = "add_status_card") {
+                        AddStatusStoryCard()
+                    }
+                    items(groupedStatuses, key = { "status_card_${it.id}" }) { st ->
+                        val senderChat = resolveStatusSenderChat(st.senderJid, chatsByJid, chatsByUser)
+                        StatusStoryCard(
+                            status = st,
+                            senderChat = senderChat,
+                            onClick = { onOpenStatus(st) }
+                        )
+                    }
                 }
             }
         }
@@ -2074,7 +2539,7 @@ private fun ChannelListRow(
                 if (channel.lastMessageTimestamp > 0L) {
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = formatMessageClock(channel.lastMessageTimestamp),
+                        text = formatMessageClock(channel.lastMessageTimestamp, includeSeconds = LocalWuppShowSeconds.current),
                         fontFamily = mono,
                         fontSize = 11.5.sp,
                         color = if (channel.unreadCount > 0) colors.brightGreen else colors.textSecondary
@@ -2449,7 +2914,7 @@ private fun CommunityGroupRow(
                 if (chat.lastMessageTimestamp > 0L) {
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = formatMessageClock(chat.lastMessageTimestamp),
+                        text = formatMessageClock(chat.lastMessageTimestamp, includeSeconds = LocalWuppShowSeconds.current),
                         color = if (chat.unreadCount > 0) colors.accentGreen else colors.textSecondary,
                         fontSize = 12.sp
                     )
@@ -2548,6 +3013,7 @@ private fun ToolsVaultTab(
 ) {
     val context = LocalContext.current
     val stealth by viewModel.stealthConfig.collectAsState()
+    val appLockConfig by viewModel.appLockConfig.collectAsState()
     val allChats by viewModel.allChats.collectAsState()
     val updateState by viewModel.updateState.collectAsState()
     val autoUpdateEnabled by viewModel.autoUpdateEnabled.collectAsState()
@@ -2555,6 +3021,9 @@ private fun ToolsVaultTab(
     var editingAutoDlNetwork by remember { mutableStateOf<AutoDownloadNetwork?>(null) }
     var showGalleryContactsDialog by remember { mutableStateOf(false) }
     var showWallpaperDialog by remember { mutableStateOf(false) }
+    var showReactionDialog by remember { mutableStateOf(false) }
+    var showAppLockDialog by remember { mutableStateOf(false) }
+    var showLanguageDialog by remember { mutableStateOf(false) }
     var showHideNotifGuide by remember { mutableStateOf(false) }
     var isSyncNotifHidden by remember {
         mutableStateOf(WaRealtimeService.isRealtimeStatusNotificationHidden(context))
@@ -2725,9 +3194,51 @@ private fun ToolsVaultTab(
             }
         }
 
+        item(key = "patch_section_security") {
+            val lockSubtitle = when (appLockConfig.mode) {
+                AppLockMode.OFF -> stringResource(R.string.settings_applock_row_subtitle_off)
+                AppLockMode.DEVICE -> stringResource(R.string.settings_applock_row_subtitle_device)
+                AppLockMode.CUSTOM_PIN -> stringResource(R.string.settings_applock_row_subtitle_pin)
+            }
+            ExpressiveSegmentedGroup(title = stringResource(R.string.settings_section_security)) {
+                ExpressiveSegmentedActionRow(
+                    icon = Icons.Rounded.Lock,
+                    title = stringResource(R.string.settings_applock_row_title),
+                    subtitle = lockSubtitle,
+                    badgeText = if (appLockConfig.mode != AppLockMode.OFF) {
+                        stringResource(R.string.common_enabled)
+                    } else null,
+                    position = if (appLockConfig.mode != AppLockMode.OFF) {
+                        ExpressiveSegmentPosition.TOP
+                    } else {
+                        ExpressiveSegmentPosition.SINGLE
+                    },
+                    onClick = { showAppLockDialog = true }
+                )
+                if (appLockConfig.mode != AppLockMode.OFF) {
+                    ExpressiveSegmentedActionRow(
+                        icon = Icons.Rounded.Shield,
+                        title = stringResource(R.string.settings_lock_now_title),
+                        subtitle = stringResource(R.string.settings_lock_now_subtitle),
+                        position = ExpressiveSegmentPosition.BOTTOM,
+                        onClick = { AppLockManager.lockNow() }
+                    )
+                }
+            }
+        }
+
         item(key = "patch_section_appearance") {
-            ExpressiveSegmentedGroup(title = "Appearance") {
+            ExpressiveSegmentedGroup(title = stringResource(R.string.settings_section_appearance)) {
                 val colors = LocalWaColors.current
+                val langSubtitle = when (stealth.appLanguage) {
+                    LocaleHelper.LANG_TR -> stringResource(R.string.language_turkish)
+                    LocaleHelper.LANG_EN -> stringResource(R.string.language_english)
+                    else -> stringResource(R.string.language_system)
+                }
+                val reactionPreview = stealth.quickReactionEmojis
+                    .ifEmpty { StealthMatrixManager.DEFAULT_QUICK_REACTIONS }
+                    .joinToString("  ")
+
                 ExpressiveSegmentedContainer(position = ExpressiveSegmentPosition.TOP) {
                     Column(
                         modifier = Modifier
@@ -2742,12 +3253,12 @@ private fun ToolsVaultTab(
                         ) {
                             ExpressiveIconBadge(
                                 icon = Icons.Rounded.Palette,
-                                contentDescription = "App Theme",
+                                contentDescription = stringResource(R.string.settings_theme_title),
                                 active = true
                             )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "App Theme",
+                                    text = stringResource(R.string.settings_theme_title),
                                     color = colors.textPrimary,
                                     fontSize = 15.5.sp,
                                     fontWeight = FontWeight.SemiBold
@@ -2767,10 +3278,107 @@ private fun ToolsVaultTab(
                 }
                 ExpressiveSegmentedActionRow(
                     icon = Icons.Rounded.Image,
-                    title = "Chat Wallpaper",
-                    subtitle = describeChatWallpaper(stealth.chatWallpaperUri),
-                    position = ExpressiveSegmentPosition.BOTTOM,
+                    title = stringResource(R.string.settings_wallpaper_title),
+                    subtitle = "${describeChatWallpaper(stealth.chatWallpaperUri)} · ${stringResource(R.string.settings_wallpaper_subtitle)}",
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onClick = { showWallpaperDialog = true }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.TextFields,
+                    title = stringResource(R.string.settings_system_font_title),
+                    subtitle = stringResource(R.string.settings_system_font_subtitle),
+                    checked = stealth.useSystemFont,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onCheckedChange = { viewModel.setUseSystemFont(it) }
+                )
+                ExpressiveSegmentedActionRow(
+                    icon = Icons.Rounded.EmojiEmotions,
+                    title = stringResource(R.string.settings_reactions_title),
+                    subtitle = reactionPreview,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onClick = { showReactionDialog = true }
+                )
+                ExpressiveSegmentedActionRow(
+                    icon = Icons.Rounded.Translate,
+                    title = stringResource(R.string.settings_language_title),
+                    subtitle = langSubtitle,
+                    position = ExpressiveSegmentPosition.BOTTOM,
+                    onClick = { showLanguageDialog = true }
+                )
+            }
+        }
+
+        item(key = "patch_section_looks") {
+            ExpressiveSegmentedGroup(title = stringResource(R.string.settings_section_looks)) {
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.ViewAgenda,
+                    title = stringResource(R.string.settings_look_vertical_status_title),
+                    subtitle = stringResource(R.string.settings_look_vertical_status_subtitle),
+                    checked = stealth.statusVerticalLayout,
+                    position = ExpressiveSegmentPosition.TOP,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(statusVerticalLayout = it) }
+                    }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.Person,
+                    title = stringResource(R.string.settings_look_always_bio_title),
+                    subtitle = stringResource(R.string.settings_look_always_bio_subtitle),
+                    checked = stealth.alwaysShowContactBio,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(alwaysShowContactBio = it) }
+                    }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.ViewAgenda,
+                    title = stringResource(R.string.settings_look_classic_ui_title),
+                    subtitle = stringResource(R.string.settings_look_classic_ui_subtitle),
+                    checked = stealth.classicWhatsAppLook,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(classicWhatsAppLook = it) }
+                    }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.ViewAgenda,
+                    title = stringResource(R.string.settings_look_compact_rows_title),
+                    subtitle = stringResource(R.string.settings_look_compact_rows_subtitle),
+                    checked = stealth.compactChatRows,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(compactChatRows = it) }
+                    }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.Schedule,
+                    title = stringResource(R.string.settings_look_seconds_title),
+                    subtitle = stringResource(R.string.settings_look_seconds_subtitle),
+                    checked = stealth.showSecondsInTimestamps,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(showSecondsInTimestamps = it) }
+                    }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.VisibilityOff,
+                    title = stringResource(R.string.settings_look_hide_camera_title),
+                    subtitle = stringResource(R.string.settings_look_hide_camera_subtitle),
+                    checked = stealth.hideHomeCameraShortcut,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(hideHomeCameraShortcut = it) }
+                    }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.VisibilityOff,
+                    title = stringResource(R.string.settings_look_hide_badges_title),
+                    subtitle = stringResource(R.string.settings_look_hide_badges_subtitle),
+                    checked = stealth.hideStealthStatusBadges,
+                    position = ExpressiveSegmentPosition.BOTTOM,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(hideStealthStatusBadges = it) }
+                    }
                 )
             }
         }
@@ -2941,11 +3549,45 @@ private fun ToolsVaultTab(
             currentUri = stealth.chatWallpaperUri,
             currentDim = stealth.chatWallpaperDim,
             showDoodleOnPresets = stealth.chatWallpaperShowDoodle,
+            currentScale = stealth.chatWallpaperScale,
+            currentOffsetX = stealth.chatWallpaperOffsetX,
+            currentOffsetY = stealth.chatWallpaperOffsetY,
             onSelectUri = { viewModel.setChatWallpaper(it) },
             onPickCustomImage = { viewModel.importChatWallpaperFromUri(it) },
             onDimChange = { viewModel.setChatWallpaperDim(it) },
             onToggleDoodle = { viewModel.setChatWallpaperShowDoodle(it) },
+            onPositionChange = { scale, ox, oy -> viewModel.setChatWallpaperPosition(scale, ox, oy) },
             onDismiss = { showWallpaperDialog = false }
+        )
+    }
+
+    if (showReactionDialog) {
+        ReactionEmojiCustomizerDialog(
+            currentEmojis = stealth.quickReactionEmojis,
+            onSave = { viewModel.setQuickReactionEmojis(it) },
+            onReset = { viewModel.resetQuickReactionEmojis() },
+            onDismiss = { showReactionDialog = false }
+        )
+    }
+
+    if (showAppLockDialog) {
+        AppLockConfigDialog(
+            config = appLockConfig,
+            onDismiss = { showAppLockDialog = false }
+        )
+    }
+
+    if (showLanguageDialog) {
+        AppLanguageDialog(
+            currentLanguage = stealth.appLanguage,
+            onSelectLanguage = { chosen ->
+                val changed = chosen != stealth.appLanguage
+                viewModel.setAppLanguage(chosen)
+                if (changed) {
+                    context.findFragmentActivity()?.recreate()
+                }
+            },
+            onDismiss = { showLanguageDialog = false }
         )
     }
 
@@ -3039,17 +3681,62 @@ private fun ToolsVaultTab(
 @Composable
 private fun NewChatPickerDialog(
     chats: List<ChatEntity>,
+    contacts: List<ContactEntity>,
     onDismiss: () -> Unit,
     onSelectChat: (String) -> Unit,
     onOpenLinkedDevices: () -> Unit
 ) {
     val colors = LocalWaColors.current
     var query by remember { mutableStateOf("") }
-    val filtered = remember(chats, query) {
+    val mergedContacts = remember(chats, contacts) {
+        val byJid = LinkedHashMap<String, ChatEntity>(contacts.size + chats.size)
+        for (c in contacts) {
+            if (c.jid.endsWith("@g.us") || c.jid.endsWith("@newsletter") || c.jid == "status@broadcast" || c.jid.endsWith("@broadcast")) continue
+            byJid[c.jid] = ChatEntity(
+                jid = c.jid,
+                name = c.name,
+                avatarPath = c.avatarPath,
+                aboutText = c.aboutText,
+                isFavorite = c.isSaved
+            )
+        }
+        for (ch in chats) {
+            if (ch.isGroup || ch.isCommunityParent || ch.jid.endsWith("@newsletter") || ch.jid == "status@broadcast" || ch.jid.endsWith("@broadcast")) continue
+            val existing = byJid[ch.jid]
+            if (existing == null) {
+                byJid[ch.jid] = ch
+            } else {
+                val bare = ch.jid.substringBefore("@")
+                val existingReal = existing.name.isNotBlank() && existing.name != bare && existing.name != ch.jid && !existing.name.startsWith("+")
+                val chReal = ch.name.isNotBlank() && ch.name != bare && ch.name != ch.jid && !ch.name.startsWith("+")
+                byJid[ch.jid] = existing.copy(
+                    name = when {
+                        existingReal && !chReal -> existing.name
+                        chReal -> ch.name
+                        else -> ch.name.ifBlank { existing.name }
+                    },
+                    avatarPath = ch.avatarPath?.takeIf { it.isNotBlank() } ?: existing.avatarPath,
+                    aboutText = ch.aboutText.ifBlank { existing.aboutText },
+                    lastMessageTimestamp = maxOf(existing.lastMessageTimestamp, ch.lastMessageTimestamp)
+                )
+            }
+        }
+        byJid.values.sortedWith(
+            compareByDescending<ChatEntity> { it.isFavorite }
+                .thenByDescending { it.lastMessageTimestamp > 0L }
+                .thenBy { it.name.lowercase() }
+        )
+    }
+    val digitsQuery = remember(query) { query.filter { it.isDigit() } }
+    val filtered = remember(mergedContacts, query) {
         val q = query.trim().lowercase()
-        val base = chats.filter { !it.isGroup && !it.isCommunityParent && !it.jid.endsWith("@newsletter") }
-        if (q.isEmpty()) base.take(30)
-        else base.filter { it.name.lowercase().contains(q) || it.jid.lowercase().contains(q) }.take(30)
+        val qDigits = q.filter { it.isDigit() }
+        if (q.isEmpty()) mergedContacts.take(60)
+        else mergedContacts.filter {
+            it.name.lowercase().contains(q) ||
+                it.jid.lowercase().contains(q) ||
+                (qDigits.length >= 3 && it.jid.substringBefore("@").contains(qDigits))
+        }.take(60)
     }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -3065,6 +3752,41 @@ private fun NewChatPickerDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 LazyColumn(modifier = Modifier.height(260.dp)) {
+                    if (digitsQuery.length >= 6 && filtered.none { it.jid.substringBefore("@") == digitsQuery }) {
+                        val directJid = "$digitsQuery@s.whatsapp.net"
+                        item(key = "direct_$directJid") {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onSelectChat(directJid) }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(colors.accentGreen.copy(alpha = 0.16f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.ChatBubbleOutline,
+                                        contentDescription = null,
+                                        tint = colors.accentGreen,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = "Start chat with +$digitsQuery",
+                                    color = colors.accentGreen,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
                     items(filtered, key = { it.jid }) { c ->
                         Row(
                             modifier = Modifier

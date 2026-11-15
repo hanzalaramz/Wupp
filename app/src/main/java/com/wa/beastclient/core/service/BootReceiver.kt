@@ -17,7 +17,9 @@ class BootReceiver : BroadcastReceiver() {
         val setupDone = context.getSharedPreferences("wupp_setup_prefs", Context.MODE_PRIVATE)
             .getBoolean("setup_completed_v1", false)
         if (setupDone) {
-            WaRealtimeService.ensureStarted(context.applicationContext)
+            val appCtx = context.applicationContext
+            SyncWatchdogJobService.schedulePeriodic(appCtx)
+            WaRealtimeService.ensureStarted(appCtx)
         }
     }
 }

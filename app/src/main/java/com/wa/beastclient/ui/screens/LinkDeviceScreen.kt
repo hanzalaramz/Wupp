@@ -63,6 +63,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -129,7 +130,7 @@ fun LinkDeviceScreen(
             Spacer(modifier = Modifier.height(14.dp))
 
             Text(
-                text = "Link to WhatsApp",
+                text = stringResource(R.string.link_title),
                 color = colors.textPrimary,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
@@ -139,7 +140,7 @@ fun LinkDeviceScreen(
             Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = "Connect Wupp alongside your main WhatsApp app.",
+                text = stringResource(R.string.link_subtitle),
                 color = colors.textSecondary,
                 fontSize = 13.5.sp,
                 textAlign = TextAlign.Center,
@@ -165,7 +166,7 @@ fun LinkDeviceScreen(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Keep official WhatsApp installed — Wupp is a companion client, not a standalone replacement.",
+                    text = stringResource(R.string.link_companion_notice),
                     color = colors.textSecondary,
                     fontSize = 12.sp,
                     lineHeight = 16.sp
@@ -199,7 +200,7 @@ fun LinkDeviceScreen(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "QR code",
+                        text = stringResource(R.string.link_mode_qr),
                         fontSize = 13.5.sp,
                         fontWeight = if (selectedMode == 0) FontWeight.SemiBold else FontWeight.Medium,
                         maxLines = 1
@@ -219,7 +220,7 @@ fun LinkDeviceScreen(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Phone number",
+                        text = stringResource(R.string.link_mode_phone),
                         fontSize = 13.5.sp,
                         fontWeight = if (selectedMode == 1) FontWeight.SemiBold else FontWeight.Medium,
                         maxLines = 1

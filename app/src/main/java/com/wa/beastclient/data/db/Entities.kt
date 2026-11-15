@@ -64,7 +64,11 @@ data class ChatEntity(
     @ColumnInfo(name = "parent_group_jid", defaultValue = "''")
     val parentGroupJid: String = "",
     @ColumnInfo(name = "is_default_subgroup", defaultValue = "0")
-    val isDefaultSubgroup: Boolean = false
+    val isDefaultSubgroup: Boolean = false,
+    @ColumnInfo(name = "is_locked", defaultValue = "0")
+    val isLocked: Boolean = false,
+    @ColumnInfo(name = "local_archive_override", defaultValue = "0")
+    val localArchiveOverride: Int = 0
 ) {
     /** True for empty DM stubs with no preview or message ID (e.g. unchatted @lid contacts). */
     fun isPhantomEmptyDm(): Boolean =
@@ -262,4 +266,21 @@ data class GroupReceiptEntity(
     val status: String, // DELIVERED, READ, PLAYED
     @ColumnInfo(name = "timestamp")
     val timestamp: Long
+)
+
+@Entity(tableName = "contacts")
+data class ContactEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "jid")
+    val jid: String,
+    @ColumnInfo(name = "name")
+    val name: String,
+    @ColumnInfo(name = "about_text", defaultValue = "''")
+    val aboutText: String = "",
+    @ColumnInfo(name = "avatar_path")
+    val avatarPath: String? = null,
+    @ColumnInfo(name = "is_saved", defaultValue = "0")
+    val isSaved: Boolean = false,
+    @ColumnInfo(name = "updated_at", defaultValue = "0")
+    val updatedAt: Long = 0L
 )

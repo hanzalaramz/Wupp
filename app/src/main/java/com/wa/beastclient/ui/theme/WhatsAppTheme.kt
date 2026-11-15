@@ -179,11 +179,14 @@ fun colorsForTheme(mode: WuppThemeMode): WaColors = when (mode) {
 
 val LocalWaColors = staticCompositionLocalOf { WaDarkColors }
 val LocalWaMonoFamily = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
+val LocalWuppShowSeconds = staticCompositionLocalOf { false }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun WhatsAppTheme(
     themeMode: WuppThemeMode = WuppThemeMode.DARK,
+    useSystemFont: Boolean = false,
+    showSecondsInTimestamps: Boolean = false,
     assetManager: AssetManager,
     content: @Composable () -> Unit
 ) {
@@ -198,10 +201,14 @@ fun WhatsAppTheme(
         }
     }
 
-    val sansFamily: FontFamily = remember(assetManager) {
-        runCatching {
-            FontFamily(Typeface.createFromAsset(assetManager, "fonts/Roboto-Medium.ttf"))
-        }.getOrDefault(FontFamily.SansSerif)
+    val sansFamily: FontFamily = remember(assetManager, useSystemFont) {
+        if (useSystemFont) {
+            FontFamily.Default
+        } else {
+            runCatching {
+                FontFamily(Typeface.createFromAsset(assetManager, "fonts/Roboto-Medium.ttf"))
+            }.getOrDefault(FontFamily.SansSerif)
+        }
     }
 
     val typography = remember(sansFamily) {
@@ -325,7 +332,8 @@ fun WhatsAppTheme(
 
     CompositionLocalProvider(
         LocalWaColors provides waColors,
-        LocalWaMonoFamily provides sansFamily
+        LocalWaMonoFamily provides sansFamily,
+        LocalWuppShowSeconds provides showSecondsInTimestamps
     ) {
         MaterialExpressiveTheme(
             colorScheme = m3Scheme,

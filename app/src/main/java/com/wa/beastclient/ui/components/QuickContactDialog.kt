@@ -52,6 +52,7 @@ import java.io.File
 @Composable
 fun QuickContactDialog(
     chat: ChatEntity,
+    aboutOverride: String = "",
     onDismiss: () -> Unit,
     onOpenChat: () -> Unit,
     onOpenGhostInfo: () -> Unit,
@@ -155,6 +156,23 @@ fun QuickContactDialog(
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1
                         )
+                    }
+                    val resolvedBio = chat.aboutText.ifBlank { aboutOverride }.trim()
+                    if (resolvedBio.isNotBlank() && !chat.isGroup) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0x8A000000))
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                                .align(Alignment.BottomStart)
+                        ) {
+                            Text(
+                                text = resolvedBio,
+                                color = Color.White.copy(alpha = 0.92f),
+                                fontSize = 11.5.sp,
+                                maxLines = 2
+                            )
+                        }
                     }
                 }
 

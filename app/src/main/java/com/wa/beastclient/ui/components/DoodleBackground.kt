@@ -18,9 +18,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -28,8 +31,11 @@ import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.theme.LocalWaColors
 import kotlinx.coroutines.Dispatchers
@@ -152,6 +158,9 @@ fun DoodleBackground(
     wallpaperUriOverride: String? = null,
     wallpaperDimOverride: Float? = null,
     showDoodleOverride: Boolean? = null,
+    wallpaperScaleOverride: Float? = null,
+    wallpaperOffsetXOverride: Float? = null,
+    wallpaperOffsetYOverride: Float? = null,
     backdropState: WuppBackdropState? = null,
     content: @Composable () -> Unit
 ) {
@@ -160,6 +169,10 @@ fun DoodleBackground(
     val wallpaperUri = wallpaperUriOverride ?: stealth.chatWallpaperUri
     val wallpaperDim = (wallpaperDimOverride ?: stealth.chatWallpaperDim).coerceIn(0f, 0.75f)
     val showDoodle = showDoodleOverride ?: stealth.chatWallpaperShowDoodle
+    val wallpaperScale = (wallpaperScaleOverride ?: stealth.chatWallpaperScale).coerceIn(1f, 3f)
+    val wallpaperOffsetX = (wallpaperOffsetXOverride ?: stealth.chatWallpaperOffsetX).coerceIn(-1f, 1f)
+    val wallpaperOffsetY = (wallpaperOffsetYOverride ?: stealth.chatWallpaperOffsetY).coerceIn(-1f, 1f)
+    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
     val customFilePath = remember(wallpaperUri) {
         if (wallpaperUri.startsWith("file:")) wallpaperUri.removePrefix("file:") else ""
@@ -206,6 +219,8 @@ fun DoodleBackground(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .clipToBounds()
+                .onSizeChanged { canvasSize = it }
                 .then(if (backdropState != null) Modifier.wuppBackdropSource(backdropState) else Modifier)
                 .background(colors.chatCanvas)
         ) {
@@ -215,7 +230,14 @@ fun DoodleBackground(
                         bitmap = customBitmap!!,
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                scaleX = wallpaperScale
+                                scaleY = wallpaperScale
+                                translationX = wallpaperOffsetX * canvasSize.width.toFloat()
+                                translationY = wallpaperOffsetY * canvasSize.height.toFloat()
+                            }
                     )
                     if (wallpaperDim > 0f) {
                         Box(

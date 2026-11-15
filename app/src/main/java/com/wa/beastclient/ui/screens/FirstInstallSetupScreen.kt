@@ -58,6 +58,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -219,7 +220,7 @@ fun FirstInstallSetupScreen(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Text(
-                    text = "Welcome to Wupp",
+                    text = stringResource(R.string.setup_welcome_title),
                     color = colors.textPrimary,
                     fontSize = 26.sp,
                     fontWeight = FontWeight.Bold
@@ -228,7 +229,7 @@ fun FirstInstallSetupScreen(
                 Spacer(modifier = Modifier.height(6.dp))
 
                 Text(
-                    text = "Before we start, allow Wupp to deliver messages reliably, play and save media, and stay connected in the background.",
+                    text = stringResource(R.string.setup_welcome_subtitle),
                     color = colors.textSecondary,
                     fontSize = 14.sp,
                     lineHeight = 20.sp,

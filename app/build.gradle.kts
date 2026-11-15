@@ -161,6 +161,7 @@ dependencies {
     implementation("androidx.compose.animation:animation")
 
     implementation("androidx.core:core-ktx:1.19.1")
+    implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")

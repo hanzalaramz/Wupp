@@ -4,13 +4,21 @@
 
 ## [0.3.0-pre.2] - 2026-11-16
 
-✨ Major Material 3 Expressive UI, UX, motion, and loading makeover — still compatible down to Android 8.0+.
+✨ App Lock, archived & locked chat fixes, Turkish language support, Customize Looks, and sync/updater improvements.
 
-### 🎨 What's new
-- 🧩 **Android 16 Segmented Settings:** Redesigned Settings into crisp grouped segmented cards with active cookie-shaped icon badges and Material 3 Expressive `✓`/`✕` switches.
-- 🏠 **Alive Home & Chats:** Bold expressive header with a live status pill, pull-to-refresh morphing indicator, directional tab slides, tactile spring-press chat rows, and animated unread badges.
-- 💬 **Expressive Chat Screen:** Smooth selection-to-chat top bar transitions, bouncy spring reaction bar, connected media quality button group, and a shape-morphing Mic ↔ Send ↔ Recording button.
-- 🌀 **Fluid Transitions & Morphing Loaders:** Directional slide-and-scale navigation between Home and Chat (keeping scroll position) plus M3 Expressive morphing loaders across boot, empty states, and media downloads.
+### ✨ What's new
+- 🔒 **Local App Lock (#18):** Lock Wupp with Device Lock (biometrics or screen lock) or a custom PIN, auto-lock timers, and optional Recents/screenshot hiding.
+- 🔐 **Archived & Locked Chats (#20):** Keeps local archive state synced properly, supports locked chats behind App Lock, and adds an Archived banner row on Home.
+- 🎛️ **Customize Looks (#16):** Added toggles for Vertical Status Layout, Always Show Cached Bio, Classic Navigation, Compact Chat List, Seconds in Timestamps, Hide Camera Shortcut, and Hide Stealth Badges.
+- 🌍 **Turkish Language (#17):** Added Turkish (`Türkçe`) translations alongside an in-app language picker.
+- 🔤 **Use System Font (#14):** Switch between Wupp's font and your Android system font in Settings.
+- 🖼️ **Wallpaper Zoom & Framing (#21):** Pinch, drag, zoom, and reset fit for global and per-chat wallpapers.
+- 😄 **Custom Quick Reactions (#24):** Personalize all 7 quick-reaction emojis in Settings.
+- 🧩 **Settings & UI Polish:** Segmented Settings layout with refreshed controls and motion.
+
+### 🛠️ Fixes
+- ⚡ **Background Sync Recovery (#22):** Improved timeout reconnect, boot restore, and background sync watchdog for reliable real-time updates.
+- 📦 **In-App Updater (#23):** Improved direct APK installation reliability with cleaner fallback handling.
 
 ## [0.3.0-pre.1] - 2026-11-16
 

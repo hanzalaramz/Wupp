@@ -18,9 +18,10 @@ import java.io.File
         PresenceLogEntity::class,
         ProfileHistoryEntity::class,
         PrivacyRuleEntity::class,
-        GroupReceiptEntity::class
+        GroupReceiptEntity::class,
+        ContactEntity::class
     ],
-    version = 2,
+    version = 4,
     exportSchema = true
 )
 abstract class WaUiDatabase : RoomDatabase() {
@@ -38,6 +39,31 @@ abstract class WaUiDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `contacts` (
+                        `jid` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `about_text` TEXT NOT NULL DEFAULT '',
+                        `avatar_path` TEXT,
+                        `is_saved` INTEGER NOT NULL DEFAULT 0,
+                        `updated_at` INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(`jid`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chats ADD COLUMN is_locked INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE chats ADD COLUMN local_archive_override INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): WaUiDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -45,7 +71,7 @@ abstract class WaUiDatabase : RoomDatabase() {
                     WaUiDatabase::class.java,
                     File(context.applicationContext.filesDir, "wa_ui.db").absolutePath
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
                     .addCallback(object : Callback() {
                         override fun onOpen(db: SupportSQLiteDatabase) {

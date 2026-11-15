@@ -35,6 +35,84 @@ interface WaDao {
     @Query("SELECT * FROM chats ORDER BY last_message_timestamp DESC")
     suspend fun getAllChatsOnce(): List<ChatEntity>
 
+    @Query("SELECT * FROM contacts ORDER BY is_saved DESC, LOWER(name) ASC")
+    fun observeContacts(): Flow<List<ContactEntity>>
+
+    @Query("SELECT * FROM contacts WHERE jid = :jid LIMIT 1")
+    suspend fun getContact(jid: String): ContactEntity?
+
+    @Query("SELECT * FROM contacts WHERE jid = :jid LIMIT 1")
+    fun observeContact(jid: String): Flow<ContactEntity?>
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM chats
+        WHERE is_archived = 1
+          AND is_community_parent = 0
+          AND jid NOT LIKE '%@newsletter'
+          AND jid != 'status@broadcast'
+          AND jid NOT LIKE '%@broadcast'
+        """
+    )
+    fun observeArchivedCount(): Flow<Int>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertContactRow(contact: ContactEntity)
+
+    @Query("DELETE FROM contacts WHERE jid = :jid")
+    suspend fun deleteContactRow(jid: String)
+
+    @Query("UPDATE contacts SET avatar_path = :avatarPath WHERE jid = :jid")
+    suspend fun updateContactAvatar(jid: String, avatarPath: String)
+
+    @Query("UPDATE contacts SET about_text = :aboutText WHERE jid = :jid")
+    suspend fun updateContactAbout(jid: String, aboutText: String)
+
+    @Transaction
+    suspend fun upsertContacts(incoming: List<ContactEntity>) {
+        if (incoming.isEmpty()) return
+        for (c in incoming) {
+            val cleanJid = c.jid.trim()
+            if (cleanJid.isBlank() ||
+                cleanJid == "status@broadcast" ||
+                cleanJid.endsWith("@broadcast") ||
+                cleanJid.endsWith("@g.us") ||
+                cleanJid.endsWith("@newsletter")
+            ) continue
+            val bare = cleanJid.substringBefore("@")
+            val existing = getContact(cleanJid)
+            if (existing == null) {
+                val safeName = c.name.trim().ifBlank { bare }
+                upsertContactRow(c.copy(jid = cleanJid, name = safeName))
+            } else {
+                val existingReal = existing.name.isNotBlank() &&
+                    existing.name != cleanJid &&
+                    existing.name != bare &&
+                    !existing.name.startsWith("+")
+                val incomingReal = c.name.isNotBlank() &&
+                    c.name != cleanJid &&
+                    c.name != bare &&
+                    !c.name.startsWith("+")
+                val resolvedName = when {
+                    c.isSaved && incomingReal -> c.name.trim()
+                    existing.isSaved && existingReal -> existing.name
+                    incomingReal -> c.name.trim()
+                    existingReal -> existing.name
+                    else -> c.name.trim().ifBlank { existing.name.ifBlank { bare } }
+                }
+                upsertContactRow(
+                    existing.copy(
+                        name = resolvedName,
+                        aboutText = c.aboutText.ifBlank { existing.aboutText },
+                        avatarPath = c.avatarPath?.takeIf { it.isNotBlank() } ?: existing.avatarPath,
+                        isSaved = existing.isSaved || c.isSaved,
+                        updatedAt = maxOf(existing.updatedAt, c.updatedAt)
+                    )
+                )
+            }
+        }
+    }
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertChat(chat: ChatEntity)
 
@@ -53,8 +131,18 @@ interface WaDao {
     @Query("UPDATE chats SET is_muted = :muted, mute_end_time = :muteEnd WHERE jid = :chatJid")
     suspend fun updateMuted(chatJid: String, muted: Boolean, muteEnd: Long)
 
-    @Query("UPDATE chats SET is_archived = :archived WHERE jid = :chatJid")
+    @Query(
+        """
+        UPDATE chats
+        SET is_archived = :archived,
+            local_archive_override = CASE WHEN :archived = 1 THEN 1 ELSE -1 END
+        WHERE jid = :chatJid
+        """
+    )
     suspend fun updateArchived(chatJid: String, archived: Boolean)
+
+    @Query("UPDATE chats SET is_archived = :archived WHERE jid = :chatJid AND local_archive_override = 0")
+    suspend fun updateArchivedFromSync(chatJid: String, archived: Boolean)
 
     @Query("UPDATE chats SET is_favorite = :favorite WHERE jid = :chatJid")
     suspend fun updateFavorite(chatJid: String, favorite: Boolean)
@@ -508,6 +596,11 @@ interface WaDao {
 
         val duplicate = getChat(duplicateJid)
         val canonical = getChat(canonicalJid)
+        val dupContact = getContact(duplicateJid)
+        if (dupContact != null) {
+            upsertContacts(listOf(dupContact.copy(jid = canonicalJid)))
+            deleteContactRow(duplicateJid)
+        }
         if (duplicate == null && canonical == null) return
 
         reassignMessagesChatJid(canonicalJid, duplicateJid)
@@ -565,13 +658,24 @@ interface WaDao {
             latestMsg?.timestamp ?: 0L
         )
         val isOpen = com.wa.beastclient.core.service.WaRealtimeService.activeChatJid.value == canonicalJid
+        val mergedOverride = when {
+            canonical.localArchiveOverride != 0 -> canonical.localArchiveOverride
+            else -> duplicate.localArchiveOverride
+        }
+        val mergedArchived = when (mergedOverride) {
+            1 -> true
+            -1 -> false
+            else -> canonical.isArchived && duplicate.isArchived
+        }
         upsertChat(
             canonical.copy(
                 name = resolvedName,
                 avatarPath = resolvedAvatar,
                 aboutText = resolvedAbout,
                 unreadCount = if (isOpen) 0 else (canonical.unreadCount + duplicate.unreadCount),
-                isArchived = canonical.isArchived && duplicate.isArchived,
+                isArchived = mergedArchived,
+                isLocked = canonical.isLocked || duplicate.isLocked,
+                localArchiveOverride = mergedOverride,
                 isPinned = canonical.isPinned || duplicate.isPinned,
                 pinOrder = maxOf(canonical.pinOrder, duplicate.pinOrder),
                 isMuted = canonical.isMuted || duplicate.isMuted,
@@ -622,12 +726,19 @@ interface WaDao {
                     chat.name.isNotBlank() -> chat.name
                     else -> existing.name
                 }
+                val resolvedArchived = when (existing.localArchiveOverride) {
+                    1 -> true
+                    -1 -> false
+                    else -> chat.isArchived
+                }
                 upsertChat(
                     existing.copy(
                         name = resolvedName,
                         isPinned = chat.isPinned || existing.isPinned,
                         isMuted = chat.isMuted || existing.isMuted,
-                        isArchived = chat.isArchived,
+                        isArchived = resolvedArchived,
+                        isLocked = chat.isLocked || existing.isLocked,
+                        localArchiveOverride = existing.localArchiveOverride,
                         unreadCount = if (isCurrentlyOpen) 0 else maxOf(existing.unreadCount, chat.unreadCount),
                         lastMessageTimestamp = maxOf(existing.lastMessageTimestamp, chat.lastMessageTimestamp),
                         isCommunityParent = chat.isCommunityParent || existing.isCommunityParent,

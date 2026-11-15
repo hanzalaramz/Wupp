@@ -3,4 +3,145 @@
     <string name="app_name">Wupp</string>
     <string name="channel_realtime_name">Wupp Realtime Sync</string>
     <string name="channel_realtime_desc">Maintains encrypted companion session and local media vault</string>
+    <!-- Common -->
+    <string name="common_cancel">Cancel</string>
+    <string name="common_save">Save</string>
+    <string name="common_done">Done</string>
+    <string name="common_close">Close</string>
+    <string name="common_reset">Reset</string>
+    <string name="common_enabled">Enabled</string>
+    <string name="common_disabled">Disabled</string>
+
+    <!-- Navigation & Home -->
+    <string name="nav_chats">Chats</string>
+    <string name="nav_updates">Updates</string>
+    <string name="nav_communities">Communities</string>
+    <string name="nav_settings">Settings</string>
+    <string name="home_search_placeholder">Search chats or contacts…</string>
+    <string name="home_archived_chats">Archived</string>
+    <string name="home_archived_row_title">Archived (%1$d)</string>
+    <string name="home_back_to_active_chats">Back to active chats</string>
+    <string name="home_locked_chats_banner">Locked chats (%1$d hidden)</string>
+    <string name="home_locked_chats_unlock_action">Unlock to view</string>
+    <string name="home_locked_chats_unlocked_banner">Locked chats visible (tap to hide)</string>
+    <string name="home_filter_all">All</string>
+    <string name="home_filter_unread">Unread</string>
+    <string name="home_filter_groups">Groups</string>
+    <string name="home_filter_contacts">Contacts</string>
+    <string name="home_filter_channels">Channels</string>
+    <string name="home_filter_pinned">Pinned</string>
+    <string name="home_filter_locked">Locked</string>
+    <string name="home_empty_chats">No chats yet</string>
+    <string name="home_empty_archived">No archived chats</string>
+    <string name="home_empty_updates">No status updates yet</string>
+    <string name="home_empty_communities">No communities yet</string>
+
+    <!-- Chat Actions -->
+    <string name="chat_action_pin">Pin chat</string>
+    <string name="chat_action_unpin">Unpin chat</string>
+    <string name="chat_action_mute">Mute notifications</string>
+    <string name="chat_action_unmute">Unmute notifications</string>
+    <string name="chat_action_archive">Archive locally</string>
+    <string name="chat_action_unarchive">Unarchive chat</string>
+    <string name="chat_action_delete_local">Delete local copy</string>
+    <string name="chat_input_placeholder">Message</string>
+    <string name="chat_announce_only_hint">Only admins can send messages</string>
+    <string name="chat_no_messages">No messages synced in this chat yet</string>
+    <string name="chat_replying_to">Replying to %1$s</string>
+    <string name="chat_status_online">online</string>
+    <string name="chat_status_typing">typing…</string>
+    <string name="chat_status_recording">recording audio…</string>
+
+    <!-- Reaction Customizer (#24) -->
+    <string name="reaction_dialog_title">Quick Reaction Emojis</string>
+    <string name="reaction_dialog_subtitle">Tap slot #%1$d to replace, or choose/type any emoji below.</string>
+    <string name="reaction_custom_hint">Type or paste any emoji…</string>
+    <string name="reaction_presets_label">Popular emojis</string>
+    <string name="reaction_reset_defaults">Reset to defaults</string>
+
+    <!-- App Lock (#18 & #20) -->
+    <string name="applock_prompt_title">Unlock Wupp</string>
+    <string name="applock_prompt_subtitle">Verify your device screen lock or biometrics</string>
+    <string name="applock_no_device_lock">No device screen lock is configured in Android Settings.</string>
+    <string name="applock_wrong_pin">Incorrect PIN. Try again.</string>
+    <string name="applock_overlay_title">Wupp is Locked</string>
+    <string name="applock_overlay_device_hint">Use fingerprint, face unlock, or your device PIN while background sync keeps running.</string>
+    <string name="applock_overlay_pin_hint">Enter your Wupp PIN. Background sync stays active while locked.</string>
+    <string name="applock_unlock_button">Unlock with Device Lock</string>
+    <string name="applock_config_title">App Lock &amp; Privacy</string>
+    <string name="applock_config_subtitle">Local-only protection with zero WhatsApp flag risk. Realtime sync stays connected in the background.</string>
+    <string name="applock_mode_label">Lock Method</string>
+    <string name="applock_mode_off">Off</string>
+    <string name="applock_mode_device">Device Lock (Biometric / Screen Lock)</string>
+    <string name="applock_mode_pin">Custom PIN (4–8 digits)</string>
+    <string name="applock_change_pin">Change Custom PIN</string>
+    <string name="applock_timeout_label">Re-lock after backgrounding</string>
+    <string name="applock_timeout_immediate">Immediately</string>
+    <string name="applock_timeout_1m">1 min</string>
+    <string name="applock_timeout_5m">5 min</string>
+    <string name="applock_timeout_30m">30 min</string>
+    <string name="applock_hide_recents_title">Hide content in Recents</string>
+    <string name="applock_hide_recents_subtitle">Blurs app preview and blocks screenshots with FLAG_SECURE</string>
+    <string name="applock_hide_locked_chats_title">Hide locked chats behind App Lock</string>
+    <string name="applock_hide_locked_chats_subtitle">Hides WhatsApp locked chats on Home until unlocked locally</string>
+    <string name="applock_set_pin_title">Set Custom PIN</string>
+    <string name="applock_pin_enter_label">Enter PIN (4–8 digits)</string>
+    <string name="applock_pin_confirm_label">Confirm PIN</string>
+    <string name="applock_pin_length_error">PIN must be 4 to 8 digits.</string>
+    <string name="applock_pin_mismatch_error">PINs do not match.</string>
+
+    <!-- Language (#17) -->
+    <string name="language_dialog_title">App Language</string>
+    <string name="language_system">Follow System Language</string>
+    <string name="language_english">English</string>
+    <string name="language_turkish">Türkçe (Turkish)</string>
+
+    <!-- Settings / Appearance / Looks (#14, #16, #17, #18, #21, #24) -->
+    <string name="settings_section_security">SECURITY &amp; LOCK</string>
+    <string name="settings_applock_row_title">App Lock &amp; Locked Chats</string>
+    <string name="settings_applock_row_subtitle_off">Disabled · Tap to set Device Lock or Custom PIN</string>
+    <string name="settings_applock_row_subtitle_device">Device Lock active · Zero flag risk</string>
+    <string name="settings_applock_row_subtitle_pin">Custom PIN active · Zero flag risk</string>
+    <string name="settings_lock_now_title">Lock Wupp Now</string>
+    <string name="settings_lock_now_subtitle">Immediately show lock screen</string>
+
+    <string name="settings_section_appearance">APPEARANCE &amp; LOOKS</string>
+    <string name="settings_theme_title">App Theme</string>
+    <string name="settings_wallpaper_title">Chat Wallpaper &amp; Position</string>
+    <string name="settings_wallpaper_subtitle">Choose image, zoom/pan framing, doodle &amp; dim</string>
+    <string name="settings_system_font_title">Use System Font</string>
+    <string name="settings_system_font_subtitle">Follow Android device font instead of bundled Roboto</string>
+    <string name="settings_reactions_title">Quick Reaction Emojis</string>
+    <string name="settings_reactions_subtitle">Customize the 7 fast-react emojis shown in chats</string>
+    <string name="settings_language_title">App Language</string>
+
+    <string name="settings_section_looks">CUSTOMIZE LOOKS (ZERO RISK)</string>
+    <string name="settings_look_vertical_status_title">Vertical Status Layout</string>
+    <string name="settings_look_vertical_status_subtitle">Display Updates status list vertically instead of horizontal cards</string>
+    <string name="settings_look_always_bio_title">Always Show Cached Bio</string>
+    <string name="settings_look_always_bio_subtitle">Show locally synced About/bio in chat header &amp; profile preview (no extra server lookups)</string>
+    <string name="settings_look_classic_ui_title">Classic WhatsApp Navigation</string>
+    <string name="settings_look_classic_ui_subtitle">Flatter classic bottom bar instead of floating glass pill</string>
+    <string name="settings_look_compact_rows_title">Compact Chat List</string>
+    <string name="settings_look_compact_rows_subtitle">Tighter vertical spacing to fit more chats on screen</string>
+    <string name="settings_look_seconds_title">Show Seconds in Timestamps</string>
+    <string name="settings_look_seconds_subtitle">Display HH:MM:SS on messages and chat rows</string>
+    <string name="settings_look_hide_camera_title">Hide Home Camera Shortcut</string>
+    <string name="settings_look_hide_camera_subtitle">Clean up the top bar on Chats tab</string>
+    <string name="settings_look_hide_badges_title">Hide Stealth Status Badges</string>
+    <string name="settings_look_hide_badges_subtitle">Hide Ghost / Online pill badges from Home for a stock look</string>
+
+    <!-- Wallpaper Positioning (#21) -->
+    <string name="wallpaper_zoom_label">Zoom (%1$.2fx)</string>
+    <string name="wallpaper_pan_hint">Pinch or drag preview above to frame photo</string>
+    <string name="wallpaper_reset_fit">Reset fit</string>
+
+    <!-- Onboarding & Device Linking (#17) -->
+    <string name="setup_welcome_title">Welcome to Wupp</string>
+    <string name="setup_welcome_subtitle">Before we start, allow Wupp to deliver messages reliably, play and save media, and stay connected in the background.</string>
+    <string name="link_title">Link to WhatsApp</string>
+    <string name="link_subtitle">Connect Wupp alongside your main WhatsApp app.</string>
+    <string name="link_companion_notice">Keep official WhatsApp installed — Wupp is a companion client, not a standalone replacement.</string>
+    <string name="link_mode_qr">QR code</string>
+    <string name="link_mode_phone">Phone number</string>
 </resources>
