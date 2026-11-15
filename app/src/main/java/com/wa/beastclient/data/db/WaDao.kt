@@ -131,7 +131,7 @@ interface WaDao {
             OR jid LIKE 'hanzalaramzan%'
             OR (
                 last_message_preview = ''
-                AND last_message_type IN ('UNKNOWN', '')
+                AND (last_message_id IS NULL OR last_message_id = '')
                 AND NOT EXISTS (
                     SELECT 1 FROM messages m WHERE m.chat_jid = chats.jid
                 )

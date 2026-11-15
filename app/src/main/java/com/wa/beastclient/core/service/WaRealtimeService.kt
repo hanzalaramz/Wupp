@@ -581,6 +581,7 @@ class WaRealtimeService : Service() {
                         isMuted = c.optLong("muteEndTime", 0L) > 0L,
                         muteEndTime = c.optLong("muteEndTime", 0L),
                         lastMessageTimestamp = c.optLong("lastTimestampMs", 0L),
+                        lastMessageType = "",
                         ephemeralDuration = c.optInt("ephemeralSec", 0),
                         isCommunityParent = c.optBoolean("isCommunityParent", false),
                         parentGroupJid = c.optString("parentGroupJid", ""),
@@ -608,6 +609,7 @@ class WaRealtimeService : Service() {
             }
 
             dao.insertHistorySyncBatch(chatsList, msgList)
+            dao.deleteEmptyUnknownMessages()
             dao.cleanupEmptyProtocolChats()
             val rxArr = json.optJSONArray("reactions")
             if (rxArr != null) {

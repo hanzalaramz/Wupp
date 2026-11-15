@@ -152,6 +152,7 @@ fun DoodleBackground(
     wallpaperUriOverride: String? = null,
     wallpaperDimOverride: Float? = null,
     showDoodleOverride: Boolean? = null,
+    backdropState: WuppBackdropState? = null,
     content: @Composable () -> Unit
 ) {
     val colors = LocalWaColors.current
@@ -202,37 +203,44 @@ fun DoodleBackground(
 
     val tileAlpha = colors.doodleTintAlpha
     Box(modifier = modifier.background(colors.chatCanvas)) {
-        when {
-            customBitmap != null -> {
-                Image(
-                    bitmap = customBitmap!!,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-                if (wallpaperDim > 0f) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .then(if (backdropState != null) Modifier.wuppBackdropSource(backdropState) else Modifier)
+                .background(colors.chatCanvas)
+        ) {
+            when {
+                customBitmap != null -> {
+                    Image(
+                        bitmap = customBitmap!!,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    if (wallpaperDim > 0f) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = wallpaperDim))
+                        )
+                    }
+                }
+                preset != null -> {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Color.Black.copy(alpha = wallpaperDim))
+                            .background(Brush.verticalGradient(listOf(preset.topColor, preset.bottomColor)))
                     )
+                    if (showDoodle) {
+                        ComposeCanvas(modifier = Modifier.fillMaxSize()) {
+                            drawRect(brush = shaderBrush, alpha = tileAlpha)
+                        }
+                    }
                 }
-            }
-            preset != null -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Brush.verticalGradient(listOf(preset.topColor, preset.bottomColor)))
-                )
-                if (showDoodle) {
+                else -> {
                     ComposeCanvas(modifier = Modifier.fillMaxSize()) {
                         drawRect(brush = shaderBrush, alpha = tileAlpha)
                     }
-                }
-            }
-            else -> {
-                ComposeCanvas(modifier = Modifier.fillMaxSize()) {
-                    drawRect(brush = shaderBrush, alpha = tileAlpha)
                 }
             }
         }

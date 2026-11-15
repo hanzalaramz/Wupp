@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.2.3-pre.2] - 2026-11-15
+
+✨ True frosted Liquid Glass blur and complete cleanup of empty random-number chats.
+
+### ✨ What's new
+- 🫧 **True Liquid Glass Blur:** Real-time frosted blur behind the floating nav bar and chat composer on Android 12+, with a cleaner borderless active pill and sharper icons.
+
+### 🛠️ Fixes
+- 👻 **Empty Random-Number Chats:** Fixed the default type bug that kept old empty `@lid` chats stuck in your chat list and unread counter.
+
 ## [0.2.3-pre.1] - 2026-11-15
 
 ✨ Liquid Glass UI polish, per-chat wallpapers, synced chat deletes, and status/settings fixes.

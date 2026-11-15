@@ -117,11 +117,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 !it.jid.endsWith("@newsletter") &&
                 it.jid != "status@broadcast" &&
                 !it.jid.endsWith("@broadcast") &&
-                !(
-                    !it.isGroup &&
-                        it.lastMessagePreview.isBlank() &&
-                        (it.lastMessageType == "UNKNOWN" || it.lastMessageType.isBlank())
-                    )
+                !it.isPhantomEmptyDm() &&
+                !(it.name.startsWith("@") && it.lastMessagePreview.isBlank())
         }
         val byChip = when (chip) {
             HomeFilterChip.ALL -> chatThreads

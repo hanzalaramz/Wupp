@@ -147,8 +147,9 @@ import com.wa.beastclient.ui.components.VoiceNoteBubble
 import com.wa.beastclient.ui.components.WallpaperPickerDialog
 import com.wa.beastclient.ui.components.WhatsAppBubbleShape
 import com.wa.beastclient.ui.components.WhatsAppClusterInnerShape
+import com.wa.beastclient.ui.components.WuppGlassContainer
 import com.wa.beastclient.ui.components.formatMessageClock
-import com.wa.beastclient.ui.components.wuppGlassSurface
+import com.wa.beastclient.ui.components.rememberWuppBackdropState
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
 import kotlinx.coroutines.Dispatchers
@@ -315,6 +316,8 @@ fun ChatScreen(
             viewModel.searchInChat(chatJid, inChatQuery)
         } else emptyList()
     }
+
+    val wallpaperBackdropState = rememberWuppBackdropState()
 
     Scaffold(
         containerColor = colors.chatCanvas,
@@ -644,6 +647,7 @@ fun ChatScreen(
             wallpaperUriOverride = effectiveWallpaper.uri,
             wallpaperDimOverride = effectiveWallpaper.dim,
             showDoodleOverride = effectiveWallpaper.showDoodle,
+            backdropState = wallpaperBackdropState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
@@ -1018,43 +1022,46 @@ fun ChatScreen(
                 // Reply Context Preview Banner above Composer
                 AnimatedVisibility(visible = replyTarget != null) {
                     replyTarget?.let { rep ->
-                        Row(
+                        WuppGlassContainer(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 10.dp, vertical = 3.dp)
-                                .wuppGlassSurface(
-                                    colors = colors,
-                                    shape = RoundedCornerShape(16.dp),
-                                    elevation = 8.dp,
-                                    alpha = if (colors.isDark) 0.80f else 0.90f
-                                )
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .padding(horizontal = 10.dp, vertical = 3.dp),
+                            colors = colors,
+                            shape = RoundedCornerShape(16.dp),
+                            elevation = 8.dp,
+                            backdropState = wallpaperBackdropState
                         ) {
-                            Box(
+                            Row(
                                 modifier = Modifier
-                                    .width(4.dp)
-                                    .height(32.dp)
-                                    .background(colors.brightGreen, RoundedCornerShape(2.dp))
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = rep.senderName.ifBlank { rep.senderJid.substringBefore("@") },
-                                    color = colors.brightGreen,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(4.dp)
+                                        .height(32.dp)
+                                        .background(colors.brightGreen, RoundedCornerShape(2.dp))
                                 )
-                                Text(
-                                    text = rep.body.ifBlank { rep.msgType },
-                                    color = colors.textSecondary,
-                                    fontSize = 12.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            IconButton(onClick = { replyTarget = null }, modifier = Modifier.size(24.dp)) {
-                                Icon(Icons.Rounded.Close, "Cancel Reply", tint = colors.textSecondary)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = rep.senderName.ifBlank { rep.senderJid.substringBefore("@") },
+                                        color = colors.brightGreen,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                    Text(
+                                        text = rep.body.ifBlank { rep.msgType },
+                                        color = colors.textSecondary,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                IconButton(onClick = { replyTarget = null }, modifier = Modifier.size(24.dp)) {
+                                    Icon(Icons.Rounded.Close, "Cancel Reply", tint = colors.textSecondary)
+                                }
                             }
                         }
                     }
@@ -1067,18 +1074,19 @@ fun ChatScreen(
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.Bottom
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .weight(1f)
-                            .wuppGlassSurface(
-                                colors = colors,
-                                shape = RoundedCornerShape(26.dp),
-                                elevation = 12.dp,
-                                alpha = if (colors.isDark) 0.78f else 0.90f
-                            )
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    WuppGlassContainer(
+                        modifier = Modifier.weight(1f),
+                        colors = colors,
+                        shape = RoundedCornerShape(26.dp),
+                        elevation = 12.dp,
+                        backdropState = wallpaperBackdropState
                     ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                         if (isRecordingVoice) {
                             Box(
                                 modifier = Modifier
@@ -1161,6 +1169,7 @@ fun ChatScreen(
                                     )
                                 }
                             }
+                        }
                         }
                     }
 

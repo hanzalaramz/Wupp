@@ -65,7 +65,15 @@ data class ChatEntity(
     val parentGroupJid: String = "",
     @ColumnInfo(name = "is_default_subgroup", defaultValue = "0")
     val isDefaultSubgroup: Boolean = false
-)
+) {
+    /** True for empty DM stubs with no preview or message ID (e.g. unchatted @lid contacts). */
+    fun isPhantomEmptyDm(): Boolean =
+        !isGroup &&
+            !isCommunityParent &&
+            !jid.endsWith("@newsletter") &&
+            lastMessagePreview.isBlank() &&
+            lastMessageId.isNullOrBlank()
+}
 
 @Entity(
     tableName = "messages",

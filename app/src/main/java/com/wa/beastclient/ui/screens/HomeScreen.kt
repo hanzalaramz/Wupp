@@ -149,6 +149,8 @@ import com.wa.beastclient.ui.components.WallpaperPickerDialog
 import com.wa.beastclient.ui.components.WuppGlassNavBar
 import com.wa.beastclient.ui.components.describeChatWallpaper
 import com.wa.beastclient.ui.components.formatMessageClock
+import com.wa.beastclient.ui.components.rememberWuppBackdropState
+import com.wa.beastclient.ui.components.wuppBackdropSource
 import com.wa.beastclient.ui.components.wuppGlassSurface
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
@@ -196,7 +198,8 @@ fun HomeScreen(
         allChats.count {
             !it.isCommunityParent &&
                 !it.jid.endsWith("@newsletter") &&
-                !(it.name.startsWith("@") && it.lastMessagePreview.isBlank() && (it.lastMessageType == "UNKNOWN" || it.lastMessageType.isBlank())) &&
+                !it.isPhantomEmptyDm() &&
+                !(it.name.startsWith("@") && it.lastMessagePreview.isBlank()) &&
                 it.unreadCount > 0
         }
     }
@@ -233,6 +236,8 @@ fun HomeScreen(
         selectedChatJids = emptySet()
         selectionOverflowExpanded = false
     }
+
+    val backdropState = rememberWuppBackdropState()
 
     Scaffold(
         containerColor = colors.appSurface,
@@ -537,7 +542,8 @@ fun HomeScreen(
             WuppGlassNavBar(
                 currentTab = currentTab,
                 unreadChatsCount = unreadChatsCount,
-                onSelectTab = onSelectTab
+                onSelectTab = onSelectTab,
+                backdropState = backdropState
             )
         },
         floatingActionButton = {
@@ -596,6 +602,8 @@ fun HomeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding())
+                .wuppBackdropSource(backdropState)
+                .background(colors.appSurface)
         ) {
             when (currentTab) {
                 0 -> ChatsTabContent(
@@ -994,7 +1002,8 @@ private fun ChatsTabContent(
         allChats.filter {
             !it.isCommunityParent &&
                 !it.jid.endsWith("@newsletter") &&
-                !(it.name.startsWith("@") && it.lastMessagePreview.isBlank() && (it.lastMessageType == "UNKNOWN" || it.lastMessageType.isBlank()))
+                !it.isPhantomEmptyDm() &&
+                !(it.name.startsWith("@") && it.lastMessagePreview.isBlank())
         }
     }
 
