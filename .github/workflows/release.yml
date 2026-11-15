@@ -68,11 +68,12 @@ jobs:
           echo "version_name=${CLEAN_VER}" >> "$GITHUB_OUTPUT"
           echo "version_code=${VER_CODE}" >> "$GITHUB_OUTPUT"
 
-      - name: Build multi-ABI whatsbridge.aar via gomobile
+      - name: Clean prebuilts & build multi-ABI whatsbridge.aar via gomobile
         env:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
         run: |
+          rm -f app/libs/*.aar app/libs/*.jar
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
           export PATH="$PATH:$(go env GOPATH)/bin"
@@ -85,12 +86,36 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Build Release APKs
+      - name: Build Release APKs (GitHub & F-Droid flavors)
         run: |
-          gradle assembleRelease \
+          gradle assembleGithubRelease assembleFdroidRelease \
             -PWUPP_GITHUB_REPO=${{ github.repository }} \
             -PWUPP_VERSION_NAME=${{ steps.meta.outputs.version_name }} \
             -PWUPP_VERSION_CODE=${{ steps.meta.outputs.version_code }}
+
+      - name: Extract Changelog Notes for Release
+        id: notes
+        run: |
+          python3 - "${{ steps.meta.outputs.version_name }}" <<'PY'
+          import os, re, sys
+          ver = sys.argv[1]
+          if not os.path.exists("CHANGELOG.md"):
+              sys.exit(0)
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          pattern = rf"(?ms)^## \[{re.escape(ver)}\][^\n]*\n(.*?)(?=^## \[|\Z)"
+          m = re.search(pattern, text)
+          if m:
+              body = m.group(1).strip()
+              if body:
+                  repo = os.environ.get("GITHUB_REPOSITORY", "${{ github.repository }}")
+                  body += f"\n\n**Full Changelog**: https://github.com/{repo}/releases/tag/v{ver}"
+                  open("release_notes.md", "w", encoding="utf-8").write(body + "\n")
+          PY
+          if [ -s release_notes.md ]; then
+            echo "has_notes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Sign & Package Variant APKs
         env:
@@ -120,7 +145,7 @@ jobs:
             K_PASS="pass:android"
           fi
 
-          for APK_PATH in app/build/outputs/apk/release/*.apk; do
+          find app/build/outputs/apk -path '*/release/*.apk' | while read -r APK_PATH; do
             [ -f "$APK_PATH" ] || continue
             BASE_NAME=$(basename "$APK_PATH" | sed 's/-unsigned\.apk$/.apk/')
             "$ZIPALIGN" -p -f 4 "$APK_PATH" "dist/aligned_${BASE_NAME}"
@@ -136,7 +161,20 @@ jobs:
           rm -f release.jks debug-fallback.jks
           (cd dist && sha256sum *.apk > SHA256SUMS.txt)
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (with CHANGELOG notes)
+        if: steps.notes.outputs.has_notes == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: "Wupp ${{ steps.meta.outputs.tag }}"
+          body_path: release_notes.md
+          prerelease: ${{ github.event.inputs.prerelease == 'true' || contains(steps.meta.outputs.tag, '-') }}
+          files: |
+            dist/*.apk
+            dist/SHA256SUMS.txt
+
+      - name: Create GitHub Release (generated notes fallback)
+        if: steps.notes.outputs.has_notes != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}

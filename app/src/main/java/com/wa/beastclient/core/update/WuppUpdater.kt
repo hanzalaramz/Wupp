@@ -109,6 +109,7 @@ object WuppUpdater {
     }
 
     suspend fun onAppOpened(context: Context) {
+        if (!BuildConfig.ENABLE_SELF_UPDATE) return
         val appCtx = context.applicationContext
         init(appCtx)
         if (!_autoCheckEnabled.value) return
@@ -140,6 +141,9 @@ object WuppUpdater {
     }
 
     suspend fun checkForUpdates(context: Context, silent: Boolean): UpdateUiState {
+        if (!BuildConfig.ENABLE_SELF_UPDATE) {
+            return UpdateUiState.UpToDate(BuildConfig.VERSION_NAME, System.currentTimeMillis())
+        }
         val appCtx = context.applicationContext
         init(appCtx)
         val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -227,6 +231,7 @@ object WuppUpdater {
     }
 
     suspend fun downloadUpdate(context: Context, release: AppReleaseInfo) {
+        if (!BuildConfig.ENABLE_SELF_UPDATE) return
         val appCtx = context.applicationContext
         val downloadUrl = release.apkDownloadUrl
         if (downloadUrl.isNullOrBlank()) {
@@ -318,6 +323,9 @@ object WuppUpdater {
     }
 
     fun installApk(context: Context, apkFile: File): Result<Unit> = runCatching {
+        if (!BuildConfig.ENABLE_SELF_UPDATE) {
+            throw IllegalStateException("In-app updates are disabled in F-Droid builds; update via F-Droid.")
+        }
         val appCtx = context.applicationContext
         if (!apkFile.exists()) {
             throw IllegalStateException("APK file not found: ${apkFile.name}")
@@ -427,6 +435,7 @@ object WuppUpdater {
             val name = asset.optString("name")
             if (!name.endsWith(".apk", ignoreCase = true)) continue
             val lower = name.lowercase()
+            if (lower.contains("fdroid")) continue
             val abiScore = when {
                 (lower.contains("arm64-v8a") || lower.contains("arm64") || lower.contains("armv8")) ->
                     if (primaryAbi.contains("arm64")) 100 else if (supportedAbis.any { it.contains("arm64") }) 70 else -50

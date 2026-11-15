@@ -12,6 +12,7 @@ import androidx.paging.Pager
 import androidx.paging.PagingConfig
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
+import com.wa.beastclient.BuildConfig
 import com.wa.beastclient.core.service.BridgeStatus
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.core.update.AppReleaseInfo
@@ -71,8 +72,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         WuppUpdater.init(appContext)
-        viewModelScope.launch {
-            WuppUpdater.checkForUpdates(appContext, silent = true)
+        if (BuildConfig.ENABLE_SELF_UPDATE) {
+            viewModelScope.launch {
+                WuppUpdater.checkForUpdates(appContext, silent = true)
+            }
         }
     }
 
@@ -627,6 +630,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun checkForUpdates(silent: Boolean = false) {
+        if (!BuildConfig.ENABLE_SELF_UPDATE) return
         viewModelScope.launch {
             val result = WuppUpdater.checkForUpdates(appContext, silent = silent)
             if (!silent) {
@@ -640,6 +644,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun downloadUpdate(release: AppReleaseInfo) {
+        if (!BuildConfig.ENABLE_SELF_UPDATE) return
         viewModelScope.launch {
             WuppUpdater.downloadUpdate(appContext, release)
             val current = WuppUpdater.state.value
@@ -650,6 +655,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun installDownloadedApk(apkFile: File) {
+        if (!BuildConfig.ENABLE_SELF_UPDATE) return
         WuppUpdater.installApk(appContext, apkFile).onFailure { err ->
             showToast(err.message ?: "Unable to launch APK installer")
         }

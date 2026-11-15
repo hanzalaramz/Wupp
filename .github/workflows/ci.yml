@@ -61,12 +61,12 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Build Debug APK
-        run: gradle assembleDebug -PWUPP_GITHUB_REPO=${{ github.repository }}
+      - name: Build Debug APKs (GitHub & F-Droid flavors)
+        run: gradle assembleGithubDebug assembleFdroidDebug -PWUPP_GITHUB_REPO=${{ github.repository }}
 
-      - name: Upload Debug APK artifact
+      - name: Upload Debug APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: wupp-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: wupp-debug-apks
+          path: app/build/outputs/apk/*/debug/*.apk
           retention-days: 7

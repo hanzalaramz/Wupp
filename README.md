@@ -61,7 +61,7 @@ Under the hood, a Go library (`whatsbridge`, built on `whatsmeow` and compiled t
 2. Walk through the first-launch setup screen so notification, media, and background-running permissions are granted.
 3. Link your WhatsApp account on the setup login screen using either a QR code scan or a phone number link code from **Linked devices** in your primary WhatsApp app.
 
-Future versions prompt inside the app, automatically match your phone's CPU architecture, and update in place without logging you out of WhatsApp. If you track releases with [Obtainium](https://github.com/ImranR98/Obtainium), point it at `https://github.com/hanzalaramz/Wupp` and filter assets with `^Wupp-.*-arm64-v8a\.apk$` (or `-universal`; turn on "Include prereleases" for alpha/beta builds).
+Future versions prompt inside the app (on `github` builds), automatically match your phone's CPU architecture, and update in place without logging you out of WhatsApp. If you prefer F-Droid updates, use the **F-Droid repo** setup documented in [fdroid/README.md](fdroid/README.md) (`fdroid` flavor builds strip `REQUEST_INSTALL_PACKAGES` and in-app self-updates). If you track releases with [Obtainium](https://github.com/ImranR98/Obtainium), point it at `https://github.com/hanzalaramz/Wupp` and filter assets with `^Wupp-[0-9].*-arm64-v8a\.apk$` (avoiding `-fdroid-`, or filter `-universal`; turn on "Include prereleases" for alpha/beta builds).
 
 ## What talks to the network
 
@@ -99,18 +99,20 @@ cd whatsbridge
 gomobile bind -javapkg=com.wa.bridge -target=android/arm64,android/arm,android/amd64 -androidapi 26 -o ../app/libs/whatsbridge.aar .
 ```
 
-`app/build.gradle.kts` reads `BuildConfig.GITHUB_REPO` from `git remote origin`, falling back to `WUPP_GITHUB_REPO` in `gradle.properties`. Once `whatsbridge.aar` is in `app/libs/`, build the debug APKs:
+`app/build.gradle.kts` reads `BuildConfig.GITHUB_REPO` from `git remote origin`, falling back to `WUPP_GITHUB_REPO` in `gradle.properties`. Once `whatsbridge.aar` is in `app/libs/` (or built via `./scripts/build-bridge.ps1` / `./scripts/build-bridge.sh`), build either flavor:
 
 ```bash
-gradle assembleDebug
+gradle assembleGithubDebug assembleFdroidDebug
 ```
 
-### CI and releases
+### CI, F-Droid, and releases
 
-- Every push and pull request on `main` runs `.github/workflows/ci.yml`, which vets `whatsbridge`, binds `whatsbridge.aar`, and compiles a debug APK.
-- Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds `whatsbridge.aar`, compiles and signs `Wupp-<tag>-arm64-v8a.apk` and `Wupp-<tag>-universal.apk`, generates `SHA256SUMS.txt`, and publishes the GitHub Release.
+- Every push and pull request on `main` runs `.github/workflows/ci.yml`, which vets `whatsbridge`, binds `whatsbridge.aar`, and compiles both `github` and `fdroid` debug APKs.
+- Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds `whatsbridge.aar` from source, compiles and signs both `github` and `fdroid` release APKs, extracts notes from `CHANGELOG.md`, generates `SHA256SUMS.txt`, and publishes the GitHub Release.
+- `.github/workflows/fdroid-repo.yml` runs after `Release APK` (or via manual dispatch) to update your GitHub Pages F-Droid repository (`https://hanzalaramz.github.io/Wupp/fdroid/repo`). See [fdroid/README.md](fdroid/README.md) for setup and official `fdroiddata` submission instructions (`fdroid/com.wupp.app.yml` + `fastlane/metadata/android/`).
+- Use `./scripts/release.ps1` (or `./scripts/release.sh`) to bump `gradle.properties`, `CHANGELOG.md`, and Fastlane changelogs together before tagging.
 - Tags with a hyphen (such as `v0.1.0-beta.1`) publish as pre-releases. Tags without a hyphen (such as `v1.0.0`) publish as the latest stable release.
-- When `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, and `KEY_PASSWORD` are set in Actions secrets, CI signs release APKs with that permanent key so in-app updates install over older versions cleanly.
+- When `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, and `KEY_PASSWORD` are set in Actions secrets, CI signs release APKs with that permanent key so updates install over older versions cleanly.
 
 ## Credits
 

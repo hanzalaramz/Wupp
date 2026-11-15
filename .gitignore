@@ -13,6 +13,7 @@ captures/
 # Keystores & signing secrets
 *.jks
 *.keystore
+*.p12
 signing.properties
 
 # Local environment configuration
@@ -29,8 +30,10 @@ Thumbs.db
 .kotlin/
 app/schemas/*.json.tmp
 
-# Go / gomobile temporary outputs (keep checked-in whatsbridge.aar or build in CI)
+# Go / gomobile generated AAR outputs (built from whatsbridge/ by CI, F-Droid prebuild, or scripts/build-bridge.*)
 whatsbridge/build/
 whatsbridge/*.out
+app/libs/*.aar
+app/libs/*.jar
 *.exe
 *.test

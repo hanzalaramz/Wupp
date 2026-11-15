@@ -2449,29 +2449,39 @@ private fun ToolsVaultTab(
             }
 
             PatchSectionCard(title = "Updates & GitHub Support") {
-                PatchActionRow(
-                    icon = Icons.Rounded.SystemUpdate,
-                    title = "Check for Updates",
-                    subtitle = updateSubtitle,
-                    badgeText = updateBadge,
-                    onClick = {
-                        when (updateState) {
-                            is UpdateUiState.UpdateAvailable,
-                            is UpdateUiState.Downloading,
-                            is UpdateUiState.ReadyToInstall -> viewModel.openUpdatePrompt()
-                            else -> viewModel.checkForUpdates(silent = false)
+                if (BuildConfig.ENABLE_SELF_UPDATE) {
+                    PatchActionRow(
+                        icon = Icons.Rounded.SystemUpdate,
+                        title = "Check for Updates",
+                        subtitle = updateSubtitle,
+                        badgeText = updateBadge,
+                        onClick = {
+                            when (updateState) {
+                                is UpdateUiState.UpdateAvailable,
+                                is UpdateUiState.Downloading,
+                                is UpdateUiState.ReadyToInstall -> viewModel.openUpdatePrompt()
+                                else -> viewModel.checkForUpdates(silent = false)
+                            }
                         }
-                    }
-                )
-                PatchRowDivider()
-                PatchToggleRow(
-                    icon = Icons.Rounded.CheckCircle,
-                    title = "Auto-Check for Updates",
-                    subtitle = "Notify and prompt to download when a new GitHub release ships",
-                    checked = autoUpdateEnabled,
-                    onCheckedChange = { viewModel.setAutoUpdateEnabled(it) }
-                )
-                PatchRowDivider()
+                    )
+                    PatchRowDivider()
+                    PatchToggleRow(
+                        icon = Icons.Rounded.CheckCircle,
+                        title = "Auto-Check for Updates",
+                        subtitle = "Notify and prompt to download when a new GitHub release ships",
+                        checked = autoUpdateEnabled,
+                        onCheckedChange = { viewModel.setAutoUpdateEnabled(it) }
+                    )
+                    PatchRowDivider()
+                } else {
+                    PatchActionRow(
+                        icon = Icons.Rounded.SystemUpdate,
+                        title = "App Updates",
+                        subtitle = "Installed v${BuildConfig.VERSION_NAME} • Updates delivered via F-Droid",
+                        onClick = { }
+                    )
+                    PatchRowDivider()
+                }
                 PatchActionRow(
                     icon = Icons.Rounded.BugReport,
                     title = "Report a Bug / Issue",

@@ -1,0 +1,5 @@
+- Added media auto-download toggle with separate mobile data, Wi-Fi, and roaming rules
+- Added global and per-chat gallery visibility toggles
+- Added long-press chat actions (pin, mute, archive, favorite, mark unread, delete locally)
+- Added Light, Dark, AMOLED, and Velvet Aurora themes
+- Reworked the update prompt and fixed blank chats, @lid names, group avatars, and horizontal status swiping
