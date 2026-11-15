@@ -5,6 +5,8 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -73,6 +75,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -143,8 +146,10 @@ import com.wa.beastclient.ui.components.QuickContactDialog
 import com.wa.beastclient.ui.components.ThemePickerDialog
 import com.wa.beastclient.ui.components.ThemeSelectorGrid
 import com.wa.beastclient.ui.components.WallpaperPickerDialog
+import com.wa.beastclient.ui.components.WuppGlassNavBar
 import com.wa.beastclient.ui.components.describeChatWallpaper
 import com.wa.beastclient.ui.components.formatMessageClock
+import com.wa.beastclient.ui.components.wuppGlassSurface
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
 import androidx.lifecycle.Lifecycle
@@ -366,6 +371,15 @@ fun HomeScreen(
                     ),
                     title = {
                         if (currentTab == 0) {
+                            val statusColor by animateColorAsState(
+                                targetValue = when (bridgeStatus.connectionState) {
+                                    "CONNECTED" -> colors.brightGreen
+                                    "CONNECTING", "PAIRING", "SYNCING" -> colors.warningAmber
+                                    else -> colors.textSecondary.copy(alpha = 0.55f)
+                                },
+                                animationSpec = tween(220),
+                                label = "top_bar_status_dot"
+                            )
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -379,6 +393,12 @@ fun HomeScreen(
                                     text = "Wupp",
                                     fontSize = 22.sp,
                                     fontWeight = FontWeight.Bold
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(statusColor)
                                 )
                             }
                         } else {
@@ -514,86 +534,11 @@ fun HomeScreen(
             }
         },
         bottomBar = {
-            NavigationBar(
-                containerColor = colors.appSurface,
-                tonalElevation = 0.dp
-            ) {
-                NavigationBarItem(
-                    selected = currentTab == 0,
-                    onClick = { onSelectTab(0) },
-                    icon = {
-                        Box(
-                            modifier = Modifier.size(width = 40.dp, height = 26.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                painter = painterResource(R.drawable.vec_ic_chat_filled),
-                                contentDescription = "Chats",
-                                modifier = Modifier.size(22.dp)
-                            )
-                            if (unreadChatsCount > 0) {
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.TopEnd)
-                                        .clip(CircleShape)
-                                        .background(colors.brightGreen)
-                                        .padding(horizontal = 4.5.dp, vertical = 0.5.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = if (unreadChatsCount > 99) "99+" else unreadChatsCount.toString(),
-                                        color = Color(0xFF0B141A),
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        lineHeight = 11.sp
-                                    )
-                                }
-                            }
-                        }
-                    },
-                    label = { Text("Chats", fontSize = 12.sp) },
-                    colors = navItemColors()
-                )
-                NavigationBarItem(
-                    selected = currentTab == 1,
-                    onClick = { onSelectTab(1) },
-                    icon = {
-                        Icon(
-                            painter = painterResource(R.drawable.vec_ic_status),
-                            contentDescription = "Updates",
-                            modifier = Modifier.size(22.dp)
-                        )
-                    },
-                    label = { Text("Updates", fontSize = 12.sp) },
-                    colors = navItemColors()
-                )
-                NavigationBarItem(
-                    selected = currentTab == 2,
-                    onClick = { onSelectTab(2) },
-                    icon = {
-                        Icon(
-                            painter = painterResource(R.drawable.vec_ic_avatar_community),
-                            contentDescription = "Communities",
-                            modifier = Modifier.size(22.dp)
-                        )
-                    },
-                    label = { Text("Communities", fontSize = 12.sp) },
-                    colors = navItemColors()
-                )
-                NavigationBarItem(
-                    selected = currentTab == 3,
-                    onClick = { onSelectTab(3) },
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Rounded.Shield,
-                            contentDescription = "Settings",
-                            modifier = Modifier.size(22.dp)
-                        )
-                    },
-                    label = { Text("Settings", fontSize = 12.sp) },
-                    colors = navItemColors()
-                )
-            }
+            WuppGlassNavBar(
+                currentTab = currentTab,
+                unreadChatsCount = unreadChatsCount,
+                onSelectTab = onSelectTab
+            )
         },
         floatingActionButton = {
             when (currentTab) {
@@ -602,12 +547,12 @@ fun HomeScreen(
                         onClick = { showQuickContactPicker = true },
                         containerColor = colors.brightGreen,
                         contentColor = Color(0xFF0B141A),
-                        shape = RoundedCornerShape(16.dp)
+                        shape = CircleShape
                     ) {
                         Icon(
                             painter = painterResource(R.drawable.vec_ic_chat_filled),
                             contentDescription = "New Chat",
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(23.dp)
                         )
                     }
                 }
@@ -620,8 +565,8 @@ fun HomeScreen(
                             onClick = { statuses.firstOrNull()?.let { activeStatusViewer = it } },
                             containerColor = colors.elevatedBar,
                             contentColor = colors.textPrimary,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.size(42.dp)
+                            shape = CircleShape,
+                            modifier = Modifier.size(44.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.Edit,
@@ -633,12 +578,12 @@ fun HomeScreen(
                             onClick = { statuses.firstOrNull()?.let { activeStatusViewer = it } },
                             containerColor = colors.brightGreen,
                             contentColor = Color(0xFF0B141A),
-                            shape = RoundedCornerShape(16.dp)
+                            shape = CircleShape
                         ) {
                             Icon(
                                 painter = painterResource(R.drawable.vec_ic_camera_reply),
                                 contentDescription = "Camera status",
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(23.dp)
                             )
                         }
                     }
@@ -646,10 +591,11 @@ fun HomeScreen(
             }
         }
     ) { innerPadding ->
+        val contentBottomPad = innerPadding.calculateBottomPadding() + 14.dp
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
+                .padding(top = innerPadding.calculateTopPadding())
         ) {
             when (currentTab) {
                 0 -> ChatsTabContent(
@@ -660,6 +606,7 @@ fun HomeScreen(
                     searchQuery = searchQuery,
                     listState = chatsListState,
                     selectedChatJids = selectedChatJids,
+                    bottomPadding = contentBottomPad,
                     onSearchChange = { viewModel.updateHomeSearch(it) },
                     heartbeat = heartbeat,
                     bridgeStatus = bridgeStatus,
@@ -703,6 +650,7 @@ fun HomeScreen(
                     allChats = allChats,
                     searchQuery = searchQuery,
                     listState = updatesListState,
+                    bottomPadding = contentBottomPad,
                     onOpenStatus = { activeStatusViewer = it },
                     onOpenChannel = { onOpenChat(it) }
                 )
@@ -710,12 +658,14 @@ fun HomeScreen(
                 2 -> CommunitiesTab(
                     allChats = allChats,
                     listState = communitiesListState,
+                    bottomPadding = contentBottomPad,
                     onOpenGroup = onOpenChat
                 )
 
                 3 -> ToolsVaultTab(
                     viewModel = viewModel,
                     listState = toolsListState,
+                    bottomPadding = contentBottomPad,
                     onOpenFeedback = { activeFeedbackType = it }
                 )
             }
@@ -772,26 +722,34 @@ fun HomeScreen(
 
     activeStatusViewer?.let { st ->
         val statusGroups = remember(statuses, allChats, st.id) {
-            val chatsByJid = allChats.associateBy { it.jid }
-            val bySender = statuses.groupBy { it.senderJid }
+            val (chatsByJid, chatsByUser) = buildStatusChatLookup(allChats)
+            val bySender = statuses.groupBy { normalizeStatusSenderJid(it.senderJid) }
             val groupsList = bySender.entries.map { (senderJid, items) ->
                 val sortedItems = items.sortedBy { it.timestamp }
-                val senderChat = chatsByJid[senderJid]
+                val senderChat = resolveStatusSenderChat(senderJid, chatsByJid, chatsByUser)
+                val firstItem = sortedItems.firstOrNull()
                 StatusGroup(
                     senderJid = senderJid,
-                    senderName = senderChat?.name?.takeIf { it.isNotBlank() }
-                        ?: sortedItems.firstOrNull()?.senderName
-                        ?: senderJid.substringBefore("@"),
+                    senderName = resolveStatusDisplayName(
+                        senderJid = firstItem?.senderJid ?: senderJid,
+                        storedName = firstItem?.senderName.orEmpty(),
+                        senderChat = senderChat
+                    ),
                     senderAvatarPath = senderChat?.avatarPath,
                     items = sortedItems
                 )
             }
             groupsList.ifEmpty {
-                val senderChat = chatsByJid[st.senderJid]
+                val normSender = normalizeStatusSenderJid(st.senderJid)
+                val senderChat = resolveStatusSenderChat(normSender, chatsByJid, chatsByUser)
                 listOf(
                     StatusGroup(
-                        senderJid = st.senderJid,
-                        senderName = senderChat?.name?.takeIf { it.isNotBlank() } ?: st.senderName,
+                        senderJid = normSender,
+                        senderName = resolveStatusDisplayName(
+                            senderJid = st.senderJid,
+                            storedName = st.senderName,
+                            senderChat = senderChat
+                        ),
                         senderAvatarPath = senderChat?.avatarPath,
                         items = listOf(st)
                     )
@@ -799,7 +757,8 @@ fun HomeScreen(
             }
         }
         val initialGroupIdx = remember(statusGroups, st.senderJid) {
-            statusGroups.indexOfFirst { it.senderJid == st.senderJid }.coerceAtLeast(0)
+            val targetSender = normalizeStatusSenderJid(st.senderJid)
+            statusGroups.indexOfFirst { it.senderJid == targetSender || it.senderJid == st.senderJid }.coerceAtLeast(0)
         }
         val initialStoryIdx = remember(statusGroups, initialGroupIdx, st.id) {
             statusGroups.getOrNull(initialGroupIdx)?.items?.indexOfFirst { it.id == st.id }?.coerceAtLeast(0) ?: 0
@@ -858,18 +817,45 @@ fun HomeScreen(
 
     if (pendingDeleteJids.isNotEmpty()) {
         val count = pendingDeleteJids.size
+        val hasSyncableChats = pendingDeleteJids.any { !it.endsWith("@newsletter") && !it.endsWith("@broadcast") }
+        var alsoDeleteOnWhatsApp by remember(pendingDeleteJids) { mutableStateOf(hasSyncableChats) }
         AlertDialog(
             onDismissRequest = { pendingDeleteJids = emptyList() },
             title = { Text(if (count == 1) "Delete this chat?" else "Delete $count chats?") },
             text = {
-                Text(
-                    "Messages for ${if (count == 1) "this conversation" else "these conversations"} will be removed from Wupp's local cache only."
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        if (alsoDeleteOnWhatsApp && hasSyncableChats) {
+                            "Deletes ${if (count == 1) "this chat" else "these chats"} from Wupp and syncs deletion to WhatsApp on your primary phone."
+                        } else {
+                            "Messages for ${if (count == 1) "this conversation" else "these conversations"} will be removed from Wupp's local cache only."
+                        }
+                    )
+                    if (hasSyncableChats) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { alsoDeleteOnWhatsApp = !alsoDeleteOnWhatsApp },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = alsoDeleteOnWhatsApp,
+                                onCheckedChange = { alsoDeleteOnWhatsApp = it }
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Also delete on WhatsApp",
+                                fontSize = 13.5.sp,
+                                color = colors.textPrimary
+                            )
+                        }
+                    }
+                }
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        viewModel.deleteChatsLocally(pendingDeleteJids)
+                        viewModel.deleteChats(pendingDeleteJids, syncToWhatsApp = alsoDeleteOnWhatsApp && hasSyncableChats)
                         pendingDeleteJids = emptyList()
                         selectedChatJids = emptySet()
                     }
@@ -989,6 +975,7 @@ private fun ChatsTabContent(
     searchQuery: String,
     listState: LazyListState,
     selectedChatJids: Set<String> = emptySet(),
+    bottomPadding: Dp = 96.dp,
     onSearchChange: (String) -> Unit,
     heartbeat: com.wa.beastclient.domain.stealth.PrimaryHeartbeatStatus,
     bridgeStatus: com.wa.beastclient.core.service.BridgeStatus,
@@ -1013,17 +1000,22 @@ private fun ChatsTabContent(
 
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = bottomPadding)
     ) {
-        // Inline "Ask Meta AI or Search" pill bar (matching Original WhatsApp)
+        // Inline frosted search pill bar
         item(key = "inline_search_bar") {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 6.dp)
-                    .height(46.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(colors.elevatedBar)
+                    .height(48.dp)
+                    .wuppGlassSurface(
+                        colors = colors,
+                        shape = RoundedCornerShape(24.dp),
+                        elevation = 6.dp,
+                        alpha = if (colors.isDark) 0.78f else 0.92f
+                    )
                     .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1283,18 +1275,35 @@ private fun ChatListRow(
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
-    val rowBg = if (selected) colors.brightGreen.copy(alpha = 0.16f) else Color.Transparent
+    val rowBg by animateColorAsState(
+        targetValue = if (selected) colors.brightGreen.copy(alpha = 0.16f) else Color.Transparent,
+        animationSpec = tween(160),
+        label = "chat_row_selection_bg"
+    )
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .padding(horizontal = if (selected) 8.dp else 0.dp, vertical = 1.dp)
+            .clip(RoundedCornerShape(if (selected) 16.dp else 0.dp))
             .height(76.dp)
             .background(rowBg)
+            .then(
+                if (selected) {
+                    Modifier.border(
+                        1.dp,
+                        colors.brightGreen.copy(alpha = 0.35f),
+                        RoundedCornerShape(16.dp)
+                    )
+                } else {
+                    Modifier
+                }
+            )
             .combinedClickable(
                 onClick = onRowClick,
                 onLongClick = onRowLongClick
             )
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(horizontal = if (selected) 10.dp else 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -1488,17 +1497,19 @@ private fun UpdatesStatusTab(
     allChats: List<ChatEntity>,
     searchQuery: String,
     listState: LazyListState,
+    bottomPadding: Dp = 96.dp,
     onOpenStatus: (StatusEntity) -> Unit,
     onOpenChannel: (String) -> Unit
 ) {
     val colors = LocalWaColors.current
-    val chatsByJid = remember(allChats) { allChats.associateBy { it.jid } }
-    val groupedStatuses = remember(statuses, searchQuery) {
+    val (chatsByJid, chatsByUser) = remember(allChats) { buildStatusChatLookup(allChats) }
+    val groupedStatuses = remember(statuses, allChats, searchQuery) {
         val q = searchQuery.trim().lowercase()
-        val grouped = statuses.groupBy { it.senderJid }.values.map { it.first() }
+        val grouped = statuses.groupBy { normalizeStatusSenderJid(it.senderJid) }.values.map { it.first() }
         if (q.isEmpty()) grouped
         else grouped.filter { st ->
-            val name = chatsByJid[st.senderJid]?.name?.ifBlank { st.senderName } ?: st.senderName
+            val senderChat = resolveStatusSenderChat(st.senderJid, chatsByJid, chatsByUser)
+            val name = resolveStatusDisplayName(st.senderJid, st.senderName, senderChat)
             name.lowercase().contains(q) || st.caption.lowercase().contains(q)
         }
     }
@@ -1515,7 +1526,7 @@ private fun UpdatesStatusTab(
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 112.dp)
+        contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
     ) {
         item(key = "updates_status_header") {
             Text(
@@ -1536,7 +1547,7 @@ private fun UpdatesStatusTab(
                     AddStatusStoryCard()
                 }
                 items(groupedStatuses, key = { "status_card_${it.id}" }) { st ->
-                    val senderChat = chatsByJid[st.senderJid]
+                    val senderChat = resolveStatusSenderChat(st.senderJid, chatsByJid, chatsByUser)
                     StatusStoryCard(
                         status = st,
                         senderChat = senderChat,
@@ -1634,6 +1645,84 @@ private fun AddStatusStoryCard() {
     }
 }
 
+private fun normalizeStatusSenderJid(rawJid: String): String {
+    val trimmed = rawJid.trim()
+    val atIdx = trimmed.indexOf('@')
+    if (atIdx <= 0) return trimmed
+    val user = trimmed.substring(0, atIdx).substringBefore(':')
+    val server = trimmed.substring(atIdx + 1)
+    return if (user.isNotBlank() && server.isNotBlank()) "$user@$server" else trimmed
+}
+
+private fun isPhoneLikeDisplayName(value: String): Boolean {
+    val trimmed = value.trim()
+    if (trimmed.isEmpty()) return false
+    var hasDigit = false
+    for (ch in trimmed) {
+        when {
+            ch.isDigit() -> hasDigit = true
+            ch == '+' || ch == '-' || ch == ' ' || ch == '(' || ch == ')' -> Unit
+            else -> return false
+        }
+    }
+    return hasDigit
+}
+
+private fun buildStatusChatLookup(
+    allChats: List<ChatEntity>
+): Pair<Map<String, ChatEntity>, Map<String, ChatEntity>> {
+    val byJid = LinkedHashMap<String, ChatEntity>(allChats.size * 2)
+    val byUser = LinkedHashMap<String, ChatEntity>(allChats.size)
+    for (chat in allChats) {
+        byJid.putIfAbsent(chat.jid, chat)
+        val norm = normalizeStatusSenderJid(chat.jid)
+        if (norm.isNotBlank()) byJid.putIfAbsent(norm, chat)
+        val user = norm.substringBefore("@").trim()
+        if (user.isNotBlank() && !chat.isGroup && !chat.jid.endsWith("@newsletter")) {
+            val prev = byUser[user]
+            if (prev == null || (isPhoneLikeDisplayName(prev.name) && !isPhoneLikeDisplayName(chat.name))) {
+                byUser[user] = chat
+            }
+        }
+    }
+    return byJid to byUser
+}
+
+private fun resolveStatusSenderChat(
+    senderJid: String,
+    chatsByJid: Map<String, ChatEntity>,
+    chatsByUser: Map<String, ChatEntity>
+): ChatEntity? {
+    val norm = normalizeStatusSenderJid(senderJid)
+    return chatsByJid[senderJid]
+        ?: chatsByJid[norm]
+        ?: chatsByUser[norm.substringBefore("@").trim()]
+}
+
+private fun resolveStatusDisplayName(
+    senderJid: String,
+    storedName: String,
+    senderChat: ChatEntity?
+): String {
+    val chatName = senderChat?.name?.trim().orEmpty()
+    val norm = normalizeStatusSenderJid(senderJid)
+    val user = norm.substringBefore("@")
+    val chatUseful = chatName.isNotBlank() && chatName != senderJid && chatName != norm && chatName != user
+    val storedClean = storedName.trim()
+    val storedUseful = storedClean.isNotBlank() &&
+        storedClean != "Status" &&
+        storedClean != senderJid &&
+        storedClean != norm &&
+        storedClean != user
+    return when {
+        chatUseful && !isPhoneLikeDisplayName(chatName) -> chatName
+        storedUseful && !isPhoneLikeDisplayName(storedClean) -> storedClean
+        chatUseful -> chatName
+        storedUseful -> storedClean
+        else -> user.ifBlank { "Status" }
+    }
+}
+
 @Composable
 private fun StatusStoryCard(
     status: StatusEntity,
@@ -1647,9 +1736,7 @@ private fun StatusStoryCard(
                 ?.let { runCatching { BitmapFactory.decodeFile(it.absolutePath)?.asImageBitmap() }.getOrNull() }
         }
     }
-    val displayName = senderChat?.name?.takeIf { it.isNotBlank() } ?: status.senderName.ifBlank {
-        status.senderJid.substringBefore("@")
-    }
+    val displayName = resolveStatusDisplayName(status.senderJid, status.senderName, senderChat)
 
     Box(
         modifier = Modifier
@@ -1837,6 +1924,7 @@ private fun ChannelListRow(
 private fun CommunitiesTab(
     allChats: List<ChatEntity>,
     listState: LazyListState,
+    bottomPadding: Dp = 96.dp,
     onOpenGroup: (String) -> Unit
 ) {
     val colors = LocalWaColors.current
@@ -1875,7 +1963,7 @@ private fun CommunitiesTab(
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 84.dp)
+        contentPadding = PaddingValues(bottom = bottomPadding + 8.dp)
     ) {
         item(key = "new_community_row") {
             Row(
@@ -2244,6 +2332,7 @@ private fun CommunityAvatarBox(
 private fun ToolsVaultTab(
     viewModel: MainViewModel,
     listState: LazyListState,
+    bottomPadding: Dp = 96.dp,
     onOpenFeedback: (GitHubFeedbackType) -> Unit
 ) {
     val context = LocalContext.current
@@ -2278,7 +2367,12 @@ private fun ToolsVaultTab(
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = 14.dp,
+            end = 16.dp,
+            bottom = bottomPadding + 16.dp
+        ),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         item(key = "patch_section_privacy") {
@@ -2486,18 +2580,6 @@ private fun ToolsVaultTab(
                         } else {
                             showHideNotifGuide = true
                         }
-                    }
-                )
-                PatchRowDivider()
-                PatchActionRow(
-                    icon = Icons.Rounded.Notifications,
-                    title = "Incoming Message Alerts",
-                    subtitle = "Configure sound, vibration, and pop-up banners for new messages",
-                    onClick = {
-                        WaRealtimeService.openNotificationChannelSettings(
-                            context = context,
-                            channelId = WaRealtimeService.MESSAGES_CHANNEL_ID
-                        )
                     }
                 )
                 PatchRowDivider()
@@ -2752,9 +2834,15 @@ private fun PatchSectionCard(
             modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
         )
         Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = colors.elevatedBar),
-            modifier = Modifier.fillMaxWidth()
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = colors.elevatedBar.copy(alpha = if (colors.isDark) 0.88f else 0.96f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(
+                    width = 1.dp,
+                    color = if (colors.isDark) Color.White.copy(alpha = 0.08f) else colors.divider,
+                    shape = RoundedCornerShape(20.dp)
+                )
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 content()

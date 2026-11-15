@@ -65,8 +65,22 @@ interface WaDao {
     @Query("DELETE FROM messages WHERE chat_jid = :chatJid")
     suspend fun deleteMessagesForChat(chatJid: String)
 
+    @Query("DELETE FROM messages WHERE chat_jid = :chatJid AND timestamp <= :maxTimestamp")
+    suspend fun deleteMessagesForChatUpTo(chatJid: String, maxTimestamp: Long)
+
     @Query("DELETE FROM chats WHERE jid = :chatJid")
     suspend fun deleteChatRow(chatJid: String)
+
+    @Query(
+        "UPDATE chats SET last_message_preview = :preview, last_message_type = :type, last_message_timestamp = :timestamp, unread_count = :unreadCount WHERE jid = :chatJid"
+    )
+    suspend fun updateChatPreviewAfterClear(
+        chatJid: String,
+        preview: String,
+        type: String,
+        timestamp: Long,
+        unreadCount: Int
+    )
 
     @Query(
         """
@@ -104,7 +118,27 @@ interface WaDao {
     @Query("DELETE FROM statuses WHERE sender_jid IN ('15550192834@s.whatsapp.net', '15550198811@s.whatsapp.net') OR id IN ('st_elena_1', 'st_marcus_1')")
     suspend fun deleteShowcaseStatuses()
 
-    @Query("DELETE FROM chats WHERE (name LIKE '@%' OR jid LIKE 'hanzalaramzan%') AND last_message_preview = '' AND last_message_type IN ('UNKNOWN', '')")
+    @Query(
+        """
+        DELETE FROM chats
+        WHERE is_group = 0
+          AND is_community_parent = 0
+          AND jid NOT LIKE '%@newsletter'
+          AND (
+            jid = 'status@broadcast'
+            OR jid LIKE '%@broadcast'
+            OR name LIKE '@%'
+            OR jid LIKE 'hanzalaramzan%'
+            OR (
+                last_message_preview = ''
+                AND last_message_type IN ('UNKNOWN', '')
+                AND NOT EXISTS (
+                    SELECT 1 FROM messages m WHERE m.chat_jid = chats.jid
+                )
+            )
+          )
+        """
+    )
     suspend fun cleanupEmptyProtocolChats()
 
     @Query("DELETE FROM messages WHERE msg_type = 'UNKNOWN' AND body = '' AND is_view_once = 0 AND (local_media_path IS NULL OR local_media_path = '')")
@@ -391,6 +425,33 @@ interface WaDao {
     @Query("UPDATE statuses SET is_revoked = 1, revoked_at = :revokedAt WHERE id = :statusId")
     suspend fun markStatusRevoked(statusId: String, revokedAt: Long)
 
+    @Query("UPDATE statuses SET sender_jid = :canonicalJid WHERE sender_jid = :duplicateJid")
+    suspend fun reassignStatusSenderJid(canonicalJid: String, duplicateJid: String)
+
+    @Query(
+        """
+        UPDATE statuses SET sender_name = :name
+        WHERE (
+            sender_jid = :jid
+            OR (:jidUser != '' AND (sender_jid LIKE :jidUser || '@%' OR sender_jid LIKE :jidUser || ':%@%'))
+          )
+          AND (
+            sender_name = ''
+            OR sender_name = 'Status'
+            OR sender_name = sender_jid
+            OR (:jidUser != '' AND (sender_name = :jidUser OR sender_name = '+' || :jidUser))
+            OR (sender_name LIKE '+%' AND :name NOT LIKE '+%')
+            OR :overwrite = 1
+          )
+        """
+    )
+    suspend fun updateStatusSenderNameForJid(
+        jid: String,
+        jidUser: String,
+        name: String,
+        overwrite: Boolean = false
+    )
+
     @Insert
     suspend fun insertPresenceLog(log: PresenceLogEntity)
 
@@ -451,6 +512,7 @@ interface WaDao {
 
         reassignMessagesChatJid(canonicalJid, duplicateJid)
         reassignProfileHistoryJid(canonicalJid, duplicateJid)
+        reassignStatusSenderJid(canonicalJid, duplicateJid)
 
         val dupPrivacy = getPrivacyRuleOnce(duplicateJid)
         if (dupPrivacy != null) {
@@ -533,10 +595,16 @@ interface WaDao {
     @Transaction
     suspend fun insertHistorySyncBatch(chats: List<ChatEntity>, messages: List<MessageEntity>) {
         val openChatJid = com.wa.beastclient.core.service.WaRealtimeService.activeChatJid.value
+        val chatJidsWithMessages = messages.asSequence().map { it.chatJid }.toHashSet()
         for (chat in chats) {
+            if (chat.jid == "status@broadcast" || chat.jid.endsWith("@broadcast")) continue
             val isCurrentlyOpen = openChatJid == chat.jid
             val existing = getChat(chat.jid)
             if (existing == null) {
+                val isGroupOrChannel = chat.isGroup || chat.isCommunityParent || chat.jid.endsWith("@newsletter")
+                if (!isGroupOrChannel && !chatJidsWithMessages.contains(chat.jid)) {
+                    continue
+                }
                 upsertChat(if (isCurrentlyOpen) chat.copy(unreadCount = 0) else chat)
             } else {
                 val jidUser = chat.jid.substringBefore("@")
@@ -660,6 +728,9 @@ interface WaDao {
         }
 
         val existingChat = getChat(effectiveMessage.chatJid)
+        if (effectiveMessage.chatJid == "status@broadcast" || effectiveMessage.chatJid.endsWith("@broadcast")) {
+            return isNewMessage
+        }
         val preview = previewTextFor(effectiveMessage)
         val effectiveType = if (effectiveMessage.isViewOnce) "VIEW_ONCE_${effectiveMessage.msgType}" else effectiveMessage.msgType
         val shouldBumpUnread = incrementUnread && isNewMessage && !effectiveMessage.isFromMe

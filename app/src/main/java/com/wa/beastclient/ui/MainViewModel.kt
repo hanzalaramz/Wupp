@@ -115,7 +115,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val chatThreads = chats.filter {
             !it.isCommunityParent &&
                 !it.jid.endsWith("@newsletter") &&
-                !(it.name.startsWith("@") && it.lastMessagePreview.isBlank() && (it.lastMessageType == "UNKNOWN" || it.lastMessageType.isBlank()))
+                it.jid != "status@broadcast" &&
+                !it.jid.endsWith("@broadcast") &&
+                !(
+                    !it.isGroup &&
+                        it.lastMessagePreview.isBlank() &&
+                        (it.lastMessageType == "UNKNOWN" || it.lastMessageType.isBlank())
+                    )
         }
         val byChip = when (chip) {
             HomeFilterChip.ALL -> chatThreads
@@ -263,11 +269,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun importChatWallpaperFromUri(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
-            val saved = com.wa.beastclient.ui.components.copyCustomWallpaperImage(appContext, uri)
+            val saved = com.wa.beastclient.ui.components.copyCustomWallpaperImage(
+                appContext,
+                uri,
+                keepFilePaths = StealthMatrixManager.referencedWallpaperFilePaths()
+            )
             if (!saved.isNullOrBlank()) {
                 StealthMatrixManager.updateConfig { it.copy(chatWallpaperUri = saved) }
             }
         }
+    }
+
+    fun setPerChatWallpaper(chatJid: String, uri: String) {
+        StealthMatrixManager.setChatWallpaperOverride(chatJid) { prev ->
+            prev.copy(uri = uri)
+        }
+    }
+
+    fun setPerChatWallpaperDim(chatJid: String, dim: Float) {
+        StealthMatrixManager.setChatWallpaperOverride(chatJid) { prev ->
+            prev.copy(dim = dim.coerceIn(0f, 0.75f))
+        }
+    }
+
+    fun setPerChatWallpaperShowDoodle(chatJid: String, show: Boolean) {
+        StealthMatrixManager.setChatWallpaperOverride(chatJid) { prev ->
+            prev.copy(showDoodle = show)
+        }
+    }
+
+    fun importPerChatWallpaperFromUri(chatJid: String, uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val saved = com.wa.beastclient.ui.components.copyCustomWallpaperImage(
+                appContext,
+                uri,
+                keepFilePaths = StealthMatrixManager.referencedWallpaperFilePaths()
+            )
+            if (!saved.isNullOrBlank()) {
+                StealthMatrixManager.setChatWallpaperOverride(chatJid) { prev ->
+                    prev.copy(uri = saved)
+                }
+            }
+        }
+    }
+
+    fun clearPerChatWallpaper(chatJid: String, altChatJid: String = "") {
+        StealthMatrixManager.clearChatWallpaperOverride(chatJid, altChatJid)
     }
 
     fun setAutoDownloadEnabled(enabled: Boolean) {
@@ -370,12 +417,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteChatsLocally(jids: Collection<String>) {
+        deleteChats(jids, syncToWhatsApp = false)
+    }
+
+    fun deleteChats(jids: Collection<String>, syncToWhatsApp: Boolean) {
         if (jids.isEmpty()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            jids.forEach { jid ->
-                dao.deleteMessagesForChat(jid)
-                dao.deleteChatRow(jid)
-            }
+        viewModelScope.launch {
+            WaRealtimeService.deleteChats(appContext, jids, syncToWhatsApp)
+                .onSuccess {
+                    if (syncToWhatsApp) {
+                        showToast(if (jids.size == 1) "Chat deleted on WhatsApp" else "${jids.size} chats deleted on WhatsApp")
+                    }
+                }
+                .onFailure { err ->
+                    showToast("Deleted locally; WhatsApp sync failed: ${err.message ?: "not connected"}")
+                }
         }
     }
 

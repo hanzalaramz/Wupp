@@ -23,6 +23,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/proto/waMmsRetry"
@@ -2519,6 +2520,12 @@ func handleWhatsmeowEvent(rawEvt any) {
 			"timestamp": evt.Timestamp.UnixMilli(),
 		})
 
+	case *events.DeleteChat:
+		emitChatRangeMetaUpdate("DELETE_CHAT", evt.JID, evt.Action.GetMessageRange(), evt.DeleteMedia, evt.FromFullSync, evt.Timestamp)
+
+	case *events.ClearChat:
+		emitChatRangeMetaUpdate("CLEAR_CHAT", evt.JID, evt.Action.GetMessageRange(), evt.DeleteMedia, evt.FromFullSync, evt.Timestamp)
+
 	case *events.Picture:
 		go handlePictureUpdate(evt)
 
@@ -2842,6 +2849,7 @@ func processIncomingMessage(evt *events.Message) {
 						}
 						rPayload, rJob := buildNormalizedMessage(&parsed.Info, rInner, rVO, rEph, rEphSec)
 						if parsed.Info.Chat == types.StatusBroadcastJID {
+							enrichStatusPayload(parsed.Info.Sender, rPayload)
 							emitJSON("STATUS_UPSERT", rPayload)
 						} else {
 							emitJSON("MESSAGE_UPSERT", rPayload)
@@ -2900,7 +2908,7 @@ func processIncomingMessage(evt *events.Message) {
 		enqueueAvatarFetch(evt.Info.Chat)
 	}
 	if evt.Info.Chat == types.StatusBroadcastJID {
-		enqueueAvatarFetch(evt.Info.Sender)
+		enrichStatusPayload(evt.Info.Sender, payload)
 		emitJSON("STATUS_UPSERT", payload)
 	} else {
 		emitJSON("MESSAGE_UPSERT", payload)
@@ -3005,7 +3013,7 @@ func processHistorySync(evt *events.HistorySync) {
 
 	for _, conv := range evt.Data.GetConversations() {
 		rawChatJID, err := types.ParseJID(conv.GetID())
-		if err != nil {
+		if err != nil || rawChatJID.IsEmpty() || rawChatJID == types.StatusBroadcastJID || rawChatJID.Server == types.BroadcastServer {
 			continue
 		}
 		if cli.Store != nil && cli.Store.LIDs != nil && conv.GetPnJID() != "" && conv.GetLidJID() != "" {
@@ -3018,6 +3026,9 @@ func processHistorySync(evt *events.HistorySync) {
 		chatJID, altJID := canonicalizeDMChatJID(baseCtx, cli, rawChatJID)
 		if chatJID.IsEmpty() {
 			chatJID = rawChatJID
+		}
+		if chatJID == types.StatusBroadcastJID || chatJID.Server == types.BroadcastServer {
+			continue
 		}
 		if altJID.IsEmpty() {
 			altJID = resolveAlternateChatJID(baseCtx, cli, chatJID)
@@ -3037,8 +3048,6 @@ func processHistorySync(evt *events.HistorySync) {
 				altJID = resolvedAlt
 			}
 		}
-		enqueueAvatarFetch(chatJID)
-		convJIDs[chatJID.String()] = true
 		cm := chatMeta{
 			JID:               chatJID.String(),
 			AltJID:            altJID.String(),
@@ -3053,37 +3062,6 @@ func processHistorySync(evt *events.HistorySync) {
 			MuteEndTime:       conv.GetMuteEndTime(),
 			LastTimestampMs:   int64(conv.GetConversationTimestamp()) * 1000,
 			EphemeralSec:      conv.GetEphemeralExpiration(),
-		}
-		if idx, exists := chatBatchIdx[cm.JID]; exists {
-			prev := chatBatch[idx]
-			if prev.AltJID == "" {
-				prev.AltJID = cm.AltJID
-			}
-			if prev.Name == "" || strings.HasPrefix(prev.Name, "+") || prev.Name == chatJID.User {
-				if cm.Name != "" {
-					prev.Name = cm.Name
-				}
-			}
-			if cm.UnreadCount > prev.UnreadCount {
-				prev.UnreadCount = cm.UnreadCount
-			}
-			if cm.LastTimestampMs > prev.LastTimestampMs {
-				prev.LastTimestampMs = cm.LastTimestampMs
-			}
-			prev.Archived = prev.Archived || cm.Archived
-			if cm.Pinned > prev.Pinned {
-				prev.Pinned = cm.Pinned
-			}
-			if cm.MuteEndTime > prev.MuteEndTime {
-				prev.MuteEndTime = cm.MuteEndTime
-			}
-			if cm.EphemeralSec > prev.EphemeralSec {
-				prev.EphemeralSec = cm.EphemeralSec
-			}
-			chatBatch[idx] = prev
-		} else {
-			chatBatchIdx[cm.JID] = len(chatBatch)
-			chatBatch = append(chatBatch, cm)
 		}
 
 		convMsgs := make([]histMsgEntry, 0, len(conv.GetMessages()))
@@ -3253,6 +3231,47 @@ func processHistorySync(evt *events.HistorySync) {
 			}
 		}
 
+		isGroupOrChannel := chatJID.Server == types.GroupServer || chatJID.Server == types.NewsletterServer
+		if !isGroupOrChannel && len(convMsgs) == 0 {
+			// Skip empty DM conversation stubs (unchatted @lid co-members, cleared/metadata stubs)
+			// so they never flood the home chat list or trigger stranger avatar requests.
+			continue
+		}
+
+		enqueueAvatarFetch(chatJID)
+		convJIDs[chatJID.String()] = true
+		if idx, exists := chatBatchIdx[cm.JID]; exists {
+			prev := chatBatch[idx]
+			if prev.AltJID == "" {
+				prev.AltJID = cm.AltJID
+			}
+			if prev.Name == "" || strings.HasPrefix(prev.Name, "+") || prev.Name == chatJID.User {
+				if cm.Name != "" {
+					prev.Name = cm.Name
+				}
+			}
+			if cm.UnreadCount > prev.UnreadCount {
+				prev.UnreadCount = cm.UnreadCount
+			}
+			if cm.LastTimestampMs > prev.LastTimestampMs {
+				prev.LastTimestampMs = cm.LastTimestampMs
+			}
+			prev.Archived = prev.Archived || cm.Archived
+			if cm.Pinned > prev.Pinned {
+				prev.Pinned = cm.Pinned
+			}
+			if cm.MuteEndTime > prev.MuteEndTime {
+				prev.MuteEndTime = cm.MuteEndTime
+			}
+			if cm.EphemeralSec > prev.EphemeralSec {
+				prev.EphemeralSec = cm.EphemeralSec
+			}
+			chatBatch[idx] = prev
+		} else {
+			chatBatchIdx[cm.JID] = len(chatBatch)
+			chatBatch = append(chatBatch, cm)
+		}
+
 		// Sort messages within this conversation chronologically and assign +1ms tie-breakers for same-second messages
 		sort.SliceStable(convMsgs, func(i, j int) bool {
 			if convMsgs[i].tsMs != convMsgs[j].tsMs {
@@ -3394,18 +3413,72 @@ func processHistoryStatus(cli *whatsmeow.Client, webMsg *waWeb.WebMessageInfo) {
 		return
 	}
 	if !parsed.Info.Sender.IsEmpty() {
-		if normSender := normalizeUserJID(cli, parsed.Info.Sender.String()); normSender != "" {
-			payload["senderJid"] = normSender
-		}
-		if name, _, _ := resolveBestContactName(baseCtx, cli, parsed.Info.Sender); name != "" {
-			payload["senderName"] = name
-		}
-		enqueueAvatarFetch(parsed.Info.Sender)
+		enrichStatusPayload(parsed.Info.Sender, payload)
 	}
 	emitJSON("STATUS_UPSERT", payload)
 	if shouldAutoDownloadMedia(job) {
 		enqueueMedia(job)
 	}
+}
+
+func isNumericOrPhoneDisplayName(name string) bool {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return false
+	}
+	digits := 0
+	for _, r := range trimmed {
+		switch {
+		case r >= '0' && r <= '9':
+			digits++
+		case r == '+' || r == ' ' || r == '-' || r == '(' || r == ')':
+		default:
+			return false
+		}
+	}
+	return digits > 0
+}
+
+// enrichStatusPayload canonicalizes status sender JIDs, preserves alternate JIDs,
+// and resolves the strongest saved-contact or push name before emitting STATUS_UPSERT.
+func enrichStatusPayload(sender types.JID, payload map[string]any) {
+	if sender.IsEmpty() || payload == nil {
+		return
+	}
+	mu.Lock()
+	cli := client
+	ctx := baseCtx
+	mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	canonSender, altSender := canonicalizeDMChatJID(ctx, cli, sender)
+	if canonSender.IsEmpty() {
+		canonSender = sender.ToNonAD()
+	}
+	if s := canonSender.String(); s != "" {
+		payload["senderJid"] = s
+	} else if norm := normalizeUserJID(cli, sender.String()); norm != "" {
+		payload["senderJid"] = norm
+	}
+	if !altSender.IsEmpty() {
+		payload["altSenderJid"] = altSender.String()
+	}
+
+	existingName, _ := payload["senderName"].(string)
+	existingName = strings.TrimSpace(existingName)
+	bestName, isSaved, _ := resolveBestContactName(ctx, cli, canonSender)
+	if bestName == "" && canonSender != sender.ToNonAD() {
+		bestName, isSaved, _ = resolveBestContactName(ctx, cli, sender.ToNonAD())
+	}
+	bestName = strings.TrimSpace(bestName)
+	if bestName != "" {
+		if isSaved || existingName == "" || isNumericOrPhoneDisplayName(existingName) || !isNumericOrPhoneDisplayName(bestName) {
+			payload["senderName"] = bestName
+		}
+	}
+	enqueueAvatarFetch(canonSender)
 }
 
 func buildNormalizedMessage(
@@ -3447,11 +3520,12 @@ func buildNormalizedMessage(
 	if chatStr == "" {
 		chatStr = info.Chat.String()
 	}
-	canonSender, _ := canonicalizeDMChatJID(ctx, cli, info.Sender)
+	canonSender, altSender := canonicalizeDMChatJID(ctx, cli, info.Sender)
 	senderStr := canonSender.String()
 	if senderStr == "" {
 		senderStr = info.Sender.String()
 	}
+	altSenderStr := altSender.String()
 
 	resolvedSenderName := strings.TrimSpace(info.PushName)
 	if cli != nil && !info.Sender.IsEmpty() {
@@ -3479,6 +3553,7 @@ func buildNormalizedMessage(
 		"chatJid":           chatStr,
 		"altChatJid":        altChat.String(),
 		"senderJid":         senderStr,
+		"altSenderJid":      altSenderStr,
 		"senderName":        resolvedSenderName,
 		"isFromMe":          info.IsFromMe,
 		"isGroup":           info.IsGroup,
@@ -4476,6 +4551,105 @@ func ToggleNewsletterMute(channelJid string, muted bool) error {
 		"muted":   muted,
 		"muteEnd": int64(0),
 	})
+	return nil
+}
+
+func emitChatRangeMetaUpdate(kind string, jid types.JID, msgRange *waSyncAction.SyncActionMessageRange, deleteMedia bool, fromFullSync bool, ts time.Time) {
+	mu.Lock()
+	cCli := client
+	cCtx := baseCtx
+	mu.Unlock()
+	var lastMsgTsMs int64
+	if msgRange != nil {
+		lastMsgTsMs = msgRange.GetLastMessageTimestamp() * 1000
+	}
+	alt := resolveAlternateChatJID(cCtx, cCli, jid)
+	emitJSON("CHAT_META_UPDATE", map[string]any{
+		"kind":                   kind,
+		"jid":                    jid.String(),
+		"altJid":                 alt.String(),
+		"deleteMedia":            deleteMedia,
+		"fromFullSync":           fromFullSync,
+		"lastMessageTimestampMs": lastMsgTsMs,
+		"timestamp":              ts.UnixMilli(),
+	})
+}
+
+func buildDeleteChatMessageKey(target types.JID, messageID string, fromMe bool, participantJID string) *waCommon.MessageKey {
+	id := strings.TrimSpace(messageID)
+	if id == "" {
+		return nil
+	}
+	key := &waCommon.MessageKey{
+		RemoteJID: proto.String(target.String()),
+		FromMe:    proto.Bool(fromMe),
+		ID:        proto.String(id),
+	}
+	if target.Server == types.GroupServer && !fromMe {
+		pStr := strings.TrimSpace(participantJID)
+		if pStr != "" {
+			if parsedP, err := types.ParseJID(pStr); err == nil && !parsedP.IsEmpty() {
+				key.Participant = proto.String(parsedP.ToNonAD().String())
+			} else {
+				key.Participant = proto.String(pStr)
+			}
+		}
+	}
+	return key
+}
+
+// DeleteChatRemote pushes an AppState DeleteChat mutation to WhatsApp so the chat
+// is also deleted on the primary phone and linked companion devices.
+func DeleteChatRemote(chatJid string, lastMsgId string, lastMsgFromMe bool, lastMsgParticipant string, lastMsgTimestampMs int64, deleteMedia bool) error {
+	mu.Lock()
+	cli := client
+	ctx := baseCtx
+	mu.Unlock()
+	if cli == nil {
+		return errors.New("client not initialized")
+	}
+	if cli.Store == nil || cli.Store.ID == nil {
+		return errors.New("not paired")
+	}
+	chat, err := types.ParseJID(strings.TrimSpace(chatJid))
+	if err != nil || chat.IsEmpty() {
+		return fmt.Errorf("invalid chat jid: %s", chatJid)
+	}
+	if chat.Server != types.DefaultUserServer && chat.Server != types.HiddenUserServer && chat.Server != types.GroupServer {
+		return nil
+	}
+	if !ensureConnectedAndAuthenticated(cli, 6*time.Second) {
+		return errors.New("not connected to WhatsApp")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lastTs := time.Now()
+	if lastMsgTimestampMs > 0 {
+		lastTs = time.UnixMilli(lastMsgTimestampMs)
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	altChat := resolveAlternateChatJID(sendCtx, cli, chat)
+	key := buildDeleteChatMessageKey(chat, lastMsgId, lastMsgFromMe, lastMsgParticipant)
+	appErr := cli.SendAppState(sendCtx, appstate.BuildDeleteChat(chat, lastTs, key, deleteMedia))
+
+	var altAppErr error
+	if !altChat.IsEmpty() && (chat.Server == types.DefaultUserServer || chat.Server == types.HiddenUserServer) {
+		altKey := buildDeleteChatMessageKey(altChat, lastMsgId, lastMsgFromMe, lastMsgParticipant)
+		altAppErr = cli.SendAppState(sendCtx, appstate.BuildDeleteChat(altChat, lastTs, altKey, deleteMedia))
+	}
+
+	emitJSON("BRIDGE_LOG", map[string]any{
+		"level":  "INFO",
+		"module": "DeleteChat",
+		"msg":    fmt.Sprintf("chat=%s alt=%s msgId=%s err=%v altErr=%v", chat.String(), altChat.String(), strings.TrimSpace(lastMsgId), appErr, altAppErr),
+	})
+
+	if appErr != nil && (altChat.IsEmpty() || altAppErr != nil) {
+		return appErr
+	}
 	return nil
 }
 

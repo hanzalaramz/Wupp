@@ -43,6 +43,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -330,14 +333,35 @@ fun WallpaperPickerDialog(
     onPickCustomImage: (Uri) -> Unit,
     onDimChange: (Float) -> Unit,
     onToggleDoodle: (Boolean) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    chatTitle: String? = null,
+    hasChatOverride: Boolean = false,
+    chatUri: String = currentUri,
+    chatDim: Float = currentDim,
+    chatShowDoodle: Boolean = showDoodleOnPresets,
+    onSelectChatUri: ((String) -> Unit)? = null,
+    onPickChatCustomImage: ((Uri) -> Unit)? = null,
+    onChatDimChange: ((Float) -> Unit)? = null,
+    onToggleChatDoodle: ((Boolean) -> Unit)? = null,
+    onResetChatToGlobal: (() -> Unit)? = null
 ) {
     val colors = LocalWaColors.current
+    val supportsPerChat = !chatTitle.isNullOrBlank() && onSelectChatUri != null && onPickChatCustomImage != null
+    var editThisChat by remember(chatTitle) { mutableStateOf(supportsPerChat) }
+
+    val activeUri = if (supportsPerChat && editThisChat) chatUri else currentUri
+    val activeDim = if (supportsPerChat && editThisChat) chatDim else currentDim
+    val activeShowDoodle = if (supportsPerChat && editThisChat) chatShowDoodle else showDoodleOnPresets
+
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            onPickCustomImage(uri)
+            if (supportsPerChat && editThisChat) {
+                onPickChatCustomImage?.invoke(uri)
+            } else {
+                onPickCustomImage(uri)
+            }
         }
     }
 
@@ -346,14 +370,56 @@ fun WallpaperPickerDialog(
         containerColor = colors.elevatedBar,
         title = {
             Text(
-                text = "Chat Wallpaper",
+                text = if (supportsPerChat && editThisChat) "Wallpaper for $chatTitle" else "Chat Wallpaper",
                 color = colors.textPrimary,
                 fontWeight = FontWeight.SemiBold,
-                fontSize = 18.sp
+                fontSize = 18.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (supportsPerChat) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(colors.chatCanvas)
+                            .padding(3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        val scopeOptions = listOf(true to "This chat", false to "All chats")
+                        scopeOptions.forEach { (isThisChat, label) ->
+                            val selected = editThisChat == isThisChat
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (selected) colors.accentGreen else Color.Transparent)
+                                    .clickable { editThisChat = isThisChat }
+                                    .padding(vertical = 7.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    color = if (selected) Color.White else colors.textSecondary,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+                    if (editThisChat && !hasChatOverride) {
+                        Text(
+                            text = "Currently using global wallpaper (${describeChatWallpaper(currentUri)}). Pick a photo or preset to customize only this chat.",
+                            color = colors.textSecondary,
+                            fontSize = 11.5.sp,
+                            lineHeight = 15.sp
+                        )
+                    }
+                }
+
                 // Live chat preview banner
                 Surface(
                     shape = RoundedCornerShape(14.dp),
@@ -364,9 +430,9 @@ fun WallpaperPickerDialog(
                         .border(1.dp, colors.divider, RoundedCornerShape(14.dp))
                 ) {
                     DoodleBackground(
-                        wallpaperUriOverride = currentUri,
-                        wallpaperDimOverride = currentDim,
-                        showDoodleOverride = showDoodleOnPresets,
+                        wallpaperUriOverride = activeUri,
+                        wallpaperDimOverride = activeDim,
+                        showDoodleOverride = activeShowDoodle,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(
@@ -380,9 +446,11 @@ fun WallpaperPickerDialog(
                                 color = colors.incomingBubble
                             ) {
                                 Text(
-                                    text = "Custom background preview",
+                                    text = if (supportsPerChat && editThisChat) "Custom background for $chatTitle" else "Custom background preview",
                                     color = colors.textPrimary,
                                     fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                                 )
                             }
@@ -395,7 +463,11 @@ fun WallpaperPickerDialog(
                                     color = colors.outgoingBubble
                                 ) {
                                     Text(
-                                        text = describeChatWallpaper(currentUri),
+                                        text = if (supportsPerChat && editThisChat && !hasChatOverride) {
+                                            "Global: ${describeChatWallpaper(activeUri)}"
+                                        } else {
+                                            describeChatWallpaper(activeUri)
+                                        },
                                         color = colors.textPrimary,
                                         fontSize = 12.sp,
                                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
@@ -433,7 +505,13 @@ fun WallpaperPickerDialog(
                         Text("From gallery", fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     TextButton(
-                        onClick = { onSelectUri("") }
+                        onClick = {
+                            if (supportsPerChat && editThisChat) {
+                                onResetChatToGlobal?.invoke() ?: onSelectChatUri?.invoke("")
+                            } else {
+                                onSelectUri("")
+                            }
+                        }
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.RestartAlt,
@@ -442,7 +520,11 @@ fun WallpaperPickerDialog(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Default", color = colors.textSecondary, fontSize = 13.sp)
+                        Text(
+                            text = if (supportsPerChat && editThisChat) "Use global" else "Default",
+                            color = colors.textSecondary,
+                            fontSize = 13.sp
+                        )
                     }
                 }
 
@@ -461,11 +543,17 @@ fun WallpaperPickerDialog(
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         ChatWallpaperPresets.forEach { preset ->
-                            val isSelected = currentUri == preset.storageUri
+                            val isSelected = activeUri == preset.storageUri
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(4.dp),
-                                modifier = Modifier.clickable { onSelectUri(preset.storageUri) }
+                                modifier = Modifier.clickable {
+                                    if (supportsPerChat && editThisChat) {
+                                        onSelectChatUri?.invoke(preset.storageUri)
+                                    } else {
+                                        onSelectUri(preset.storageUri)
+                                    }
+                                }
                             ) {
                                 Box(
                                     modifier = Modifier
@@ -498,16 +586,22 @@ fun WallpaperPickerDialog(
                     }
                 }
 
-                if (currentUri.startsWith("file:")) {
+                if (activeUri.startsWith("file:")) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            text = "Overlay dimness (${(currentDim * 100).toInt()}%)",
+                            text = "Overlay dimness (${(activeDim * 100).toInt()}%)",
                             color = colors.textSecondary,
                             fontSize = 12.sp
                         )
                         Slider(
-                            value = currentDim.coerceIn(0f, 0.75f),
-                            onValueChange = onDimChange,
+                            value = activeDim.coerceIn(0f, 0.75f),
+                            onValueChange = { dimVal ->
+                                if (supportsPerChat && editThisChat) {
+                                    onChatDimChange?.invoke(dimVal)
+                                } else {
+                                    onDimChange(dimVal)
+                                }
+                            },
                             valueRange = 0f..0.75f,
                             colors = SliderDefaults.colors(
                                 thumbColor = colors.brightGreen,
@@ -516,7 +610,7 @@ fun WallpaperPickerDialog(
                             )
                         )
                     }
-                } else if (currentUri.startsWith("preset:")) {
+                } else if (activeUri.startsWith("preset:")) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -528,8 +622,14 @@ fun WallpaperPickerDialog(
                             fontSize = 13.5.sp
                         )
                         Switch(
-                            checked = showDoodleOnPresets,
-                            onCheckedChange = onToggleDoodle,
+                            checked = activeShowDoodle,
+                            onCheckedChange = { checked ->
+                                if (supportsPerChat && editThisChat) {
+                                    onToggleChatDoodle?.invoke(checked)
+                                } else {
+                                    onToggleDoodle(checked)
+                                }
+                            },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color.White,
                                 checkedTrackColor = colors.accentGreen

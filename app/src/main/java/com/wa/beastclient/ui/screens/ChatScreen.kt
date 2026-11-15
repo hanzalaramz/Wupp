@@ -148,6 +148,7 @@ import com.wa.beastclient.ui.components.WallpaperPickerDialog
 import com.wa.beastclient.ui.components.WhatsAppBubbleShape
 import com.wa.beastclient.ui.components.WhatsAppClusterInnerShape
 import com.wa.beastclient.ui.components.formatMessageClock
+import com.wa.beastclient.ui.components.wuppGlassSurface
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
 import kotlinx.coroutines.Dispatchers
@@ -183,6 +184,12 @@ fun ChatScreen(
     val isGroupAnnounceLocked by remember(chatJid) { viewModel.isGroupAnnounceLocked(chatJid) }.collectAsState(initial = false)
     val effectivePrivacy by remember(chatJid) { viewModel.observeEffectivePrivacy(chatJid) }.collectAsState(initial = null)
     val stealthConfig by viewModel.stealthConfig.collectAsState()
+    val effectiveWallpaper = remember(chatJid, stealthConfig) {
+        StealthMatrixManager.resolveChatWallpaper(chatJid, cfg = stealthConfig)
+    }
+    val hasChatWallpaperOverride = remember(chatJid, stealthConfig) {
+        StealthMatrixManager.hasChatWallpaperOverride(chatJid, cfg = stealthConfig)
+    }
     val canSendOutbound by remember(chatJid) { viewModel.canInitiateOutbound(chatJid) }.collectAsState(initial = true)
     val isRecordingVoice by viewModel.isRecordingVoice.collectAsState()
     val downloadingMediaIds by viewModel.downloadingMediaIds.collectAsState()
@@ -634,6 +641,9 @@ fun ChatScreen(
         }
     ) { innerPadding ->
         DoodleBackground(
+            wallpaperUriOverride = effectiveWallpaper.uri,
+            wallpaperDimOverride = effectiveWallpaper.dim,
+            showDoodleOverride = effectiveWallpaper.showDoodle,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
@@ -1011,9 +1021,13 @@ fun ChatScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 10.dp, vertical = 2.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(colors.elevatedBar)
+                                .padding(horizontal = 10.dp, vertical = 3.dp)
+                                .wuppGlassSurface(
+                                    colors = colors,
+                                    shape = RoundedCornerShape(16.dp),
+                                    elevation = 8.dp,
+                                    alpha = if (colors.isDark) 0.80f else 0.90f
+                                )
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -1050,14 +1064,18 @@ fun ChatScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.Bottom
                 ) {
                     Row(
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(26.dp))
-                            .background(colors.elevatedBar)
+                            .wuppGlassSurface(
+                                colors = colors,
+                                shape = RoundedCornerShape(26.dp),
+                                elevation = 12.dp,
+                                alpha = if (colors.isDark) 0.78f else 0.90f
+                            )
                             .padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -1291,6 +1309,7 @@ fun ChatScreen(
     }
 
     if (showWallpaperDialog) {
+        val chatTitle = chat?.name?.takeIf { it.isNotBlank() } ?: chatJid.substringBefore("@")
         WallpaperPickerDialog(
             currentUri = stealthConfig.chatWallpaperUri,
             currentDim = stealthConfig.chatWallpaperDim,
@@ -1299,7 +1318,17 @@ fun ChatScreen(
             onPickCustomImage = { viewModel.importChatWallpaperFromUri(it) },
             onDimChange = { viewModel.setChatWallpaperDim(it) },
             onToggleDoodle = { viewModel.setChatWallpaperShowDoodle(it) },
-            onDismiss = { showWallpaperDialog = false }
+            onDismiss = { showWallpaperDialog = false },
+            chatTitle = chatTitle,
+            hasChatOverride = hasChatWallpaperOverride,
+            chatUri = effectiveWallpaper.uri,
+            chatDim = effectiveWallpaper.dim,
+            chatShowDoodle = effectiveWallpaper.showDoodle,
+            onSelectChatUri = { viewModel.setPerChatWallpaper(chatJid, it) },
+            onPickChatCustomImage = { viewModel.importPerChatWallpaperFromUri(chatJid, it) },
+            onChatDimChange = { viewModel.setPerChatWallpaperDim(chatJid, it) },
+            onToggleChatDoodle = { viewModel.setPerChatWallpaperShowDoodle(chatJid, it) },
+            onResetChatToGlobal = { viewModel.clearPerChatWallpaper(chatJid) }
         )
     }
 

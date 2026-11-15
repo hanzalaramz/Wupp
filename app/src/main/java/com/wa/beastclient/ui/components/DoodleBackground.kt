@@ -69,7 +69,11 @@ fun describeChatWallpaper(uri: String): String = when {
     else -> "Default doodle"
 }
 
-fun copyCustomWallpaperImage(context: Context, sourceUri: Uri): String? {
+fun copyCustomWallpaperImage(
+    context: Context,
+    sourceUri: Uri,
+    keepFilePaths: Set<String> = emptySet()
+): String? {
     return runCatching {
         val resolver = context.applicationContext.contentResolver
         val dir = File(context.applicationContext.filesDir, "wallpapers").apply { mkdirs() }
@@ -130,7 +134,7 @@ fun copyCustomWallpaperImage(context: Context, sourceUri: Uri): String? {
         bitmap.recycle()
 
         dir.listFiles()?.forEach { f ->
-            if (f.name != outFile.name && f.name.startsWith("chat_bg_")) {
+            if (f.name != outFile.name && f.name.startsWith("chat_bg_") && f.absolutePath !in keepFilePaths) {
                 f.delete()
             }
         }

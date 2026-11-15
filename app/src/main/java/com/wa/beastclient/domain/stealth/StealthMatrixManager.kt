@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
 
@@ -20,6 +21,12 @@ enum class AutoDownloadNetwork(val label: String) {
     WIFI("When connected on Wi-Fi"),
     ROAMING("When roaming")
 }
+
+data class ChatWallpaperOverride(
+    val uri: String = "",
+    val dim: Float = 0.28f,
+    val showDoodle: Boolean = true
+)
 
 data class GlobalStealthConfig(
     val ghostPresence: Boolean = true,
@@ -33,6 +40,7 @@ data class GlobalStealthConfig(
     val chatWallpaperUri: String = "",
     val chatWallpaperDim: Float = 0.28f,
     val chatWallpaperShowDoodle: Boolean = true,
+    val perChatWallpapers: Map<String, ChatWallpaperOverride> = emptyMap(),
     val autoDownloadEnabled: Boolean = true,
     val autoDownloadMobileMask: Int = StealthMatrixManager.MEDIA_ALL,
     val autoDownloadWifiMask: Int = StealthMatrixManager.MEDIA_ALL,
@@ -84,6 +92,7 @@ object StealthMatrixManager {
     private const val KEY_CHAT_WALLPAPER_URI = "chat_wallpaper_uri"
     private const val KEY_CHAT_WALLPAPER_DIM = "chat_wallpaper_dim"
     private const val KEY_CHAT_WALLPAPER_DOODLE = "chat_wallpaper_doodle"
+    private const val KEY_CHAT_WALLPAPER_OVERRIDES = "chat_wallpaper_overrides_json"
     private const val KEY_AUTO_DL_ENABLED = "auto_download_enabled"
     private const val KEY_AUTO_DL_MOBILE = "auto_download_mobile_mask"
     private const val KEY_AUTO_DL_WIFI = "auto_download_wifi_mask"
@@ -127,6 +136,7 @@ object StealthMatrixManager {
                 chatWallpaperUri = prefs.getString(KEY_CHAT_WALLPAPER_URI, "") ?: "",
                 chatWallpaperDim = prefs.getFloat(KEY_CHAT_WALLPAPER_DIM, 0.28f),
                 chatWallpaperShowDoodle = prefs.getBoolean(KEY_CHAT_WALLPAPER_DOODLE, true),
+                perChatWallpapers = parsePerChatWallpapers(prefs.getString(KEY_CHAT_WALLPAPER_OVERRIDES, null)),
                 autoDownloadEnabled = prefs.getBoolean(KEY_AUTO_DL_ENABLED, true),
                 autoDownloadMobileMask = prefs.getInt(KEY_AUTO_DL_MOBILE, MEDIA_ALL),
                 autoDownloadWifiMask = prefs.getInt(KEY_AUTO_DL_WIFI, MEDIA_ALL),
@@ -157,6 +167,7 @@ object StealthMatrixManager {
                 .putString(KEY_CHAT_WALLPAPER_URI, updated.chatWallpaperUri)
                 .putFloat(KEY_CHAT_WALLPAPER_DIM, updated.chatWallpaperDim)
                 .putBoolean(KEY_CHAT_WALLPAPER_DOODLE, updated.chatWallpaperShowDoodle)
+                .putString(KEY_CHAT_WALLPAPER_OVERRIDES, encodePerChatWallpapers(updated.perChatWallpapers))
                 .putBoolean(KEY_AUTO_DL_ENABLED, updated.autoDownloadEnabled)
                 .putInt(KEY_AUTO_DL_MOBILE, updated.autoDownloadMobileMask)
                 .putInt(KEY_AUTO_DL_WIFI, updated.autoDownloadWifiMask)
@@ -322,6 +333,109 @@ object StealthMatrixManager {
 
     suspend fun clearChatPrivacyOverride(dao: WaDao, chatJid: String) {
         dao.deletePrivacyRule(chatJid)
+    }
+
+    fun hasChatWallpaperOverride(
+        chatJid: String,
+        altChatJid: String = "",
+        cfg: GlobalStealthConfig = _config.value
+    ): Boolean {
+        if (chatJid.isNotBlank() && cfg.perChatWallpapers.containsKey(chatJid)) return true
+        return altChatJid.isNotBlank() && cfg.perChatWallpapers.containsKey(altChatJid)
+    }
+
+    fun resolveChatWallpaper(
+        chatJid: String,
+        altChatJid: String = "",
+        cfg: GlobalStealthConfig = _config.value
+    ): ChatWallpaperOverride {
+        val direct = cfg.perChatWallpapers[chatJid]
+            ?: altChatJid.takeIf { it.isNotBlank() }?.let { cfg.perChatWallpapers[it] }
+        if (direct != null) return direct
+        return ChatWallpaperOverride(
+            uri = cfg.chatWallpaperUri,
+            dim = cfg.chatWallpaperDim,
+            showDoodle = cfg.chatWallpaperShowDoodle
+        )
+    }
+
+    fun setChatWallpaperOverride(
+        chatJid: String,
+        transform: (ChatWallpaperOverride) -> ChatWallpaperOverride
+    ) {
+        if (chatJid.isBlank()) return
+        updateConfig { cfg ->
+            val current = cfg.perChatWallpapers[chatJid] ?: ChatWallpaperOverride(
+                uri = cfg.chatWallpaperUri,
+                dim = cfg.chatWallpaperDim,
+                showDoodle = cfg.chatWallpaperShowDoodle
+            )
+            val updated = transform(current)
+            val nextMap = cfg.perChatWallpapers.toMutableMap()
+            nextMap[chatJid] = updated
+            cfg.copy(perChatWallpapers = nextMap)
+        }
+    }
+
+    fun clearChatWallpaperOverride(chatJid: String, altChatJid: String = "") {
+        updateConfig { cfg ->
+            val nextMap = cfg.perChatWallpapers.toMutableMap()
+            var changed = nextMap.remove(chatJid) != null
+            if (altChatJid.isNotBlank() && nextMap.remove(altChatJid) != null) {
+                changed = true
+            }
+            if (!changed) cfg else cfg.copy(perChatWallpapers = nextMap)
+        }
+    }
+
+    fun referencedWallpaperFilePaths(cfg: GlobalStealthConfig = _config.value): Set<String> {
+        val paths = mutableSetOf<String>()
+        if (cfg.chatWallpaperUri.startsWith("file:")) {
+            paths.add(cfg.chatWallpaperUri.removePrefix("file:"))
+        }
+        cfg.perChatWallpapers.values.forEach { entry ->
+            if (entry.uri.startsWith("file:")) {
+                paths.add(entry.uri.removePrefix("file:"))
+            }
+        }
+        return paths
+    }
+
+    private fun parsePerChatWallpapers(rawJson: String?): Map<String, ChatWallpaperOverride> {
+        if (rawJson.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val obj = JSONObject(rawJson)
+            buildMap {
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val jid = keys.next()
+                    val item = obj.optJSONObject(jid) ?: continue
+                    put(
+                        jid,
+                        ChatWallpaperOverride(
+                            uri = item.optString("uri", ""),
+                            dim = item.optDouble("dim", 0.28).toFloat().coerceIn(0f, 0.75f),
+                            showDoodle = item.optBoolean("showDoodle", true)
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun encodePerChatWallpapers(map: Map<String, ChatWallpaperOverride>): String {
+        if (map.isEmpty()) return ""
+        val root = JSONObject()
+        map.forEach { (jid, entry) ->
+            root.put(
+                jid,
+                JSONObject()
+                    .put("uri", entry.uri)
+                    .put("dim", entry.dim.toDouble())
+                    .put("showDoodle", entry.showDoodle)
+            )
+        }
+        return root.toString()
     }
 
     private fun resolvePrivacy(

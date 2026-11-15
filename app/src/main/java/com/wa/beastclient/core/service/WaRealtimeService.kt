@@ -114,6 +114,41 @@ class WaRealtimeService : Service() {
         return mapped
     }
 
+    private fun stripJidDevice(rawJid: String): String {
+        val trimmed = rawJid.trim()
+        val atIdx = trimmed.indexOf('@')
+        if (atIdx <= 0) return trimmed
+        val user = trimmed.substring(0, atIdx).substringBefore(':')
+        val server = trimmed.substring(atIdx + 1)
+        return if (user.isNotBlank() && server.isNotBlank()) "$user@$server" else trimmed
+    }
+
+    private fun isNumericOrPhoneString(value: String): Boolean {
+        val trimmed = value.trim()
+        if (trimmed.isEmpty()) return false
+        var hasDigit = false
+        for (ch in trimmed) {
+            when {
+                ch.isDigit() -> hasDigit = true
+                ch == '+' || ch == '-' || ch == ' ' || ch == '(' || ch == ')' -> Unit
+                else -> return false
+            }
+        }
+        return hasDigit
+    }
+
+    private suspend fun propagateStatusAndSenderName(
+        rawJid: String,
+        name: String,
+        overwriteStatus: Boolean
+    ) {
+        val jid = stripJidDevice(rawJid)
+        if (jid.isBlank() || name.isBlank()) return
+        val user = jid.substringBefore("@")
+        dao.updateSenderNameForJid(jid, user, name)
+        dao.updateStatusSenderNameForJid(jid, user, name, overwrite = overwriteStatus)
+    }
+
     private suspend fun drainPendingReactions(messageId: String) {
         val queued = pendingReactions.remove(messageId) ?: return
         for (rx in queued) {
@@ -484,16 +519,16 @@ class WaRealtimeService : Service() {
                     if (canonicalJid.isNotBlank() && name.isNotBlank() && name != canonicalJid && name != canonicalJid.substringBefore("@")) {
                         pushnameCache[canonicalJid] = name
                         dao.updateChatName(canonicalJid, name, overwrite = false)
-                        dao.updateSenderNameForJid(canonicalJid, canonicalJid.substringBefore("@"), name)
+                        propagateStatusAndSenderName(canonicalJid, name, overwriteStatus = false)
                     }
                     if (jid != canonicalJid && jid.isNotBlank() && name.isNotBlank() && name != jid && name != jid.substringBefore("@")) {
                         pushnameCache[jid] = name
-                        dao.updateSenderNameForJid(jid, jid.substringBefore("@"), name)
+                        propagateStatusAndSenderName(jid, name, overwriteStatus = false)
                     }
                     if (altJid.isNotBlank() && name.isNotBlank() && name != altJid && name != altJid.substringBefore("@")) {
                         pushnameCache[altJid] = name
                         dao.updateChatName(altJid, name, overwrite = false)
-                        dao.updateSenderNameForJid(altJid, altJid.substringBefore("@"), name)
+                        propagateStatusAndSenderName(altJid, name, overwriteStatus = false)
                     }
                 }
             }
@@ -505,9 +540,10 @@ class WaRealtimeService : Service() {
                 for (i in 0 until chatsArr.length()) {
                     val c = chatsArr.optJSONObject(i) ?: continue
                     val rawJid = c.optString("jid")
-                    if (rawJid.isBlank()) continue
+                    if (rawJid.isBlank() || rawJid == "status@broadcast" || rawJid.endsWith("@broadcast")) continue
                     val altJid = c.optString("altJid")
                     val jid = canonicalizeAndMergeAlias(rawJid, altJid)
+                    if (jid == "status@broadcast" || jid.endsWith("@broadcast")) continue
                     val unread = c.optInt("unreadCount", 0)
                     unreadByChat[jid] = maxOf(unreadByChat[jid] ?: 0, unread)
                     val name = c.optString("name").ifBlank {
@@ -572,6 +608,7 @@ class WaRealtimeService : Service() {
             }
 
             dao.insertHistorySyncBatch(chatsList, msgList)
+            dao.cleanupEmptyProtocolChats()
             val rxArr = json.optJSONArray("reactions")
             if (rxArr != null) {
                 for (i in 0 until rxArr.length()) {
@@ -746,13 +783,49 @@ class WaRealtimeService : Service() {
     private suspend fun handleStatusUpsert(json: JSONObject) {
         val id = json.optString("id")
         if (id.isBlank()) return
-        val senderJid = json.optString("senderJid")
-        val resolvedName = json.optString("senderName").ifBlank {
-            dao.getChat(senderJid)?.name?.takeIf { it.isNotBlank() }
-                ?: pushnameCache[senderJid]
-                ?: senderJid.substringBefore("@").ifBlank { "Status" }
+        val rawSenderJid = stripJidDevice(json.optString("senderJid"))
+        val rawAltSenderJid = stripJidDevice(json.optString("altSenderJid"))
+        val senderJid = canonicalizeAndMergeAlias(rawSenderJid, rawAltSenderJid).ifBlank { rawSenderJid }
+        val candidateJids = listOf(senderJid, rawSenderJid, rawAltSenderJid)
+            .filter { it.isNotBlank() }
+            .distinct()
+
+        val rawName = json.optString("senderName").trim()
+        val rawIsUseful = rawName.isNotBlank() &&
+            !isNumericOrPhoneString(rawName) &&
+            rawName != senderJid &&
+            rawName != senderJid.substringBefore("@")
+        if (rawIsUseful && senderJid.isNotBlank()) {
+            pushnameCache.putIfAbsent(senderJid, rawName)
         }
-        val existingPath = dao.getStatusById(id)?.localMediaPath?.takeIf {
+
+        val chatBetterName = candidateJids.firstNotNullOfOrNull { j ->
+            dao.getChat(j)?.name?.trim()?.takeIf {
+                it.isNotBlank() && !isNumericOrPhoneString(it) && it != j && it != j.substringBefore("@")
+            }
+        }
+        val cacheBetterName = candidateJids.firstNotNullOfOrNull { j ->
+            pushnameCache[j]?.trim()?.takeIf {
+                it.isNotBlank() && !isNumericOrPhoneString(it) && it != j && it != j.substringBefore("@")
+            }
+        }
+        val existingStatus = dao.getStatusById(id)
+        val existingBetterName = existingStatus?.senderName?.trim()?.takeIf {
+            it.isNotBlank() && it != "Status" && !isNumericOrPhoneString(it) &&
+                it != senderJid && it != senderJid.substringBefore("@")
+        }
+
+        val resolvedName = when {
+            rawIsUseful -> rawName
+            chatBetterName != null -> chatBetterName
+            cacheBetterName != null -> cacheBetterName
+            existingBetterName != null -> existingBetterName
+            rawName.isNotBlank() -> rawName
+            else -> candidateJids.firstNotNullOfOrNull { j ->
+                dao.getChat(j)?.name?.takeIf { it.isNotBlank() } ?: pushnameCache[j]
+            } ?: senderJid.substringBefore("@").ifBlank { "Status" }
+        }
+        val existingPath = existingStatus?.localMediaPath?.takeIf {
             it.isNotBlank() && File(it).exists()
         }
         val status = StatusEntity(
@@ -1097,12 +1170,12 @@ class WaRealtimeService : Service() {
             if (canonicalJid.isNotBlank() && name != canonicalJid && name != canonicalJid.substringBefore("@")) {
                 pushnameCache[canonicalJid] = name
                 dao.updateChatName(canonicalJid, name, overwrite = isCustom)
-                dao.updateSenderNameForJid(canonicalJid, canonicalJid.substringBefore("@"), name)
+                propagateStatusAndSenderName(canonicalJid, name, overwriteStatus = isCustom)
             }
             if (altJid.isNotBlank() && name != altJid && name != altJid.substringBefore("@")) {
                 pushnameCache[altJid] = name
                 dao.updateChatName(altJid, name, overwrite = isCustom)
-                dao.updateSenderNameForJid(altJid, altJid.substringBefore("@"), name)
+                propagateStatusAndSenderName(altJid, name, overwriteStatus = isCustom)
             }
         }
     }
@@ -1187,11 +1260,11 @@ class WaRealtimeService : Service() {
                 if (name.isNotBlank()) {
                     pushnameCache[jid] = name
                     dao.updateChatName(jid, name, overwrite = true)
-                    dao.updateSenderNameForJid(jid, jid.substringBefore("@"), name)
+                    propagateStatusAndSenderName(jid, name, overwriteStatus = true)
                     if (altJid.isNotBlank()) {
                         pushnameCache[altJid] = name
                         dao.updateChatName(altJid, name, overwrite = true)
-                        dao.updateSenderNameForJid(altJid, altJid.substringBefore("@"), name)
+                        propagateStatusAndSenderName(altJid, name, overwriteStatus = true)
                     }
                 }
             }
@@ -1200,11 +1273,11 @@ class WaRealtimeService : Service() {
                 if (name.isNotBlank()) {
                     pushnameCache[jid] = name
                     dao.updateChatName(jid, name, overwrite = false)
-                    dao.updateSenderNameForJid(jid, jid.substringBefore("@"), name)
+                    propagateStatusAndSenderName(jid, name, overwriteStatus = false)
                     if (altJid.isNotBlank()) {
                         pushnameCache[altJid] = name
                         dao.updateChatName(altJid, name, overwrite = false)
-                        dao.updateSenderNameForJid(altJid, altJid.substringBefore("@"), name)
+                        propagateStatusAndSenderName(altJid, name, overwriteStatus = false)
                     }
                 }
             }
@@ -1215,6 +1288,49 @@ class WaRealtimeService : Service() {
             "MARK_READ" -> {
                 StealthMatrixManager.recordPrimaryHeartbeat(json.optLong("timestamp", System.currentTimeMillis()))
                 if (json.optBoolean("read")) dao.clearLocalUnread(jid)
+            }
+            "DELETE_CHAT", "CLEAR_CHAT" -> {
+                val lastMsgTsMs = json.optLong("lastMessageTimestampMs", 0L)
+                val targets = listOfNotNull(
+                    jid.takeIf { it.isNotBlank() },
+                    altJid.takeIf { it.isNotBlank() && it != jid }
+                )
+                val latestTs = targets.mapNotNull { dao.getLatestMessageForChat(it)?.timestamp }.maxOrNull() ?: 0L
+                val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                targets.forEach { t -> runCatching { mgr?.cancel(notificationIdForChat(t)) } }
+
+                if (kind == "DELETE_CHAT" && !(lastMsgTsMs > 0L && latestTs > lastMsgTsMs + 1000L)) {
+                    targets.forEach { t ->
+                        dao.deleteMessagesForChat(t)
+                        dao.deleteChatRow(t)
+                    }
+                } else {
+                    targets.forEach { t ->
+                        if (lastMsgTsMs > 0L) {
+                            dao.deleteMessagesForChatUpTo(t, lastMsgTsMs)
+                        } else {
+                            dao.deleteMessagesForChat(t)
+                        }
+                        val remainingLatest = dao.getLatestMessageForChat(t)
+                        if (remainingLatest != null) {
+                            dao.updateChatPreviewAfterClear(
+                                chatJid = t,
+                                preview = remainingLatest.body.ifBlank { remainingLatest.msgType },
+                                type = remainingLatest.msgType,
+                                timestamp = remainingLatest.timestamp,
+                                unreadCount = 0
+                            )
+                        } else {
+                            dao.updateChatPreviewAfterClear(
+                                chatJid = t,
+                                preview = "",
+                                type = "UNKNOWN",
+                                timestamp = if (kind == "CLEAR_CHAT") latestTs else 0L,
+                                unreadCount = 0
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -1295,6 +1411,24 @@ class WaRealtimeService : Service() {
             return ch.importance == NotificationManager.IMPORTANCE_NONE
         }
 
+        private tailrec fun findActivity(ctx: Context): android.app.Activity? = when (ctx) {
+            is android.app.Activity -> ctx
+            is android.content.ContextWrapper -> findActivity(ctx.baseContext)
+            else -> null
+        }
+
+        private fun launchSettingsIntent(context: Context, intent: Intent): Boolean =
+            runCatching {
+                val activity = findActivity(context)
+                if (activity != null) {
+                    activity.startActivity(intent)
+                } else {
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                }
+                true
+            }.getOrDefault(false)
+
         fun openNotificationChannelSettings(context: Context, channelId: String) {
             val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
@@ -1306,15 +1440,12 @@ class WaRealtimeService : Service() {
                     putExtra("app_package", context.packageName)
                     putExtra("app_uid", context.applicationInfo.uid)
                 }
-            }.apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            runCatching { context.startActivity(intent) }.onFailure {
+            if (!launchSettingsIntent(context, intent)) {
                 val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                     data = android.net.Uri.fromParts("package", context.packageName, null)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                runCatching { context.startActivity(fallback) }
+                launchSettingsIntent(context, fallback)
             }
         }
 
@@ -1324,27 +1455,18 @@ class WaRealtimeService : Service() {
         }
 
         fun openBatteryOptimizationSettings(context: Context) {
-            val pkgUri = android.net.Uri.parse("package:${context.packageName}")
-            val direct = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            val pkgUri = android.net.Uri.fromParts("package", context.packageName, null)
+            val appDetails = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                 data = pkgUri
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            val openedDirect = runCatching {
-                context.startActivity(direct)
-                true
-            }.getOrDefault(false)
-            if (!openedDirect) {
-                val listIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (!isIgnoringBatteryOptimizations(context)) {
+                val requestPrompt = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = pkgUri
                 }
-                runCatching { context.startActivity(listIntent) }.onFailure {
-                    val appSettings = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                        data = pkgUri
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    runCatching { context.startActivity(appSettings) }
-                }
+                if (launchSettingsIntent(context, requestPrompt)) return
             }
+            if (launchSettingsIntent(context, appDetails)) return
+            launchSettingsIntent(context, Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
         }
 
         @Volatile
@@ -1782,6 +1904,58 @@ class WaRealtimeService : Service() {
                     Unit
                 }
             }
+
+        suspend fun deleteChats(
+            context: Context,
+            chatJids: Collection<String>,
+            syncToWhatsApp: Boolean
+        ): Result<Unit> = withContext(Dispatchers.IO) {
+            runCatching {
+                val appCtx = context.applicationContext
+                val dao = WaUiDatabase.getInstance(appCtx).waDao()
+                val mgr = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                val remoteTargets = mutableListOf<Pair<String, com.wa.beastclient.data.db.MessageEntity?>>()
+
+                chatJids.distinct().forEach { jid ->
+                    val latest = dao.getLatestMessageForChat(jid)
+
+                    runCatching { mgr?.cancel(notificationIdForChat(jid)) }
+                    dao.deleteMessagesForChat(jid)
+                    dao.deleteChatRow(jid)
+
+                    if (syncToWhatsApp &&
+                        !jid.endsWith("@newsletter") &&
+                        !jid.endsWith("@broadcast")
+                    ) {
+                        remoteTargets.add(jid to latest)
+                    }
+                }
+
+                if (syncToWhatsApp && remoteTargets.isNotEmpty()) {
+                    if (!runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+                        throw IllegalStateException("Deleted locally, but WhatsApp isn't connected")
+                    }
+                    var firstRemoteErr: Throwable? = null
+                    remoteTargets.forEachIndexed { idx, (jid, latest) ->
+                        if (idx > 0) delay(150L)
+                        runCatching {
+                            Whatsbridge.deleteChatRemote(
+                                jid,
+                                latest?.id ?: "",
+                                latest?.isFromMe ?: false,
+                                latest?.senderJid ?: "",
+                                latest?.timestamp ?: 0L,
+                                false
+                            )
+                        }.onFailure { err ->
+                            if (firstRemoteErr == null) firstRemoteErr = err
+                        }
+                    }
+                    firstRemoteErr?.let { throw it }
+                }
+                Unit
+            }
+        }
 
         suspend fun sendReaction(
             context: Context,

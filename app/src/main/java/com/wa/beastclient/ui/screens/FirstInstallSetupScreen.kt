@@ -67,6 +67,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
 import com.wa.beastclient.R
+import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.ui.theme.LocalWaColors
 
 private data class SetupPermissionSnapshot(
@@ -137,21 +138,7 @@ private fun missingRuntimePermissions(snapshot: SetupPermissionSnapshot): List<S
 }
 
 private fun openBatteryOptimizationPrompt(context: Context) {
-    val pkgUri = Uri.parse("package:${context.packageName}")
-    val directIntent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-        data = pkgUri
-    }
-    val openedDirect = runCatching {
-        context.startActivity(directIntent)
-        true
-    }.getOrDefault(false)
-    if (!openedDirect) {
-        runCatching {
-            context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-        }.onFailure {
-            openAppPermissionSettings(context)
-        }
-    }
+    WaRealtimeService.openBatteryOptimizationSettings(context)
 }
 
 private fun openAppPermissionSettings(context: Context) {
