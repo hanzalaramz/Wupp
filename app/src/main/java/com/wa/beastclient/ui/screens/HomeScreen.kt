@@ -35,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
@@ -2254,8 +2255,12 @@ private fun ToolsVaultTab(
     var editingAutoDlNetwork by remember { mutableStateOf<AutoDownloadNetwork?>(null) }
     var showGalleryContactsDialog by remember { mutableStateOf(false) }
     var showWallpaperDialog by remember { mutableStateOf(false) }
+    var showHideNotifGuide by remember { mutableStateOf(false) }
     var isSyncNotifHidden by remember {
         mutableStateOf(WaRealtimeService.isRealtimeStatusNotificationHidden(context))
+    }
+    var isBatteryUnrestricted by remember {
+        mutableStateOf(WaRealtimeService.isIgnoringBatteryOptimizations(context))
     }
 
     DisposableEffect(context) {
@@ -2263,6 +2268,7 @@ private fun ToolsVaultTab(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 isSyncNotifHidden = WaRealtimeService.isRealtimeStatusNotificationHidden(context)
+                isBatteryUnrestricted = WaRealtimeService.isIgnoringBatteryOptimizations(context)
             }
         }
         lifecycleOwner?.lifecycle?.addObserver(observer)
@@ -2464,18 +2470,22 @@ private fun ToolsVaultTab(
             PatchSectionCard(title = "Notifications & Background Sync") {
                 PatchActionRow(
                     icon = if (isSyncNotifHidden) Icons.Rounded.NotificationsOff else Icons.Rounded.Notifications,
-                    title = "Hide Sync Status Notification",
+                    title = if (isSyncNotifHidden) "Persistent Sync Banner" else "Hide Persistent Sync Banner",
                     subtitle = if (isSyncNotifHidden) {
-                        "Hidden ('Wupp Realtime Sync' is off) — background sync & message alerts still run 24/7"
+                        "Hidden — 24/7 background sync & message alerts are still active"
                     } else {
-                        "Android requires a foreground service for background sync. Tap to turn off only the 'Wupp Realtime Sync' channel without breaking sync."
+                        "Remove the constant notification from your shade without breaking real-time sync or message alerts"
                     },
-                    badgeText = if (isSyncNotifHidden) "HIDDEN" else "TAP TO HIDE",
+                    badgeText = if (isSyncNotifHidden) "HIDDEN" else "1-TAP GUIDE",
                     onClick = {
-                        WaRealtimeService.openNotificationChannelSettings(
-                            context = context,
-                            channelId = WaRealtimeService.CHANNEL_ID
-                        )
+                        if (isSyncNotifHidden) {
+                            WaRealtimeService.openNotificationChannelSettings(
+                                context = context,
+                                channelId = WaRealtimeService.CHANNEL_ID
+                            )
+                        } else {
+                            showHideNotifGuide = true
+                        }
                     }
                 )
                 PatchRowDivider()
@@ -2488,6 +2498,20 @@ private fun ToolsVaultTab(
                             context = context,
                             channelId = WaRealtimeService.MESSAGES_CHANNEL_ID
                         )
+                    }
+                )
+                PatchRowDivider()
+                PatchActionRow(
+                    icon = Icons.Rounded.BatteryChargingFull,
+                    title = "Unrestricted Battery (24/7 Sync)",
+                    subtitle = if (isBatteryUnrestricted) {
+                        "Allowed — Android won't kill Wupp sync while your phone is locked"
+                    } else {
+                        "Allow unrestricted background use so real-time sync and alerts never stop"
+                    },
+                    badgeText = if (isBatteryUnrestricted) "ACTIVE" else "ALLOW",
+                    onClick = {
+                        WaRealtimeService.openBatteryOptimizationSettings(context)
                     }
                 )
             }
@@ -2623,6 +2647,92 @@ private fun ToolsVaultTab(
             onDimChange = { viewModel.setChatWallpaperDim(it) },
             onToggleDoodle = { viewModel.setChatWallpaperShowDoodle(it) },
             onDismiss = { showWallpaperDialog = false }
+        )
+    }
+
+    if (showHideNotifGuide) {
+        val colors = LocalWaColors.current
+        AlertDialog(
+            onDismissRequest = { showHideNotifGuide = false },
+            containerColor = colors.elevatedBar,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Rounded.NotificationsOff,
+                        contentDescription = null,
+                        tint = colors.accentGreen,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Hide Constant Banner",
+                        color = colors.textPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 18.sp
+                    )
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Android requires a background service for 24/7 WhatsApp sync and doesn't let apps mute that status notification automatically.",
+                        color = colors.textSecondary,
+                        fontSize = 13.5.sp,
+                        lineHeight = 19.sp
+                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(colors.appSurface)
+                            .border(0.8.dp, colors.accentGreen.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "On the next screen (1 tap):",
+                            color = colors.textPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Switch \"Show notifications\" OFF at the top of \"Wupp Realtime Sync\".",
+                            color = colors.accentGreen,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            lineHeight = 18.sp
+                        )
+                    }
+                    Text(
+                        text = "• Real-time sync stays 100% active\n• Chat message alerts & sounds keep working",
+                        color = colors.textSecondary,
+                        fontSize = 12.5.sp,
+                        lineHeight = 18.sp
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showHideNotifGuide = false
+                        WaRealtimeService.openNotificationChannelSettings(
+                            context = context,
+                            channelId = WaRealtimeService.CHANNEL_ID
+                        )
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.accentGreen,
+                        contentColor = Color(0xFF0B141A)
+                    )
+                ) {
+                    Text("Open Setting", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showHideNotifGuide = false }) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
+            }
         )
     }
 }

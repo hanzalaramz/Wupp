@@ -297,7 +297,7 @@ fun FirstInstallSetupScreen(
                         SetupChecklistRow(
                             icon = Icons.Rounded.Notifications,
                             title = "Notifications",
-                            subtitle = "Show real-time alerts and persistent companion sync status",
+                            subtitle = "Show new message alerts (you can hide the sync banner anytime in Settings)",
                             granted = snapshot.notificationsGranted,
                             actionLabel = "Allow",
                             onActionClick = {

@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-15
+
+Chat auto-scroll fix, clearer background notification hiding UX, and battery/installer polish.
+
+### What's new
+- Added a **1-tap Hide Persistent Sync Banner** guide dialog and an **Unrestricted Battery (24/7 Sync)** status row in Settings.
+- Added a floating scroll-to-bottom button when scrolled up inside a chat.
+- Added a reassurance hint for Google Play Protect's scan prompt on the in-app updater sheet.
+
+### Fixes & polish
+- Fixed chat timelines staying static when sending or receiving new messages so they now auto-scroll to the latest message like WhatsApp.
+- Lowered the persistent sync notification channel priority (`IMPORTANCE_MIN`) and rewrote its description and status copy in plain English without affecting 24/7 sync or incoming message alerts.
+
 ## [0.2.1] - 2026-11-15
 
 Bug fixes for chat deduplication, message ordering, reactions, background reliability, custom chat backgrounds, and pre-release update testing.

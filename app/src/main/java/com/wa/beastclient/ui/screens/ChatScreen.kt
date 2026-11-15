@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -57,6 +58,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Notifications
@@ -93,6 +95,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -185,6 +188,35 @@ fun ChatScreen(
     val downloadingMediaIds by viewModel.downloadingMediaIds.collectAsState()
     val failedMediaIds by viewModel.failedMediaIds.collectAsState()
     val pagedItems = remember(chatJid) { viewModel.pagedMessages(chatJid) }.collectAsLazyPagingItems()
+    val listState = remember(chatJid) { LazyListState() }
+    var scrollToBottomPending by remember(chatJid) { mutableStateOf(false) }
+    var lastLatestMsgId by remember(chatJid) { mutableStateOf<String?>(null) }
+    var latestVisibleMsg: MessageEntity? = null
+    val latestPeekCount = minOf(pagedItems.itemCount, 8)
+    for (idx in 0 until latestPeekCount) {
+        val candidate = pagedItems.peek(idx)
+        if (candidate != null && !isHiddenPlaceholderMessage(candidate)) {
+            latestVisibleMsg = candidate
+            break
+        }
+    }
+    LaunchedEffect(chatJid, latestVisibleMsg?.id, pagedItems.itemCount) {
+        val newest = latestVisibleMsg ?: return@LaunchedEffect
+        val prevId = lastLatestMsgId
+        lastLatestMsgId = newest.id
+        if (prevId == null) {
+            if (listState.firstVisibleItemIndex != 0 || listState.firstVisibleItemScrollOffset != 0) {
+                listState.scrollToItem(0)
+            }
+            scrollToBottomPending = false
+        } else if (newest.id != prevId) {
+            val nearBottom = listState.firstVisibleItemIndex <= 3
+            if (scrollToBottomPending || newest.isFromMe || nearBottom) {
+                scrollToBottomPending = false
+                listState.animateScrollToItem(0)
+            }
+        }
+    }
     val allChats by viewModel.allChats.collectAsState()
     val participantMeta by viewModel.participantMeta.collectAsState()
     val quotedMsgMeta by viewModel.quotedMsgMeta.collectAsState()
@@ -258,8 +290,10 @@ fun ChatScreen(
         if (uri != null) {
             val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
             showAttachTray = false
+            scrollToBottomPending = true
             viewModel.sendPickedMedia(chatJid, uri, mime, draftText.trim(), qualityMode)
             draftText = ""
+            scope.launch { listState.animateScrollToItem(0) }
         }
     }
 
@@ -628,12 +662,16 @@ fun ChatScreen(
                 }
 
                 // Paging 3 reverseLayout timeline + Floating WhatsApp Reaction Bar overlay
+                val showScrollToBottom by remember(listState) {
+                    derivedStateOf { listState.firstVisibleItemIndex > 2 }
+                }
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
                 ) {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     reverseLayout = true,
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
@@ -870,6 +908,28 @@ fun ChatScreen(
                         }
                     }
                 }
+
+                if (showScrollToBottom && actionMenuTarget == null) {
+                    Surface(
+                        onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                        shape = CircleShape,
+                        color = colors.elevatedBar,
+                        shadowElevation = 6.dp,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 12.dp, bottom = 12.dp)
+                            .size(38.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.KeyboardArrowDown,
+                                contentDescription = "Scroll to latest message",
+                                tint = colors.textSecondary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                }
                 }
 
                 if (isGroupAnnounceLocked && !isChannel) {
@@ -1099,12 +1159,18 @@ fun ChatScreen(
                             )
                             .clickable(enabled = canSendOutbound) {
                                 when {
-                                    isRecordingVoice -> viewModel.toggleVoiceRecording(chatJid, true)
+                                    isRecordingVoice -> {
+                                        scrollToBottomPending = true
+                                        viewModel.toggleVoiceRecording(chatJid, true)
+                                        scope.launch { listState.animateScrollToItem(0) }
+                                    }
                                     draftText.isNotBlank() -> {
+                                        scrollToBottomPending = true
                                         viewModel.sendText(chatJid, draftText, replyTarget, ghostMentionEveryone)
                                         draftText = ""
                                         replyTarget = null
                                         ghostMentionEveryone = false
+                                        scope.launch { listState.animateScrollToItem(0) }
                                     }
                                     else -> {
                                         val hasMic = ContextCompat.checkSelfPermission(

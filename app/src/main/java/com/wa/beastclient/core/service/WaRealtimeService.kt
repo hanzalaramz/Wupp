@@ -176,7 +176,7 @@ class WaRealtimeService : Service() {
             }
         }
 
-        promoteForeground("Local companion engine active")
+        promoteForeground("Real-time sync starting…")
         startEventConsumer()
         registerNetworkWatcher()
         initializeGoBridge()
@@ -213,9 +213,9 @@ class WaRealtimeService : Service() {
             val ch = NotificationChannel(
                 CHANNEL_ID,
                 "Wupp Realtime Sync",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_MIN
             ).apply {
-                description = "Persistent companion protocol socket & vault engine"
+                description = "Keeps WhatsApp syncing in real time. Turning off 'Show notifications' here hides the constant banner without stopping sync or chat alerts."
                 setShowBadge(false)
             }
             mgr.createNotificationChannel(ch)
@@ -235,6 +235,7 @@ class WaRealtimeService : Service() {
             .setContentText(statusLine)
             .setSmallIcon(R.drawable.ic_stat_wupp)
             .setContentIntent(pi)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
             .setOngoing(true)
             .setSilent(true)
             .build()
@@ -412,7 +413,13 @@ class WaRealtimeService : Service() {
                     latestQrCode = if (nextLoggedIn) null else _bridgeStatus.value.latestQrCode,
                     latestPairCode = if (nextLoggedIn) null else _bridgeStatus.value.latestPairCode
                 )
-                promoteForeground(if (nextLoggedIn) "Companion: $st" else "Waiting to link WhatsApp")
+                val statusLine = when {
+                    !nextLoggedIn -> "Waiting to link WhatsApp"
+                    st == "CONNECTED" -> "Real-time sync active"
+                    st == "RECONNECTING" -> "Reconnecting real-time sync…"
+                    else -> "Real-time sync ($st)"
+                }
+                promoteForeground(statusLine)
                 if (st == "CONNECTED") {
                     runCatching {
                         Whatsbridge.setGhostPresence(StealthMatrixManager.config.value.ghostPresence)
@@ -1308,6 +1315,35 @@ class WaRealtimeService : Service() {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 runCatching { context.startActivity(fallback) }
+            }
+        }
+
+        fun isIgnoringBatteryOptimizations(context: Context): Boolean {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return true
+            return pm.isIgnoringBatteryOptimizations(context.packageName)
+        }
+
+        fun openBatteryOptimizationSettings(context: Context) {
+            val pkgUri = android.net.Uri.parse("package:${context.packageName}")
+            val direct = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = pkgUri
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val openedDirect = runCatching {
+                context.startActivity(direct)
+                true
+            }.getOrDefault(false)
+            if (!openedDirect) {
+                val listIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                runCatching { context.startActivity(listIntent) }.onFailure {
+                    val appSettings = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = pkgUri
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    runCatching { context.startActivity(appSettings) }
+                }
             }
         }
 

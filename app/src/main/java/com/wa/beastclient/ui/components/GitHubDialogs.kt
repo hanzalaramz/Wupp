@@ -636,6 +636,16 @@ fun AppUpdateDialog(
                 }
             }
 
+            if (!isDownloading && (isReady || !release.apkDownloadUrl.isNullOrBlank())) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "If Google Play Protect shows \"App scan recommended\", tap \"Scan app\" — normal for GitHub APKs outside Play Store.",
+                    color = colors.textSecondary,
+                    fontSize = 11.5.sp,
+                    lineHeight = 16.sp
+                )
+            }
+
             if (release.htmlUrl.isNotBlank() && !isDownloading) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Button(
