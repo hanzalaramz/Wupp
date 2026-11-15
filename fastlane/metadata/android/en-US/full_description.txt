@@ -1,9 +1,0 @@
-Wupp is an open-source, Material 3 Android WhatsApp client built with Jetpack Compose and a Go whatsmeow bridge. Link your account via QR code or pairing code and keep full local control over privacy, deleted messages, and downloaded media.
-
-Features:
-- Privacy & Ghost Mode: Freeze last seen, hide blue read ticks, hide voice note played receipts, hide typing/recording indicators, view statuses silently, and set per-chat privacy overrides.
-- Local Message Preservation: Keep deleted messages and statuses locally, prevent disappearing messages from expiring, review edit history, and save View-Once media.
-- Media & Storage Controls: Master auto-download switch with separate Mobile Data, Wi-Fi, and Roaming rules, plus global and per-chat gallery visibility toggles.
-- Multi-Chat & Organization: Long-press chat multi-select (pin, mute, archive, favorite, mark unread, local clear), swipe-to-reply, reactions, @everyone silent group mention, channels, and communities.
-- Customization: Four built-in themes (Light, Dark, AMOLED, Velvet Aurora) and Material 3 design.
-- Anti-Ban Safeguards: Desktop browser link fingerprint, conservative sync throttling, and unknown-number outbound guard.

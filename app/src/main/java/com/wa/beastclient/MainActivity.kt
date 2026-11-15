@@ -34,7 +34,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.wa.beastclient.BuildConfig
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.core.update.WuppUpdater
 import com.wa.beastclient.ui.MainViewModel
@@ -151,7 +150,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                if (BuildConfig.ENABLE_SELF_UPDATE && showUpdatePrompt && setupDone) {
+                if (showUpdatePrompt && setupDone) {
                     AppUpdateDialog(
                         state = updateState,
                         onDownload = { release -> vm.downloadUpdate(release) },
@@ -167,7 +166,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (intent.getBooleanExtra("open_update_prompt", false) && BuildConfig.ENABLE_SELF_UPDATE) {
+        if (intent.getBooleanExtra("open_update_prompt", false)) {
             WuppUpdater.openPromptDialog()
         }
     }
@@ -178,10 +177,8 @@ class MainActivity : ComponentActivity() {
             .getBoolean("setup_completed_v1", false)
         if (setupDone) {
             WaRealtimeService.ensureStarted(this)
-            if (BuildConfig.ENABLE_SELF_UPDATE) {
-                lifecycleScope.launch {
-                    WuppUpdater.onAppOpened(this@MainActivity)
-                }
+            lifecycleScope.launch {
+                WuppUpdater.onAppOpened(this@MainActivity)
             }
         }
     }

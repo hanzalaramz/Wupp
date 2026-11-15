@@ -68,12 +68,11 @@ jobs:
           echo "version_name=${CLEAN_VER}" >> "$GITHUB_OUTPUT"
           echo "version_code=${VER_CODE}" >> "$GITHUB_OUTPUT"
 
-      - name: Clean prebuilts & build multi-ABI whatsbridge.aar via gomobile
+      - name: Build multi-ABI whatsbridge.aar via gomobile
         env:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
         run: |
-          rm -f app/libs/*.aar app/libs/*.jar
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
           export PATH="$PATH:$(go env GOPATH)/bin"
@@ -86,9 +85,9 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Build Release APKs (GitHub & F-Droid flavors)
+      - name: Build Release APKs
         run: |
-          gradle assembleGithubRelease assembleFdroidRelease \
+          gradle assembleRelease \
             -PWUPP_GITHUB_REPO=${{ github.repository }} \
             -PWUPP_VERSION_NAME=${{ steps.meta.outputs.version_name }} \
             -PWUPP_VERSION_CODE=${{ steps.meta.outputs.version_code }}
@@ -145,7 +144,7 @@ jobs:
             K_PASS="pass:android"
           fi
 
-          find app/build/outputs/apk -path '*/release/*.apk' | while read -r APK_PATH; do
+          for APK_PATH in app/build/outputs/apk/release/*.apk; do
             [ -f "$APK_PATH" ] || continue
             BASE_NAME=$(basename "$APK_PATH" | sed 's/-unsigned\.apk$/.apk/')
             "$ZIPALIGN" -p -f 4 "$APK_PATH" "dist/aligned_${BASE_NAME}"

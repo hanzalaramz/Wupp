@@ -90,20 +90,6 @@ android {
         }
     }
 
-    flavorDimensions += "distribution"
-    productFlavors {
-        create("github") {
-            dimension = "distribution"
-            buildConfigField("boolean", "ENABLE_SELF_UPDATE", "true")
-            buildConfigField("String", "DISTRIBUTION_CHANNEL", "\"github\"")
-        }
-        create("fdroid") {
-            dimension = "distribution"
-            buildConfigField("boolean", "ENABLE_SELF_UPDATE", "false")
-            buildConfigField("String", "DISTRIBUTION_CHANNEL", "\"fdroid\"")
-        }
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -131,9 +117,8 @@ android {
             val abiOffset = abiFilter?.let { abiCodes[it] } ?: 0
             out.versionCodeOverride = (wuppVersionCode * 10) + abiOffset
             val abiLabel = abiFilter ?: "universal"
-            val flavorSuffix = if (variant.flavorName == "fdroid") "-fdroid" else ""
             val suffix = if (variant.buildType.name == "debug") "-debug" else ""
-            out.outputFileName = "Wupp-${wuppVersionName}${flavorSuffix}-${abiLabel}${suffix}.apk"
+            out.outputFileName = "Wupp-${wuppVersionName}-${abiLabel}${suffix}.apk"
         }
     }
 
@@ -149,11 +134,6 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
-    }
-
-    dependenciesInfo {
-        includeInApk = false
-        includeInBundle = false
     }
 
     packaging {

@@ -1,1 +1,0 @@
-Open-source WhatsApp client with Ghost Mode, Anti-Delete, and media controls.
