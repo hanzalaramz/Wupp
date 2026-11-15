@@ -31,7 +31,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - uses: actions/setup-go@v5
         with:
@@ -42,7 +42,7 @@ jobs:
           packages: platform-tools
 
       - name: Install Android NDK
-        run: sdkmanager "ndk;27.0.12077973" "platforms;android-34" "build-tools;34.0.0"
+        run: sdkmanager "ndk;27.0.12077973" "platforms;android-37.0" "build-tools;36.0.0"
 
       - name: Build whatsbridge.aar via gomobile
         env:
@@ -59,7 +59,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.9"
+          gradle-version: "9.6.1"
 
       - name: Build Debug APK
         run: gradle assembleDebug -PWUPP_GITHUB_REPO=${{ github.repository }}

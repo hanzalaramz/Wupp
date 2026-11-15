@@ -2,11 +2,8 @@ package com.wa.beastclient.ui.components
 
 import android.os.Build
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,7 +28,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
@@ -272,7 +271,7 @@ fun WuppGlassContainer(
             .clip(shape),
         contentAlignment = contentAlignment
     ) {
-        if (hasHardwareBlur && backdropState != null) {
+        if (hasHardwareBlur) {
             var targetOrigin by remember { mutableStateOf(Offset.Zero) }
             val bleedPx = with(LocalDensity.current) { 36.dp.roundToPx() }
             Box(
@@ -354,6 +353,7 @@ private data class GlassNavTab(
  * blending live blurred content behind the glass with a borderless sliding frosted active capsule
  * and single-line non-wrapping labels.
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun WuppGlassNavBar(
     currentTab: Int,
@@ -403,10 +403,7 @@ fun WuppGlassNavBar(
                 val tabWidth = maxWidth / tabs.size
                 val indicatorOffset by animateDpAsState(
                     targetValue = tabWidth * currentTab.coerceIn(0, tabs.lastIndex),
-                    animationSpec = spring(
-                        dampingRatio = 0.84f,
-                        stiffness = Spring.StiffnessMediumLow
-                    ),
+                    animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
                     label = "glass_nav_indicator_offset"
                 )
 
@@ -456,12 +453,12 @@ fun WuppGlassNavBar(
                                 colors.isDark -> Color.White.copy(alpha = 0.86f)
                                 else -> Color(0xFF1F2C34).copy(alpha = 0.78f)
                             },
-                            animationSpec = tween(durationMillis = 180),
+                            animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
                             label = "glass_nav_tint_${tab.index}"
                         )
                         val iconScale by animateFloatAsState(
-                            targetValue = if (selected) 1.06f else 1f,
-                            animationSpec = spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMedium),
+                            targetValue = if (selected) 1.09f else 1f,
+                            animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
                             label = "glass_nav_scale_${tab.index}"
                         )
                         val interactionSource = remember { MutableInteractionSource() }

@@ -2,19 +2,15 @@
 
 ## [Unreleased]
 
-## [0.2.3] - 2026-11-15
+## [0.3.0-pre.1] - 2026-11-16
 
-✨ Real frosted Liquid Glass UI, per-chat wallpapers, synced chat deletes, and status/chat fixes.
+✨ Material 3 Expressive upgrade across Wupp — with full Android 8.0+ compatibility intact.
 
 ### ✨ What's new
-- 🫧 **Liquid Glass UI:** Real-time frosted blur behind the floating pill nav bar and chat composer on Android 12+, with a borderless active capsule, edge-to-edge scrolling, live connection dot, and single-line `Communities` tab.
-- 🎨 **Per-Chat Wallpapers:** Set a custom background for any specific chat while keeping your global wallpaper everywhere else.
-- 🗑️ **Two-Way Chat Delete:** Deleting a chat in Wupp can now sync to your primary WhatsApp (and phone deletes sync back).
-
-### 🛠️ Fixes
-- 👤 **Status Contact Names:** Fixed status cards and stories showing raw phone numbers instead of saved contact names.
-- 👻 **Empty Random-Number Chats:** Removed phantom unchatted `@lid` rows from your chat list and unread badge.
-- 🔋 **Battery & Settings Cleanup:** Fixed *Unrestricted Battery (24/7 Sync)* opening the wrong settings page and removed the extra *Incoming Message Alerts* row.
+- 🎨 **Material 3 Expressive Theme & Motion:** Upgraded Wupp to the latest Material 3 Expressive (`1.5.0-rc01` / Compose BOM `2026.09.00`) with expressive spring physics (`MotionScheme.expressive()`) and rounded shapes across all themes.
+- 🌀 **Expressive Loading & Controls:** Added morphing M3 Expressive loading indicators (`ContainedLoadingIndicator` & `LoadingIndicator`), connected toggle groups on device linking, shape-morphing chat filter chips, and an expandable Updates status FAB menu.
+- 🫧 **Springy Liquid Glass Nav:** Upgraded the YouTube-style frosted Liquid Glass bottom bar with smooth expressive spring transitions and subtle active icon bounce.
+- 📦 **Compatibility Preserved:** Devices running older Android versions (**Android 8.0 / API 26+** and up) continue working with zero dropped support.
 
 ## [0.2.3-pre.2] - 2026-11-15
 

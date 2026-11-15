@@ -3,7 +3,11 @@ package com.wa.beastclient.ui.theme
 import android.app.Activity
 import android.content.res.AssetManager
 import android.graphics.Typeface
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialExpressiveTheme
+import androidx.compose.material3.MotionScheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -18,6 +22,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 
@@ -175,6 +180,7 @@ fun colorsForTheme(mode: WuppThemeMode): WaColors = when (mode) {
 val LocalWaColors = staticCompositionLocalOf { WaDarkColors }
 val LocalWaMonoFamily = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun WhatsAppTheme(
     themeMode: WuppThemeMode = WuppThemeMode.DARK,
@@ -200,17 +206,38 @@ fun WhatsAppTheme(
 
     val typography = remember(sansFamily) {
         Typography(
+            displaySmall = TextStyle(
+                fontFamily = sansFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 32.sp,
+                lineHeight = 38.sp,
+                letterSpacing = (-0.4).sp
+            ),
+            headlineMedium = TextStyle(
+                fontFamily = sansFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 26.sp,
+                lineHeight = 32.sp,
+                letterSpacing = (-0.3).sp
+            ),
             titleLarge = TextStyle(
                 fontFamily = sansFamily,
                 fontWeight = FontWeight.SemiBold,
-                fontSize = 21.sp,
-                lineHeight = 26.sp
+                fontSize = 22.sp,
+                lineHeight = 27.sp,
+                letterSpacing = (-0.2).sp
             ),
             titleMedium = TextStyle(
                 fontFamily = sansFamily,
-                fontWeight = FontWeight.Medium,
-                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 16.5.sp,
                 lineHeight = 22.sp
+            ),
+            labelLarge = TextStyle(
+                fontFamily = sansFamily,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 14.sp,
+                lineHeight = 18.sp
             ),
             bodyLarge = TextStyle(
                 fontFamily = sansFamily,
@@ -226,7 +253,7 @@ fun WhatsAppTheme(
             ),
             labelSmall = TextStyle(
                 fontFamily = sansFamily,
-                fontWeight = FontWeight.Normal,
+                fontWeight = FontWeight.Medium,
                 fontSize = 11.sp,
                 lineHeight = 14.sp,
                 fontFeatureSettings = "tnum"
@@ -234,15 +261,36 @@ fun WhatsAppTheme(
         )
     }
 
+    val expressiveShapes = remember {
+        Shapes(
+            extraSmall = RoundedCornerShape(8.dp),
+            small = RoundedCornerShape(14.dp),
+            medium = RoundedCornerShape(20.dp),
+            large = RoundedCornerShape(28.dp),
+            extraLarge = RoundedCornerShape(32.dp)
+        )
+    }
+
     val m3Scheme = if (waColors.isDark) {
         darkColorScheme(
             primary = waColors.accentGreen,
             onPrimary = if (waColors.themeMode == WuppThemeMode.AURORA) Color(0xFF06131F) else Color.White,
+            primaryContainer = waColors.pillActiveBg,
+            onPrimaryContainer = waColors.pillActiveText,
             secondary = waColors.brightGreen,
+            onSecondary = Color(0xFF061310),
+            secondaryContainer = waColors.elevatedBar,
+            onSecondaryContainer = waColors.textPrimary,
+            tertiary = waColors.blueTick,
             background = waColors.appSurface,
             surface = waColors.appSurface,
             surfaceVariant = waColors.elevatedBar,
+            surfaceContainerLow = waColors.appSurface,
             surfaceContainer = waColors.elevatedBar,
+            surfaceContainerHigh = waColors.incomingBubble,
+            surfaceContainerHighest = waColors.pillInactiveBg,
+            outline = waColors.divider,
+            outlineVariant = waColors.divider.copy(alpha = 0.65f),
             onBackground = waColors.textPrimary,
             onSurface = waColors.textPrimary,
             onSurfaceVariant = waColors.textSecondary,
@@ -252,11 +300,22 @@ fun WhatsAppTheme(
         lightColorScheme(
             primary = waColors.accentGreen,
             onPrimary = Color.White,
+            primaryContainer = waColors.pillActiveBg,
+            onPrimaryContainer = waColors.pillActiveText,
             secondary = waColors.brightGreen,
+            onSecondary = Color.White,
+            secondaryContainer = waColors.elevatedBar,
+            onSecondaryContainer = waColors.textPrimary,
+            tertiary = waColors.blueTick,
             background = waColors.appSurface,
             surface = waColors.appSurface,
             surfaceVariant = waColors.elevatedBar,
+            surfaceContainerLow = waColors.appSurface,
             surfaceContainer = waColors.elevatedBar,
+            surfaceContainerHigh = Color(0xFFE7ECEF),
+            surfaceContainerHighest = waColors.pillInactiveBg,
+            outline = waColors.divider,
+            outlineVariant = waColors.divider.copy(alpha = 0.7f),
             onBackground = waColors.textPrimary,
             onSurface = waColors.textPrimary,
             onSurfaceVariant = waColors.textSecondary,
@@ -268,8 +327,10 @@ fun WhatsAppTheme(
         LocalWaColors provides waColors,
         LocalWaMonoFamily provides sansFamily
     ) {
-        MaterialTheme(
+        MaterialExpressiveTheme(
             colorScheme = m3Scheme,
+            motionScheme = MotionScheme.expressive(),
+            shapes = expressiveShapes,
             typography = typography,
             content = content
         )

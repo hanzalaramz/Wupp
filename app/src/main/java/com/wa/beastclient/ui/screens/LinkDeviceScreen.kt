@@ -35,13 +35,18 @@ import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.ContainedLoadingIndicator
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ToggleButton
+import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -72,6 +77,7 @@ import com.wa.beastclient.core.service.BridgeStatus
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun LinkDeviceScreen(
     bridgeStatus: BridgeStatus,
@@ -168,29 +174,57 @@ fun LinkDeviceScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Minimalist segmented switcher matching WhatsApp's clean companion toggle
+            // Material 3 Expressive connected toggle button group (QR code vs Phone number)
+            val toggleColors = ToggleButtonDefaults.colors(
+                containerColor = colors.elevatedBar,
+                contentColor = colors.textSecondary,
+                checkedContainerColor = colors.pillActiveBg,
+                checkedContentColor = colors.pillActiveText
+            )
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(colors.elevatedBar)
-                    .padding(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)
             ) {
-                ModePillTab(
-                    label = "QR code",
-                    icon = Icons.Rounded.QrCode2,
-                    selected = selectedMode == 0,
-                    onClick = { selectedMode = 0 },
+                ToggleButton(
+                    checked = selectedMode == 0,
+                    onCheckedChange = { if (it) selectedMode = 0 },
+                    shapes = ButtonGroupDefaults.connectedLeadingButtonShapes(),
+                    colors = toggleColors,
                     modifier = Modifier.weight(1f)
-                )
-                ModePillTab(
-                    label = "Phone number",
-                    icon = Icons.Rounded.PhoneAndroid,
-                    selected = selectedMode == 1,
-                    onClick = { selectedMode = 1 },
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.QrCode2,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "QR code",
+                        fontSize = 13.5.sp,
+                        fontWeight = if (selectedMode == 0) FontWeight.SemiBold else FontWeight.Medium,
+                        maxLines = 1
+                    )
+                }
+                ToggleButton(
+                    checked = selectedMode == 1,
+                    onCheckedChange = { if (it) selectedMode = 1 },
+                    shapes = ButtonGroupDefaults.connectedTrailingButtonShapes(),
+                    colors = toggleColors,
                     modifier = Modifier.weight(1f)
-                )
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PhoneAndroid,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Phone number",
+                        fontSize = 13.5.sp,
+                        fontWeight = if (selectedMode == 1) FontWeight.SemiBold else FontWeight.Medium,
+                        maxLines = 1
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(22.dp))
@@ -224,10 +258,10 @@ fun LinkDeviceScreen(
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
-                                    CircularProgressIndicator(
-                                        color = Color(0xFF00A884),
-                                        strokeWidth = 3.dp,
-                                        modifier = Modifier.size(34.dp)
+                                    ContainedLoadingIndicator(
+                                        containerColor = Color(0xFFE7F8F2),
+                                        indicatorColor = Color(0xFF00A884),
+                                        modifier = Modifier.size(48.dp)
                                     )
                                     Text(
                                         text = if (bridgeStatus.connectionState == "CONNECTED" || bridgeStatus.connectionState == "PAIRED") {
@@ -348,10 +382,9 @@ fun LinkDeviceScreen(
                                     .height(48.dp)
                             ) {
                                 if (awaitingCode) {
-                                    CircularProgressIndicator(
+                                    LoadingIndicator(
                                         color = Color.White,
-                                        strokeWidth = 2.dp,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                 }
@@ -457,43 +490,6 @@ fun LinkDeviceScreen(
                     fontSize = 11.5.sp
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun ModePillTab(
-    label: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val colors = LocalWaColors.current
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(20.dp))
-            .background(if (selected) colors.pillActiveBg else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(vertical = 10.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = if (selected) colors.pillActiveText else colors.textSecondary,
-                modifier = Modifier.size(17.dp)
-            )
-            Text(
-                text = label,
-                color = if (selected) colors.pillActiveText else colors.textSecondary,
-                fontSize = 13.5.sp,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
-            )
         }
     }
 }

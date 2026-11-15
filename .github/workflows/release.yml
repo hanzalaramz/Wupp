@@ -31,7 +31,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - uses: actions/setup-go@v5
         with:
@@ -42,7 +42,7 @@ jobs:
           packages: platform-tools
 
       - name: Install Android NDK & Build Tools
-        run: sdkmanager "ndk;27.0.12077973" "platforms;android-34" "build-tools;34.0.0"
+        run: sdkmanager "ndk;27.0.12077973" "platforms;android-37.0" "build-tools;36.0.0"
 
       - name: Derive version metadata from tag
         id: meta
@@ -89,7 +89,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.9"
+          gradle-version: "9.6.1"
 
       - name: Build Release APKs
         run: |
@@ -130,8 +130,8 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           mkdir -p dist
-          APKSIGNER="${ANDROID_SDK_ROOT}/build-tools/34.0.0/apksigner"
-          ZIPALIGN="${ANDROID_SDK_ROOT}/build-tools/34.0.0/zipalign"
+          APKSIGNER="${ANDROID_SDK_ROOT}/build-tools/36.0.0/apksigner"
+          ZIPALIGN="${ANDROID_SDK_ROOT}/build-tools/36.0.0/zipalign"
 
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > release.jks

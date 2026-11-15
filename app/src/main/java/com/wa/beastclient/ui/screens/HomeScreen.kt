@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -79,10 +80,15 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
+import androidx.compose.material3.FloatingActionButtonMenu
+import androidx.compose.material3.FloatingActionButtonMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -92,6 +98,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ToggleFloatingActionButton
+import androidx.compose.material3.ToggleFloatingActionButtonDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -162,7 +170,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun HomeScreen(
     viewModel: MainViewModel,
@@ -205,6 +213,7 @@ fun HomeScreen(
     }
 
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    var updatesFabExpanded by rememberSaveable { mutableStateOf(false) }
     var overflowExpanded by remember { mutableStateOf(false) }
     var showPairingDialog by remember { mutableStateOf(false) }
     var showQuickContactPicker by remember { mutableStateOf(false) }
@@ -229,6 +238,9 @@ fun HomeScreen(
         if (currentTab != 0 && selectedChatJids.isNotEmpty()) {
             selectedChatJids = emptySet()
             selectionOverflowExpanded = false
+        }
+        if (currentTab != 1 && updatesFabExpanded) {
+            updatesFabExpanded = false
         }
     }
 
@@ -553,7 +565,11 @@ fun HomeScreen(
                         onClick = { showQuickContactPicker = true },
                         containerColor = colors.brightGreen,
                         contentColor = Color(0xFF0B141A),
-                        shape = CircleShape
+                        shape = RoundedCornerShape(18.dp),
+                        elevation = FloatingActionButtonDefaults.elevation(
+                            defaultElevation = 4.dp,
+                            pressedElevation = 8.dp
+                        )
                     ) {
                         Icon(
                             painter = painterResource(R.drawable.vec_ic_chat_filled),
@@ -563,35 +579,56 @@ fun HomeScreen(
                     }
                 }
                 1 -> {
-                    Column(
-                        horizontalAlignment = Alignment.End,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    FloatingActionButtonMenu(
+                        expanded = updatesFabExpanded,
+                        button = {
+                            ToggleFloatingActionButton(
+                                checked = updatesFabExpanded,
+                                onCheckedChange = { updatesFabExpanded = it },
+                                containerColor = ToggleFloatingActionButtonDefaults.containerColor(
+                                    initialColor = colors.brightGreen,
+                                    finalColor = colors.accentGreen
+                                )
+                            ) {
+                                Icon(
+                                    imageVector = if (updatesFabExpanded) Icons.Rounded.Close else Icons.Rounded.Add,
+                                    contentDescription = if (updatesFabExpanded) "Close status actions" else "Status actions",
+                                    tint = Color(0xFF0B141A)
+                                )
+                            }
+                        }
                     ) {
-                        FloatingActionButton(
-                            onClick = { statuses.firstOrNull()?.let { activeStatusViewer = it } },
+                        FloatingActionButtonMenuItem(
+                            onClick = {
+                                updatesFabExpanded = false
+                                statuses.firstOrNull()?.let { activeStatusViewer = it }
+                            },
+                            icon = {
+                                Icon(
+                                    imageVector = Icons.Rounded.Edit,
+                                    contentDescription = null
+                                )
+                            },
+                            text = { Text("Text status", fontWeight = FontWeight.SemiBold) },
                             containerColor = colors.elevatedBar,
-                            contentColor = colors.textPrimary,
-                            shape = CircleShape,
-                            modifier = Modifier.size(44.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Edit,
-                                contentDescription = "Text status",
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        FloatingActionButton(
-                            onClick = { statuses.firstOrNull()?.let { activeStatusViewer = it } },
-                            containerColor = colors.brightGreen,
-                            contentColor = Color(0xFF0B141A),
-                            shape = CircleShape
-                        ) {
-                            Icon(
-                                painter = painterResource(R.drawable.vec_ic_camera_reply),
-                                contentDescription = "Camera status",
-                                modifier = Modifier.size(23.dp)
-                            )
-                        }
+                            contentColor = colors.textPrimary
+                        )
+                        FloatingActionButtonMenuItem(
+                            onClick = {
+                                updatesFabExpanded = false
+                                statuses.firstOrNull()?.let { activeStatusViewer = it }
+                            },
+                            icon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.vec_ic_camera_reply),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            text = { Text("Camera status", fontWeight = FontWeight.SemiBold) },
+                            containerColor = colors.pillActiveBg,
+                            contentColor = colors.pillActiveText
+                        )
                     }
                 }
             }
@@ -1140,16 +1177,31 @@ private fun ChatsTabContent(
                         HomeFilterChip.EDITED -> nonCommunityChats.count { it.hasEditedMessages }
                     }
                     val active = chip == selectedChip
-                    val borderColor = if (active) {
-                        colors.pillActiveText.copy(alpha = 0.35f)
-                    } else {
-                        colors.textSecondary.copy(alpha = 0.28f)
-                    }
+                    val chipRadius by animateDpAsState(
+                        targetValue = if (active) 12.dp else 20.dp,
+                        animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
+                        label = "filter_chip_radius_${chip.name}"
+                    )
+                    val chipBg by animateColorAsState(
+                        targetValue = if (active) colors.pillActiveBg else Color.Transparent,
+                        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+                        label = "filter_chip_bg_${chip.name}"
+                    )
+                    val borderColor by animateColorAsState(
+                        targetValue = if (active) {
+                            colors.pillActiveText.copy(alpha = 0.42f)
+                        } else {
+                            colors.textSecondary.copy(alpha = 0.28f)
+                        },
+                        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+                        label = "filter_chip_border_${chip.name}"
+                    )
+                    val chipShape = RoundedCornerShape(chipRadius)
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(if (active) colors.pillActiveBg else Color.Transparent)
-                            .border(1.dp, borderColor, RoundedCornerShape(20.dp))
+                            .clip(chipShape)
+                            .background(chipBg)
+                            .border(1.dp, borderColor, chipShape)
                             .clickable { onSelectChip(chip) }
                             .padding(horizontal = 14.dp, vertical = 7.dp)
                     ) {
