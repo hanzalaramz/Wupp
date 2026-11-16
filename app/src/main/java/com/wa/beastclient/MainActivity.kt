@@ -120,6 +120,8 @@ class MainActivity : FragmentActivity() {
                 themeMode = stealth.themeMode,
                 useSystemFont = stealth.useSystemFont,
                 showSecondsInTimestamps = stealth.showSecondsInTimestamps,
+                chatFontScale = stealth.chatFontScale,
+                classicUi = stealth.classicWhatsAppLook,
                 assetManager = assets
             ) {
                 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -170,6 +172,7 @@ class MainActivity : FragmentActivity() {
                 } else {
                     var homeTab by rememberSaveable { mutableIntStateOf(0) }
                     val chatsListState = rememberLazyListState()
+                    val groupsListState = rememberLazyListState()
                     val updatesListState = rememberLazyListState()
                     val communitiesListState = rememberLazyListState()
                     val toolsListState = rememberLazyListState()
@@ -215,6 +218,7 @@ class MainActivity : FragmentActivity() {
                                 currentTab = homeTab,
                                 onSelectTab = { homeTab = it },
                                 chatsListState = chatsListState,
+                                groupsListState = groupsListState,
                                 updatesListState = updatesListState,
                                 communitiesListState = communitiesListState,
                                 toolsListState = toolsListState

@@ -15,6 +15,7 @@
 
     <!-- Navigation & Home -->
     <string name="nav_chats">Sohbetler</string>
+    <string name="nav_groups">Gruplar</string>
     <string name="nav_updates">Güncellemeler</string>
     <string name="nav_communities">Topluluklar</string>
     <string name="nav_settings">Ayarlar</string>
@@ -52,6 +53,17 @@
     <string name="chat_status_online">çevrimiçi</string>
     <string name="chat_status_typing">yazıyor…</string>
     <string name="chat_status_recording">ses kaydediyor…</string>
+    <string name="chat_switch_to_emoji">Emoji</string>
+    <string name="chat_switch_to_keyboard">Klavye</string>
+    <string name="chat_emoji_panel_title">Emoji</string>
+    <string name="chat_emoji_backspace">Sil</string>
+    <string name="chat_doc_save_downloads">İndirilenlere Kaydet</string>
+    <string name="chat_doc_open_with">Dosyayı aç</string>
+    <string name="chat_doc_download">%1$s indir</string>
+    <string name="chat_doc_no_viewer">Bu dosyayı açacak uygulama bulunamadı</string>
+    <string name="chat_media_add_caption">Açıklama ekle…</string>
+    <string name="chat_attach_gallery">Galeri (Fotoğraf ve Video)</string>
+    <string name="chat_attach_document">Belge / Dosya</string>
 
     <!-- Reaction Customizer (#24) -->
     <string name="reaction_dialog_title">Hızlı Tepki Emojileri</string>
@@ -121,8 +133,8 @@
     <string name="settings_look_vertical_status_subtitle">Güncellemeler sekmesinde durumları yatay kartlar yerine dikey liste halinde gösterir</string>
     <string name="settings_look_always_bio_title">Önbellekteki Hakkında\'yı Her Zaman Göster</string>
     <string name="settings_look_always_bio_subtitle">Sohbet üst çubuğu ve profil önizlemesinde senkronize Hakkında yazısını gösterir (ekstra sunucu sorgusu yok)</string>
-    <string name="settings_look_classic_ui_title">Klasik WhatsApp Gezinme Çubuğu</string>
-    <string name="settings_look_classic_ui_subtitle">Yüzen cam kapsül yerine daha düz klasik alt gezinme çubuğu</string>
+    <string name="settings_look_classic_ui_title">Klasik WhatsApp Görünümü</string>
+    <string name="settings_look_classic_ui_subtitle">Üst çubuklar, alt gezinme ve sohbet kutusundaki yüzen cam kapsülleri düz klasik WhatsApp görünümüne döndürür</string>
     <string name="settings_look_compact_rows_title">Sıkıştırılmış Sohbet Listesi</string>
     <string name="settings_look_compact_rows_subtitle">Ekrana daha fazla sohbet sığması için satır boşluğunu azaltır</string>
     <string name="settings_look_seconds_title">Saatlerde Saniyeyi Göster</string>
@@ -131,6 +143,10 @@
     <string name="settings_look_hide_camera_subtitle">Sohbetler sekmesindeki üst çubuğu sadeleştirir</string>
     <string name="settings_look_hide_badges_title">Gizlilik Durum Rozetlerini Gizle</string>
     <string name="settings_look_hide_badges_subtitle">Stok görünüm için Ana Ekrandaki Hayalet / Çevrimiçi rozetlerini gizler</string>
+    <string name="settings_look_separate_groups_title">Sohbet ve Grupları Ayır</string>
+    <string name="settings_look_separate_groups_subtitle">Grupları Sohbetler ile karıştırmak yerine Ana Ekranda ayrı Gruplar sekmesi gösterir</string>
+    <string name="settings_look_hide_channels_title">Kanalları Gizle</string>
+    <string name="settings_look_hide_channels_subtitle">Güncellemeler sekmesinde Kanallar bölümünü gizler</string>
 
     <!-- Wallpaper Positioning (#21) -->
     <string name="wallpaper_zoom_label">Yakınlaştırma (%1$.2fx)</string>
@@ -145,4 +161,54 @@
     <string name="link_companion_notice">Resmi WhatsApp\'ı yüklü tutun — Wupp bağımsız bir uygulama değil, eşlikçi bir istemcidir.</string>
     <string name="link_mode_qr">QR kodu</string>
     <string name="link_mode_phone">Telefon numarası</string>
+
+    <!-- Status Viewer & Composer (#39) -->
+    <string name="status_loading_media">Durum medyası indiriliyor…</string>
+    <string name="status_tap_to_retry">Medya yerel olarak bulunamadı — tekrar denemek için dokun</string>
+    <string name="status_my_status">Durumum</string>
+    <string name="status_add_update">Durum güncellemesi eklemek için dokun</string>
+    <string name="status_composer_title">Durum Paylaş</string>
+    <string name="status_composer_text_tab">Metin</string>
+    <string name="status_composer_media_tab">Fotoğraf / Video</string>
+    <string name="status_composer_placeholder">Bir durum yazın…</string>
+    <string name="status_composer_share_wa">WhatsApp\'ta Paylaş</string>
+    <string name="status_composer_pick_media">Fotoğraf veya video seç</string>
+    <string name="status_composer_zero_risk_note">Durumum\'a eklemek için resmi WhatsApp\'ı açar — %0 hesap riski.</string>
+    <string name="status_composer_no_wa_fallback">WhatsApp doğrudan açılamadı; paylaşım menüsünden seçin.</string>
+
+    <!-- Message Delete & Anti-Delete Device Removal (#37) -->
+    <string name="chat_delete_dialog_title">Mesaj silinsin mi?</string>
+    <string name="chat_delete_captured_title">Cihazdan kalıcı olarak silinsin mi?</string>
+    <string name="chat_delete_captured_body">Bu silinen mesaj Silme Koruması tarafından saklandı. Bu cihazdan kalıcı olarak silinsin mi?</string>
+    <string name="chat_delete_incoming_body">Bu işlem mesajı bu cihazdan kalıcı olarak kaldırır.</string>
+    <string name="chat_delete_outgoing_body">Bu mesajı herkes için mi yoksa yalnızca bu cihazdan mı sileceğinizi seçin.</string>
+    <string name="chat_delete_for_everyone">Herkesten sil</string>
+    <string name="chat_delete_for_me">Benden sil</string>
+    <string name="chat_delete_from_device">Cihazdan sil</string>
+
+    <!-- WhatsApp Daily-Driver Settings (#36) -->
+    <string name="settings_section_account_privacy">HESAP VE GİZLİLİK</string>
+    <string name="settings_section_chats">SOHBETLER VE YAZIM</string>
+    <string name="settings_wa_privacy_title">WhatsApp Hesap Gizliliği</string>
+    <string name="settings_wa_privacy_subtitle">Son görülme, profil fotoğrafı, hakkımda, gruplar, bilinmeyenleri sessize alma ve süre</string>
+    <string name="settings_blocked_contacts_title">Engellenen Kişiler</string>
+    <string name="settings_blocked_contacts_subtitle">WhatsApp hesabınızda engellenen kişileri yönetin</string>
+    <string name="settings_account_limits_title">Bağlı Cihaz Kapsamı</string>
+    <string name="settings_account_limits_subtitle">İki adımlı doğrulama, numara değiştirme ve Drive yedekleri resmi WhatsApp\'ta kalır</string>
+    <string name="settings_enter_sends_title">Enter Tuşuyla Gönder</string>
+    <string name="settings_enter_sends_subtitle">Klavyedeki Enter tuşu mesajı hemen gönderir</string>
+    <string name="settings_font_size_title">Sohbet Yazı Boyutu</string>
+    <string name="settings_notify_dm_title">Birebir Mesaj Bildirimleri</string>
+    <string name="settings_notify_dm_subtitle">Gelen birebir sohbet mesajları için bildirim göster</string>
+    <string name="settings_notify_group_title">Grup Mesaj Bildirimleri</string>
+    <string name="settings_notify_group_subtitle">Sessize alınmamış grup mesajları için bildirim göster</string>
+    <string name="settings_notify_preview_title">Bildirim Önizlemelerini Göster</string>
+    <string name="settings_notify_preview_subtitle">Kilit ekranı gizliliği için mesaj içeriğini göster veya gizle</string>
+    <string name="settings_notify_vibrate_title">Bildirimlerde Titreşim</string>
+    <string name="settings_notify_vibrate_subtitle">Yeni mesaj geldiğinde titreşim kullan</string>
+    <string name="settings_manage_storage_title">Depolama ve Önbelleği Yönet</string>
+    <string name="settings_manage_storage_subtitle">Veritabanı, medya kasası ve geçici önbellek boyutunu görüntüleyip temizleyin</string>
+
+    <!-- Quoted Message Jump (#34) -->
+    <string name="chat_quoted_not_found">Orijinal mesaj bu cihazda bulunamadı</string>
 </resources>

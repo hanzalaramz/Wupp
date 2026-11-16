@@ -156,6 +156,24 @@ interface WaDao {
     @Query("DELETE FROM messages WHERE chat_jid = :chatJid AND timestamp <= :maxTimestamp")
     suspend fun deleteMessagesForChatUpTo(chatJid: String, maxTimestamp: Long)
 
+    @Query("DELETE FROM messages WHERE id = :messageId")
+    suspend fun deleteMessageById(messageId: String)
+
+    @Query("DELETE FROM message_edits WHERE message_id = :messageId")
+    suspend fun deleteEditsForMessage(messageId: String)
+
+    @Query("DELETE FROM group_receipts WHERE message_id = :messageId")
+    suspend fun deleteReceiptsForMessage(messageId: String)
+
+    @Query("SELECT COUNT(*) FROM messages WHERE local_media_path = :mediaPath")
+    suspend fun countMediaPathReferences(mediaPath: String): Int
+
+    @Query("SELECT EXISTS(SELECT 1 FROM messages WHERE chat_jid = :chatJid AND is_deleted_by_sender = 1)")
+    suspend fun hasAnyDeletedMessage(chatJid: String): Boolean
+
+    @Query("SELECT EXISTS(SELECT 1 FROM messages WHERE chat_jid = :chatJid AND is_edited = 1)")
+    suspend fun hasAnyEditedMessage(chatJid: String): Boolean
+
     @Query("DELETE FROM chats WHERE jid = :chatJid")
     suspend fun deleteChatRow(chatJid: String)
 
@@ -906,6 +924,42 @@ interface WaDao {
                 )
             )
         }
+    }
+
+    /**
+     * Permanently removes a single message and its metadata from the local database,
+     * recalculates the parent chat preview/flags, and returns any now-unreferenced local media path.
+     */
+    @Transaction
+    suspend fun deleteMessagePermanentlyFromDb(messageId: String): String? {
+        val existing = getMessage(messageId) ?: return null
+        deleteMessageById(messageId)
+        deleteEditsForMessage(messageId)
+        deleteReceiptsForMessage(messageId)
+
+        val chat = getChat(existing.chatJid)
+        if (chat != null) {
+            val latest = getLatestMessageForChat(existing.chatJid)
+            val hasDeleted = hasAnyDeletedMessage(existing.chatJid)
+            val hasEdited = hasAnyEditedMessage(existing.chatJid)
+            val shouldRefreshPreview = chat.lastMessageId == messageId || chat.lastMessageId.isNullOrBlank()
+            upsertChat(
+                chat.copy(
+                    hasDeletedMessages = hasDeleted,
+                    hasEditedMessages = hasEdited,
+                    lastMessageId = if (shouldRefreshPreview) latest?.id.orEmpty() else chat.lastMessageId,
+                    lastMessagePreview = if (shouldRefreshPreview) latest?.let { previewTextFor(it) }.orEmpty() else chat.lastMessagePreview,
+                    lastMessageType = if (shouldRefreshPreview) latest?.msgType ?: "TEXT" else chat.lastMessageType,
+                    lastMessageFromMe = if (shouldRefreshPreview) latest?.isFromMe ?: false else chat.lastMessageFromMe,
+                    lastMessageStatus = if (shouldRefreshPreview) latest?.deliveryStatus.orEmpty() else chat.lastMessageStatus,
+                    lastMessageIsDeleted = if (shouldRefreshPreview) latest?.isDeletedBySender ?: false else chat.lastMessageIsDeleted,
+                    lastMessageTimestamp = if (shouldRefreshPreview && latest != null) latest.timestamp else chat.lastMessageTimestamp
+                )
+            )
+        }
+
+        val mediaPath = existing.localMediaPath?.takeIf { it.isNotBlank() } ?: return null
+        return if (countMediaPathReferences(mediaPath) == 0) mediaPath else null
     }
 
     @Transaction

@@ -50,13 +50,16 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.BatteryChargingFull
+import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.CleaningServices
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Code
@@ -68,7 +71,11 @@ import androidx.compose.material.icons.rounded.EmojiEmotions
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Flight
+import androidx.compose.material.icons.rounded.FormatSize
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.KeyboardReturn
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
@@ -86,6 +93,7 @@ import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.TextFields
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Unarchive
+import androidx.compose.material.icons.rounded.Vibration
 import androidx.compose.material.icons.rounded.ViewAgenda
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Warning
@@ -163,6 +171,7 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 import com.wa.beastclient.BuildConfig
 import com.wa.beastclient.R
+import com.wa.beastclient.core.service.OwnProfileUi
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.core.update.UpdateUiState
 import com.wa.beastclient.data.db.ChatEntity
@@ -177,6 +186,9 @@ import com.wa.beastclient.ui.HomeFilterChip
 import com.wa.beastclient.ui.components.AppLanguageDialog
 import com.wa.beastclient.ui.components.AppLockConfigDialog
 import com.wa.beastclient.ui.components.AutoDownloadNetworkDialog
+import com.wa.beastclient.ui.components.BlockedContactsDialog
+import com.wa.beastclient.ui.components.ChatFontSizeDialog
+import com.wa.beastclient.ui.components.CompanionScopeInfoDialog
 import com.wa.beastclient.ui.components.ExpressiveIconBadge
 import com.wa.beastclient.ui.components.ExpressiveSegmentPosition
 import com.wa.beastclient.ui.components.ExpressiveSegmentedActionRow
@@ -186,7 +198,16 @@ import com.wa.beastclient.ui.components.ExpressiveSegmentedSwitchRow
 import com.wa.beastclient.ui.components.FullScreenMediaViewer
 import com.wa.beastclient.ui.components.FullScreenStatusViewer
 import com.wa.beastclient.ui.components.GalleryVisibilityContactsDialog
+import com.wa.beastclient.ui.components.ProfileEditorDialog
+import com.wa.beastclient.ui.components.SettingsProfileHeaderCard
+import com.wa.beastclient.ui.components.StatusComposerMode
+import com.wa.beastclient.ui.components.StatusComposerSheet
 import com.wa.beastclient.ui.components.StatusGroup
+import com.wa.beastclient.ui.components.StorageUsageDialog
+import com.wa.beastclient.ui.components.WhatsAppAccountPrivacyDialog
+import com.wa.beastclient.ui.components.formatFontScaleLabel
+import com.wa.beastclient.ui.components.isOwnStatusSender
+import com.wa.beastclient.ui.components.partitionOwnAndContactStatuses
 import com.wa.beastclient.ui.components.GitHubFeedbackDialog
 import com.wa.beastclient.ui.components.GitHubFeedbackType
 import com.wa.beastclient.ui.MainViewModel
@@ -227,6 +248,7 @@ fun HomeScreen(
     currentTab: Int = 0,
     onSelectTab: (Int) -> Unit = {},
     chatsListState: LazyListState = rememberLazyListState(),
+    groupsListState: LazyListState = rememberLazyListState(),
     updatesListState: LazyListState = rememberLazyListState(),
     communitiesListState: LazyListState = rememberLazyListState(),
     toolsListState: LazyListState = rememberLazyListState()
@@ -235,10 +257,12 @@ fun HomeScreen(
     val mono = LocalWaMonoFamily.current
 
     val chats by viewModel.filteredChats.collectAsState()
+    val groupsChats by viewModel.filteredGroups.collectAsState()
     val allChats by viewModel.allChats.collectAsState()
     val allContacts by viewModel.allContacts.collectAsState()
     val channels by viewModel.channels.collectAsState()
     val selectedChip by viewModel.selectedFilter.collectAsState()
+    val selectedGroupsChip by viewModel.selectedGroupsFilter.collectAsState()
     val searchQuery by viewModel.homeSearchQuery.collectAsState()
     val ftsHits by viewModel.ftsSearchResults.collectAsState()
     val stealth by viewModel.stealthConfig.collectAsState()
@@ -251,6 +275,8 @@ fun HomeScreen(
     val bridgeStatus by viewModel.bridgeStatus.collectAsState()
     val heartbeat by viewModel.heartbeatStatus.collectAsState()
     val statuses by viewModel.statuses.collectAsState()
+    val downloadingMediaIds by viewModel.downloadingMediaIds.collectAsState()
+    val failedMediaIds by viewModel.failedMediaIds.collectAsState()
     val voVault by viewModel.viewOnceVault.collectAsState()
     val presenceLogs by viewModel.presenceLogs.collectAsState()
     val profileHistory by viewModel.profileHistory.collectAsState()
@@ -258,13 +284,29 @@ fun HomeScreen(
     val updateState by viewModel.updateState.collectAsState()
     val context = LocalContext.current
 
-    val unreadChatsCount = remember(allChats) {
+    val unreadChatsCount = remember(allChats, stealth.separateGroupsAndChats) {
         allChats.count {
             !it.isCommunityParent &&
                 !it.jid.endsWith("@newsletter") &&
                 !it.isPhantomEmptyDm() &&
                 !(it.name.startsWith("@") && it.lastMessagePreview.isBlank()) &&
+                (!stealth.separateGroupsAndChats || !it.isGroup) &&
                 it.unreadCount > 0
+        }
+    }
+    val unreadGroupsCount = remember(allChats, stealth.separateGroupsAndChats) {
+        if (!stealth.separateGroupsAndChats) 0
+        else allChats.count {
+            !it.isCommunityParent &&
+                !it.jid.endsWith("@newsletter") &&
+                it.isGroup &&
+                it.unreadCount > 0
+        }
+    }
+
+    LaunchedEffect(stealth.separateGroupsAndChats, currentTab) {
+        if (!stealth.separateGroupsAndChats && currentTab == 4) {
+            onSelectTab(0)
         }
     }
 
@@ -278,6 +320,7 @@ fun HomeScreen(
         quickContactTarget?.let { t -> allChats.firstOrNull { it.jid == t.jid } ?: t }
     }
     var activeStatusViewer by remember { mutableStateOf<StatusEntity?>(null) }
+    var statusComposerInitialMode by remember { mutableStateOf<StatusComposerMode?>(null) }
     var activeVaultViewer by remember { mutableStateOf<MessageEntity?>(null) }
     var activeFeedbackType by remember { mutableStateOf<GitHubFeedbackType?>(null) }
     var showThemePickerDialog by remember { mutableStateOf(false) }
@@ -330,13 +373,13 @@ fun HomeScreen(
         }
     }
 
-    val selectedChats = remember(selectedChatJids, allChats, chats) {
-        val merged = (allChats + chats).associateBy { it.jid }
+    val selectedChats = remember(selectedChatJids, allChats, chats, groupsChats) {
+        val merged = (allChats + chats + groupsChats).associateBy { it.jid }
         selectedChatJids.mapNotNull { merged[it] }
     }
 
     LaunchedEffect(currentTab) {
-        if (currentTab != 0 && selectedChatJids.isNotEmpty()) {
+        if (selectedChatJids.isNotEmpty()) {
             selectedChatJids = emptySet()
             selectionOverflowExpanded = false
         }
@@ -358,7 +401,7 @@ fun HomeScreen(
             val motionScheme = MaterialTheme.motionScheme
             Column(modifier = Modifier.background(colors.appSurface)) {
                 AnimatedContent(
-                    targetState = currentTab == 0 && selectedChatJids.isNotEmpty(),
+                    targetState = (currentTab == 0 || currentTab == 4) && selectedChatJids.isNotEmpty(),
                     transitionSpec = {
                         (fadeIn(motionScheme.fastEffectsSpec()) + scaleIn(
                             initialScale = 0.98f,
@@ -560,6 +603,7 @@ fun HomeScreen(
                         } else {
                             Text(
                                 text = when (currentTab) {
+                                    4 -> stringResource(R.string.nav_groups)
                                     1 -> stringResource(R.string.nav_updates)
                                     2 -> stringResource(R.string.nav_communities)
                                     else -> stringResource(R.string.nav_settings)
@@ -571,7 +615,7 @@ fun HomeScreen(
                         }
                     },
                     actions = {
-                        if (currentTab == 0 && !stealth.hideHomeCameraShortcut) {
+                        if ((currentTab == 0 || currentTab == 4) && !stealth.hideHomeCameraShortcut) {
                             IconButton(onClick = { showPairingDialog = true }) {
                                 Icon(
                                     painter = painterResource(R.drawable.vec_ic_camera_reply),
@@ -675,7 +719,7 @@ fun HomeScreen(
                 }
                 }
 
-                AnimatedVisibility(visible = searchExpanded && currentTab != 0) {
+                AnimatedVisibility(visible = searchExpanded && currentTab != 0 && currentTab != 4) {
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { viewModel.updateHomeSearch(it) },
@@ -703,7 +747,10 @@ fun HomeScreen(
                 onSelectTab = onSelectTab,
                 backdropState = backdropState,
                 classicMode = stealth.classicWhatsAppLook,
+                separateGroupsAndChats = stealth.separateGroupsAndChats,
+                unreadGroupsCount = unreadGroupsCount,
                 chatsLabel = stringResource(R.string.nav_chats),
+                groupsLabel = stringResource(R.string.nav_groups),
                 updatesLabel = stringResource(R.string.nav_updates),
                 communitiesLabel = stringResource(R.string.nav_communities),
                 settingsLabel = stringResource(R.string.nav_settings)
@@ -711,7 +758,7 @@ fun HomeScreen(
         },
         floatingActionButton = {
             when (currentTab) {
-                0 -> {
+                0, 4 -> {
                     FloatingActionButton(
                         onClick = { showQuickContactPicker = true },
                         containerColor = colors.brightGreen,
@@ -752,7 +799,7 @@ fun HomeScreen(
                         FloatingActionButtonMenuItem(
                             onClick = {
                                 updatesFabExpanded = false
-                                statuses.firstOrNull()?.let { activeStatusViewer = it }
+                                statusComposerInitialMode = StatusComposerMode.TEXT
                             },
                             icon = {
                                 Icon(
@@ -767,7 +814,7 @@ fun HomeScreen(
                         FloatingActionButtonMenuItem(
                             onClick = {
                                 updatesFabExpanded = false
-                                statuses.firstOrNull()?.let { activeStatusViewer = it }
+                                statusComposerInitialMode = StatusComposerMode.MEDIA
                             },
                             icon = {
                                 Icon(
@@ -791,13 +838,16 @@ fun HomeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding())
-                .wuppBackdropSource(backdropState)
+                .then(if (!stealth.classicWhatsAppLook) Modifier.wuppBackdropSource(backdropState) else Modifier)
                 .background(colors.appSurface)
         ) {
+            val tabOrder = remember(stealth.separateGroupsAndChats) {
+                if (stealth.separateGroupsAndChats) listOf(0, 4, 1, 2, 3) else listOf(0, 1, 2, 3)
+            }
             AnimatedContent(
                 targetState = currentTab,
                 transitionSpec = {
-                    val forward = targetState >= initialState
+                    val forward = tabOrder.indexOf(targetState) >= tabOrder.indexOf(initialState)
                     (slideInHorizontally(
                         animationSpec = motionScheme.defaultSpatialSpec()
                     ) { width -> if (forward) width / 5 else -width / 5 } + fadeIn(
@@ -810,82 +860,84 @@ fun HomeScreen(
                 },
                 label = "home_tab_transition"
             ) { tabIndex ->
+                val toggleSelection: (ChatEntity) -> Unit = { chat ->
+                    selectedChatJids = if (chat.jid in selectedChatJids) {
+                        selectedChatJids - chat.jid
+                    } else {
+                        selectedChatJids + chat.jid
+                    }
+                }
+                val handleAvatarClick: (ChatEntity) -> Unit = { chat ->
+                    if (selectedChatJids.isNotEmpty()) toggleSelection(chat) else quickContactTarget = chat
+                }
+                val handleChatClick: (ChatEntity) -> Unit = { chat ->
+                    if (selectedChatJids.isNotEmpty()) toggleSelection(chat) else onOpenChat(chat.jid)
+                }
+                val revealIfLockedFilter: (HomeFilterChip) -> Unit = { chip ->
+                    if (chip == HomeFilterChip.LOCKED &&
+                        appLockConfig.hideLockedChatsBehindLock &&
+                        !lockedChatsRevealed
+                    ) {
+                        requestRevealLockedChats()
+                    }
+                }
                 when (tabIndex) {
-                    0 -> ChatsTabContent(
-                        chats = chats,
-                        allChats = allChats,
-                        selectedChip = selectedChip,
-                        ftsHits = ftsHits,
-                        searchQuery = searchQuery,
-                        listState = chatsListState,
-                        selectedChatJids = selectedChatJids,
-                        bottomPadding = contentBottomPad,
-                        archivedCount = archivedCount,
-                        includeArchived = includeArchived,
-                        hiddenLockedCount = hiddenLockedCount,
-                        hideLockedBehindLock = appLockConfig.hideLockedChatsBehindLock,
-                        lockedChatsRevealed = lockedChatsRevealed,
-                        compactRows = stealth.compactChatRows,
-                        showSeconds = showSeconds,
-                        hideStealthBadges = stealth.hideStealthStatusBadges,
-                        onSearchChange = { viewModel.updateHomeSearch(it) },
-                        heartbeat = heartbeat,
-                        bridgeStatus = bridgeStatus,
-                        onSelectChip = { chip ->
-                            if (chip == HomeFilterChip.LOCKED &&
-                                appLockConfig.hideLockedChatsBehindLock &&
-                                !lockedChatsRevealed
-                            ) {
-                                requestRevealLockedChats()
-                            }
-                            viewModel.selectFilter(chip)
-                        },
-                        onToggleIncludeArchived = { viewModel.setIncludeArchived(it) },
-                        onRequestRevealLockedChats = { requestRevealLockedChats() },
-                        onHideRevealedLockedChats = { viewModel.setLockedChatsRevealed(false) },
-                        onResetHeartbeat = { viewModel.recordPrimaryHeartbeatNow() },
-                        onSeedShowcase = { viewModel.seedShowcaseData() },
-                        onAvatarClick = { chat ->
-                            if (selectedChatJids.isNotEmpty()) {
-                                selectedChatJids = if (chat.jid in selectedChatJids) {
-                                    selectedChatJids - chat.jid
-                                } else {
-                                    selectedChatJids + chat.jid
-                                }
-                            } else {
-                                quickContactTarget = chat
-                            }
-                        },
-                        onChatClick = { chat ->
-                            if (selectedChatJids.isNotEmpty()) {
-                                selectedChatJids = if (chat.jid in selectedChatJids) {
-                                    selectedChatJids - chat.jid
-                                } else {
-                                    selectedChatJids + chat.jid
-                                }
-                            } else {
-                                onOpenChat(chat.jid)
-                            }
-                        },
-                        onChatLongClick = { chat ->
-                            selectedChatJids = if (chat.jid in selectedChatJids) {
-                                selectedChatJids - chat.jid
-                            } else {
-                                selectedChatJids + chat.jid
-                            }
+                    0, 4 -> {
+                        val isGroupsTab = tabIndex == 4 && stealth.separateGroupsAndChats
+                        val tabGroupFilterMode: Boolean? = when {
+                            isGroupsTab -> true
+                            stealth.separateGroupsAndChats -> false
+                            else -> null
                         }
-                    )
+                        ChatsTabContent(
+                            chats = if (isGroupsTab) groupsChats else chats,
+                            allChats = allChats,
+                            selectedChip = if (isGroupsTab) selectedGroupsChip else selectedChip,
+                            ftsHits = ftsHits,
+                            searchQuery = searchQuery,
+                            listState = if (isGroupsTab) groupsListState else chatsListState,
+                            selectedChatJids = selectedChatJids,
+                            bottomPadding = contentBottomPad,
+                            archivedCount = archivedCount,
+                            includeArchived = includeArchived,
+                            hiddenLockedCount = hiddenLockedCount,
+                            hideLockedBehindLock = appLockConfig.hideLockedChatsBehindLock,
+                            lockedChatsRevealed = lockedChatsRevealed,
+                            compactRows = stealth.compactChatRows,
+                            showSeconds = showSeconds,
+                            hideStealthBadges = stealth.hideStealthStatusBadges,
+                            groupFilterMode = tabGroupFilterMode,
+                            onSearchChange = { viewModel.updateHomeSearch(it) },
+                            heartbeat = heartbeat,
+                            bridgeStatus = bridgeStatus,
+                            onSelectChip = { chip ->
+                                revealIfLockedFilter(chip)
+                                if (isGroupsTab) viewModel.selectGroupsFilter(chip) else viewModel.selectFilter(chip)
+                            },
+                            onToggleIncludeArchived = { viewModel.setIncludeArchived(it) },
+                            onRequestRevealLockedChats = { requestRevealLockedChats() },
+                            onHideRevealedLockedChats = { viewModel.setLockedChatsRevealed(false) },
+                            onResetHeartbeat = { viewModel.recordPrimaryHeartbeatNow() },
+                            onSeedShowcase = { viewModel.seedShowcaseData() },
+                            onAvatarClick = handleAvatarClick,
+                            onChatClick = handleChatClick,
+                            onChatLongClick = toggleSelection
+                        )
+                    }
 
                     1 -> UpdatesStatusTab(
                         statuses = statuses,
                         channels = channels,
                         allChats = allChats,
+                        ownJid = bridgeStatus.ownJid,
                         searchQuery = searchQuery,
                         listState = updatesListState,
                         bottomPadding = contentBottomPad,
                         verticalStatusLayout = stealth.statusVerticalLayout,
+                        hideChannels = stealth.hideChannels,
                         showSeconds = showSeconds,
                         onOpenStatus = { activeStatusViewer = it },
+                        onAddStatus = { mode -> statusComposerInitialMode = mode },
                         onOpenChannel = { onOpenChat(it) }
                     )
 
@@ -1024,40 +1076,53 @@ fun HomeScreen(
         )
     }
 
+    statusComposerInitialMode?.let { mode ->
+        StatusComposerSheet(
+            initialMode = mode,
+            onDismiss = { statusComposerInitialMode = null }
+        )
+    }
+
     activeStatusViewer?.let { st ->
-        val statusGroups = remember(statuses, allChats, st.id) {
+        val myStatusLabel = stringResource(R.string.status_my_status)
+        val statusGroups = remember(statuses, allChats, bridgeStatus.ownJid, myStatusLabel, st.id) {
             val (chatsByJid, chatsByUser) = buildStatusChatLookup(allChats)
-            val bySender = statuses.groupBy { normalizeStatusSenderJid(it.senderJid) }
-            val groupsList = bySender.entries.map { (senderJid, items) ->
+            val (ownStatuses, contactStatuses) = partitionOwnAndContactStatuses(statuses, bridgeStatus.ownJid)
+            val viewedOwn = isOwnStatusSender(st.senderJid, bridgeStatus.ownJid)
+
+            fun toStatusGroup(senderJid: String, items: List<StatusEntity>, isOwn: Boolean): StatusGroup {
                 val sortedItems = items.sortedBy { it.timestamp }
                 val senderChat = resolveStatusSenderChat(senderJid, chatsByJid, chatsByUser)
                 val firstItem = sortedItems.firstOrNull()
-                StatusGroup(
+                return StatusGroup(
                     senderJid = senderJid,
-                    senderName = resolveStatusDisplayName(
-                        senderJid = firstItem?.senderJid ?: senderJid,
-                        storedName = firstItem?.senderName.orEmpty(),
-                        senderChat = senderChat
-                    ),
+                    senderName = if (isOwn) {
+                        myStatusLabel
+                    } else {
+                        resolveStatusDisplayName(
+                            senderJid = firstItem?.senderJid ?: senderJid,
+                            storedName = firstItem?.senderName.orEmpty(),
+                            senderChat = senderChat
+                        )
+                    },
                     senderAvatarPath = senderChat?.avatarPath,
-                    items = sortedItems
+                    items = sortedItems,
+                    isOwn = isOwn
                 )
             }
-            groupsList.ifEmpty {
-                val normSender = normalizeStatusSenderJid(st.senderJid)
-                val senderChat = resolveStatusSenderChat(normSender, chatsByJid, chatsByUser)
-                listOf(
-                    StatusGroup(
-                        senderJid = normSender,
-                        senderName = resolveStatusDisplayName(
-                            senderJid = st.senderJid,
-                            storedName = st.senderName,
-                            senderChat = senderChat
-                        ),
-                        senderAvatarPath = senderChat?.avatarPath,
-                        items = listOf(st)
-                    )
-                )
+
+            if (viewedOwn) {
+                val ownItems = ownStatuses.ifEmpty { listOf(st) }
+                listOf(toStatusGroup(normalizeStatusSenderJid(st.senderJid), ownItems, isOwn = true))
+            } else {
+                val bySender = contactStatuses.groupBy { normalizeStatusSenderJid(it.senderJid) }
+                val groupsList = bySender.entries.map { (senderJid, items) ->
+                    toStatusGroup(senderJid, items, isOwn = false)
+                }
+                groupsList.ifEmpty {
+                    val normSender = normalizeStatusSenderJid(st.senderJid)
+                    listOf(toStatusGroup(normSender, listOf(st), isOwn = false))
+                }
             }
         }
         val initialGroupIdx = remember(statusGroups, st.senderJid) {
@@ -1071,6 +1136,11 @@ fun HomeScreen(
             groups = statusGroups,
             initialGroupIndex = initialGroupIdx,
             initialStoryIndex = initialStoryIdx,
+            downloadingStatusIds = downloadingMediaIds,
+            failedStatusIds = failedMediaIds,
+            onRequestDownload = { target ->
+                viewModel.requestStatusMediaDownload(target, userInitiated = true)
+            },
             onDismiss = { activeStatusViewer = null },
             onSaveToGallery = { target ->
                 val ext = if (target.mimeType.contains("mp4", ignoreCase = true)) "mp4" else "png"
@@ -1081,10 +1151,11 @@ fun HomeScreen(
                 )
             },
             onReply = { target ->
-                if (target.senderJid.isNotBlank()) {
+                if (target.senderJid.isNotBlank() && !isOwnStatusSender(target.senderJid, bridgeStatus.ownJid)) {
                     onOpenChat(target.senderJid)
                 }
-            }
+            },
+            onAddStatus = { statusComposerInitialMode = StatusComposerMode.MEDIA }
         )
     }
 
@@ -1288,6 +1359,7 @@ private fun ChatsTabContent(
     compactRows: Boolean = false,
     showSeconds: Boolean = false,
     hideStealthBadges: Boolean = false,
+    groupFilterMode: Boolean? = null,
     onSearchChange: (String) -> Unit,
     heartbeat: com.wa.beastclient.domain.stealth.PrimaryHeartbeatStatus,
     bridgeStatus: com.wa.beastclient.core.service.BridgeStatus,
@@ -1308,13 +1380,18 @@ private fun ChatsTabContent(
     var isRefreshing by remember { mutableStateOf(false) }
     val pullRefreshState = rememberPullToRefreshState()
 
-    val nonCommunityChats = remember(allChats) {
+    val nonCommunityChats = remember(allChats, groupFilterMode) {
         allChats.filter {
             !it.isCommunityParent &&
                 !it.jid.endsWith("@newsletter") &&
                 !it.isPhantomEmptyDm() &&
-                !(it.name.startsWith("@") && it.lastMessagePreview.isBlank())
+                !(it.name.startsWith("@") && it.lastMessagePreview.isBlank()) &&
+                (groupFilterMode == null || it.isGroup == groupFilterMode)
         }
+    }
+    val tabHiddenLockedCount = remember(nonCommunityChats, hideLockedBehindLock, lockedChatsRevealed, hiddenLockedCount) {
+        if (!hideLockedBehindLock || lockedChatsRevealed) 0
+        else nonCommunityChats.count { it.isLocked }
     }
 
     PullToRefreshBox(
@@ -1346,8 +1423,9 @@ private fun ChatsTabContent(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = bottomPadding)
     ) {
-        // Inline frosted search pill bar
+        // Inline search bar (frosted glass or flat classic WhatsApp look)
         item(key = "inline_search_bar") {
+            val isClassicUi = com.wa.beastclient.ui.theme.LocalWuppClassicUi.current
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1357,7 +1435,8 @@ private fun ChatsTabContent(
                         colors = colors,
                         shape = RoundedCornerShape(24.dp),
                         elevation = 6.dp,
-                        alpha = if (colors.isDark) 0.78f else 0.92f
+                        alpha = if (colors.isDark) 0.78f else 0.92f,
+                        classicMode = isClassicUi
                     )
                     .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -1441,27 +1520,19 @@ private fun ChatsTabContent(
 
         // Filter Chips Row (All / Unread N / Favorites / Groups N / +)
         item(key = "filter_chips") {
-            val hasLockedChats = remember(nonCommunityChats, hiddenLockedCount) {
-                hiddenLockedCount > 0 || nonCommunityChats.any { it.isLocked }
+            val hasLockedChats = remember(nonCommunityChats, tabHiddenLockedCount) {
+                tabHiddenLockedCount > 0 || nonCommunityChats.any { it.isLocked }
             }
-            val visibleChips = remember(showExtraFilters, hasLockedChats) {
-                if (showExtraFilters) {
-                    buildList {
-                        add(HomeFilterChip.ALL)
-                        add(HomeFilterChip.UNREAD)
-                        add(HomeFilterChip.FAVORITES)
-                        add(HomeFilterChip.GROUPS)
-                        if (hasLockedChats) add(HomeFilterChip.LOCKED)
+            val visibleChips = remember(showExtraFilters, hasLockedChats, groupFilterMode) {
+                buildList {
+                    add(HomeFilterChip.ALL)
+                    add(HomeFilterChip.UNREAD)
+                    add(HomeFilterChip.FAVORITES)
+                    if (groupFilterMode == null) add(HomeFilterChip.GROUPS)
+                    if (hasLockedChats) add(HomeFilterChip.LOCKED)
+                    if (showExtraFilters) {
                         add(HomeFilterChip.DELETED)
                         add(HomeFilterChip.EDITED)
-                    }
-                } else {
-                    buildList {
-                        add(HomeFilterChip.ALL)
-                        add(HomeFilterChip.UNREAD)
-                        add(HomeFilterChip.FAVORITES)
-                        add(HomeFilterChip.GROUPS)
-                        if (hasLockedChats) add(HomeFilterChip.LOCKED)
                     }
                 }
             }
@@ -1475,13 +1546,14 @@ private fun ChatsTabContent(
                         HomeFilterChip.UNREAD -> nonCommunityChats.count { it.unreadCount > 0 }
                         HomeFilterChip.FAVORITES -> nonCommunityChats.count { it.isFavorite }
                         HomeFilterChip.GROUPS -> nonCommunityChats.count { it.isGroup }
-                        HomeFilterChip.LOCKED -> maxOf(hiddenLockedCount, nonCommunityChats.count { it.isLocked })
+                        HomeFilterChip.LOCKED -> maxOf(tabHiddenLockedCount, nonCommunityChats.count { it.isLocked })
                         HomeFilterChip.DELETED -> nonCommunityChats.count { it.hasDeletedMessages || it.lastMessageIsDeleted }
                         HomeFilterChip.EDITED -> nonCommunityChats.count { it.hasEditedMessages }
                     }
                     val active = chip == selectedChip
+                    val isClassicUi = com.wa.beastclient.ui.theme.LocalWuppClassicUi.current
                     val chipRadius by animateDpAsState(
-                        targetValue = if (active) 12.dp else 20.dp,
+                        targetValue = if (isClassicUi) 20.dp else if (active) 12.dp else 20.dp,
                         animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
                         label = "filter_chip_radius_${chip.name}"
                     )
@@ -1607,7 +1679,7 @@ private fun ChatsTabContent(
             }
         }
 
-        if (hiddenLockedCount > 0) {
+        if (tabHiddenLockedCount > 0) {
             item(key = "locked_chats_hidden_banner") {
                 Row(
                     modifier = Modifier
@@ -1633,7 +1705,7 @@ private fun ChatsTabContent(
                     Spacer(modifier = Modifier.width(14.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = stringResource(R.string.home_locked_chats_banner, hiddenLockedCount),
+                            text = stringResource(R.string.home_locked_chats_banner, tabHiddenLockedCount),
                             color = colors.textPrimary,
                             fontSize = 14.5.sp,
                             fontWeight = FontWeight.SemiBold
@@ -2050,19 +2122,29 @@ private fun UpdatesStatusTab(
     statuses: List<StatusEntity>,
     channels: List<ChatEntity>,
     allChats: List<ChatEntity>,
+    ownJid: String = "",
     searchQuery: String,
     listState: LazyListState,
     bottomPadding: Dp = 96.dp,
     verticalStatusLayout: Boolean = false,
+    hideChannels: Boolean = false,
     showSeconds: Boolean = false,
     onOpenStatus: (StatusEntity) -> Unit,
+    onAddStatus: (StatusComposerMode) -> Unit,
     onOpenChannel: (String) -> Unit
 ) {
     val colors = LocalWaColors.current
     val (chatsByJid, chatsByUser) = remember(allChats) { buildStatusChatLookup(allChats) }
-    val groupedStatuses = remember(statuses, allChats, searchQuery) {
+    val (ownStatuses, contactStatuses) = remember(statuses, ownJid) {
+        partitionOwnAndContactStatuses(statuses, ownJid)
+    }
+    val latestOwnStatus = remember(ownStatuses) { ownStatuses.maxByOrNull { it.timestamp } }
+    val ownAvatarPath = remember(ownJid, chatsByJid, chatsByUser) {
+        if (ownJid.isBlank()) null else resolveStatusSenderChat(ownJid, chatsByJid, chatsByUser)?.avatarPath
+    }
+    val groupedStatuses = remember(contactStatuses, allChats, searchQuery) {
         val q = searchQuery.trim().lowercase()
-        val grouped = statuses.groupBy { normalizeStatusSenderJid(it.senderJid) }.values.map { it.first() }
+        val grouped = contactStatuses.groupBy { normalizeStatusSenderJid(it.senderJid) }.values.map { it.first() }
         if (q.isEmpty()) grouped
         else grouped.filter { st ->
             val senderChat = resolveStatusSenderChat(st.senderJid, chatsByJid, chatsByUser)
@@ -2100,6 +2182,13 @@ private fun UpdatesStatusTab(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .clickable {
+                            if (latestOwnStatus != null) {
+                                onOpenStatus(latestOwnStatus)
+                            } else {
+                                onAddStatus(StatusComposerMode.MEDIA)
+                            }
+                        }
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -2108,15 +2197,33 @@ private fun UpdatesStatusTab(
                             modifier = Modifier
                                 .size(48.dp)
                                 .clip(CircleShape)
+                                .then(
+                                    if (latestOwnStatus != null) {
+                                        Modifier
+                                            .border(2.dp, colors.brightGreen, CircleShape)
+                                            .padding(2.dp)
+                                    } else {
+                                        Modifier
+                                    }
+                                )
                                 .background(Color(0xFF4A2531)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Person,
-                                contentDescription = null,
-                                tint = Color(0xFFF48FB1),
-                                modifier = Modifier.size(28.dp)
-                            )
+                            if (ownJid.isNotBlank() && !ownAvatarPath.isNullOrBlank()) {
+                                WhatsAppAvatar(
+                                    jid = ownJid,
+                                    avatarPath = ownAvatarPath,
+                                    isGroup = false,
+                                    size = 44.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Rounded.Person,
+                                    contentDescription = null,
+                                    tint = Color(0xFFF48FB1),
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
                         }
                         Box(
                             modifier = Modifier
@@ -2124,12 +2231,13 @@ private fun UpdatesStatusTab(
                                 .align(Alignment.BottomEnd)
                                 .clip(CircleShape)
                                 .background(colors.brightGreen)
-                                .border(2.dp, colors.appSurface, CircleShape),
+                                .border(2.dp, colors.appSurface, CircleShape)
+                                .clickable { onAddStatus(StatusComposerMode.MEDIA) },
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.Add,
-                                contentDescription = null,
+                                contentDescription = "Add status",
                                 tint = Color(0xFF0B141A),
                                 modifier = Modifier.size(12.dp)
                             )
@@ -2138,13 +2246,22 @@ private fun UpdatesStatusTab(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = "My status",
+                            text = stringResource(R.string.status_my_status),
                             color = colors.textPrimary,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 15.5.sp
                         )
                         Text(
-                            text = "Managed on official WhatsApp",
+                            text = if (latestOwnStatus != null) {
+                                buildString {
+                                    append(formatMessageClock(latestOwnStatus.timestamp, includeSeconds = showSeconds))
+                                    if (ownStatuses.size > 1) {
+                                        append(" · ${ownStatuses.size}")
+                                    }
+                                }
+                            } else {
+                                stringResource(R.string.status_add_update)
+                            },
                             color = colors.textSecondary,
                             fontSize = 12.5.sp
                         )
@@ -2219,7 +2336,13 @@ private fun UpdatesStatusTab(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     item(key = "add_status_card") {
-                        AddStatusStoryCard()
+                        AddStatusStoryCard(
+                            latestOwnStatus = latestOwnStatus,
+                            ownJid = ownJid,
+                            ownAvatarPath = ownAvatarPath,
+                            onOpenOwnStatus = { latestOwnStatus?.let(onOpenStatus) },
+                            onAddStatus = { onAddStatus(StatusComposerMode.MEDIA) }
+                        )
                     }
                     items(groupedStatuses, key = { "status_card_${it.id}" }) { st ->
                         val senderChat = resolveStatusSenderChat(st.senderJid, chatsByJid, chatsByUser)
@@ -2233,90 +2356,176 @@ private fun UpdatesStatusTab(
             }
         }
 
-        item(key = "updates_channels_header") {
-            Text(
-                text = "Channels",
-                fontWeight = FontWeight.Bold,
-                fontSize = 20.sp,
-                color = colors.textPrimary,
-                modifier = Modifier.padding(start = 16.dp, top = 22.dp, end = 16.dp, bottom = 6.dp)
-            )
-        }
-
-        if (filteredChannels.isEmpty()) {
-            item(key = "updates_channels_empty") {
+        if (!hideChannels) {
+            item(key = "updates_channels_header") {
                 Text(
-                    text = "Subscribed channels will appear here once synced.",
-                    color = colors.textSecondary,
-                    fontSize = 13.5.sp,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+                    text = "Channels",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp,
+                    color = colors.textPrimary,
+                    modifier = Modifier.padding(start = 16.dp, top = 22.dp, end = 16.dp, bottom = 6.dp)
                 )
             }
-        } else {
-            items(filteredChannels, key = { "channel_${it.jid}" }) { ch ->
-                ChannelListRow(
-                    channel = ch,
-                    onClick = { onOpenChannel(ch.jid) }
-                )
+
+            if (filteredChannels.isEmpty()) {
+                item(key = "updates_channels_empty") {
+                    Text(
+                        text = "Subscribed channels will appear here once synced.",
+                        color = colors.textSecondary,
+                        fontSize = 13.5.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+                    )
+                }
+            } else {
+                items(filteredChannels, key = { "channel_${it.jid}" }) { ch ->
+                    ChannelListRow(
+                        channel = ch,
+                        onClick = { onOpenChannel(ch.jid) }
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun AddStatusStoryCard() {
+private fun AddStatusStoryCard(
+    latestOwnStatus: StatusEntity?,
+    ownJid: String,
+    ownAvatarPath: String?,
+    onOpenOwnStatus: () -> Unit,
+    onAddStatus: () -> Unit
+) {
     val colors = LocalWaColors.current
+    val ownMediaBmp = remember(latestOwnStatus?.localMediaPath) {
+        latestOwnStatus?.localMediaPath?.let { path ->
+            File(path).takeIf { it.exists() && it.length() > 0 }
+                ?.let { runCatching { BitmapFactory.decodeFile(it.absolutePath)?.asImageBitmap() }.getOrNull() }
+        }
+    }
     Box(
         modifier = Modifier
             .width(100.dp)
             .height(162.dp)
             .clip(RoundedCornerShape(18.dp))
-            .background(colors.elevatedBar)
-            .border(0.5.dp, colors.textSecondary.copy(alpha = 0.16f), RoundedCornerShape(18.dp))
-            .padding(vertical = 12.dp, horizontal = 8.dp)
+            .background(if (latestOwnStatus != null) Color(0xFF1A3438) else colors.elevatedBar)
+            .border(
+                width = if (latestOwnStatus != null) 1.dp else 0.5.dp,
+                color = if (latestOwnStatus != null) colors.brightGreen.copy(alpha = 0.65f) else colors.textSecondary.copy(alpha = 0.16f),
+                shape = RoundedCornerShape(18.dp)
+            )
+            .clickable {
+                if (latestOwnStatus != null) onOpenOwnStatus() else onAddStatus()
+            }
     ) {
-        Box(
-            modifier = Modifier
-                .size(56.dp)
-                .align(Alignment.Center)
-        ) {
+        if (ownMediaBmp != null) {
+            Image(
+                bitmap = ownMediaBmp,
+                contentDescription = stringResource(R.string.status_my_status),
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
             Box(
                 modifier = Modifier
-                    .size(54.dp)
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                Color.Black.copy(alpha = 0.25f),
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.72f)
+                            )
+                        )
+                    )
+            )
+        } else if (latestOwnStatus != null && latestOwnStatus.caption.isNotBlank()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 8.dp, vertical = 34.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = latestOwnStatus.caption,
+                    color = Color.White.copy(alpha = 0.88f),
+                    fontSize = 11.5.sp,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        Box(
+            modifier = if (latestOwnStatus != null) {
+                Modifier
+                    .padding(8.dp)
+                    .size(40.dp)
+                    .align(Alignment.TopStart)
+            } else {
+                Modifier
+                    .size(56.dp)
+                    .align(Alignment.Center)
+            }
+        ) {
+            val ringSize = if (latestOwnStatus != null) 38.dp else 54.dp
+            Box(
+                modifier = Modifier
+                    .size(ringSize)
                     .clip(CircleShape)
+                    .then(
+                        if (latestOwnStatus != null) {
+                            Modifier
+                                .border(2.dp, colors.brightGreen, CircleShape)
+                                .padding(2.dp)
+                        } else {
+                            Modifier
+                        }
+                    )
                     .background(Color(0xFF4A2531)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Person,
-                    contentDescription = null,
-                    tint = Color(0xFFF48FB1),
-                    modifier = Modifier.size(32.dp)
-                )
+                if (ownJid.isNotBlank() && !ownAvatarPath.isNullOrBlank()) {
+                    WhatsAppAvatar(
+                        jid = ownJid,
+                        avatarPath = ownAvatarPath,
+                        isGroup = false,
+                        size = ringSize - 4.dp
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Rounded.Person,
+                        contentDescription = null,
+                        tint = Color(0xFFF48FB1),
+                        modifier = Modifier.size(if (latestOwnStatus != null) 22.dp else 32.dp)
+                    )
+                }
             }
             Box(
                 modifier = Modifier
-                    .size(22.dp)
+                    .size(if (latestOwnStatus != null) 18.dp else 22.dp)
                     .align(Alignment.BottomEnd)
                     .clip(CircleShape)
                     .background(colors.brightGreen)
-                    .border(2.dp, colors.elevatedBar, CircleShape),
+                    .border(2.dp, colors.elevatedBar, CircleShape)
+                    .clickable(onClick = onAddStatus),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Rounded.Add,
                     contentDescription = "Add status",
                     tint = Color(0xFF0B141A),
-                    modifier = Modifier.size(14.dp)
+                    modifier = Modifier.size(if (latestOwnStatus != null) 11.dp else 14.dp)
                 )
             }
         }
         Text(
-            text = "Add status",
-            color = colors.textPrimary,
+            text = if (latestOwnStatus != null) stringResource(R.string.status_my_status) else "Add status",
+            color = if (latestOwnStatus != null) Color.White else colors.textPrimary,
             fontSize = 12.5.sp,
             fontWeight = FontWeight.Medium,
-            modifier = Modifier.align(Alignment.BottomCenter)
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 12.dp, start = 8.dp, end = 8.dp)
         )
     }
 }
@@ -3012,12 +3221,21 @@ private fun ToolsVaultTab(
     onOpenFeedback: (GitHubFeedbackType) -> Unit
 ) {
     val context = LocalContext.current
+    val tabScope = rememberCoroutineScope()
     val stealth by viewModel.stealthConfig.collectAsState()
     val appLockConfig by viewModel.appLockConfig.collectAsState()
+    val bridgeStatus by viewModel.bridgeStatus.collectAsState()
     val allChats by viewModel.allChats.collectAsState()
     val updateState by viewModel.updateState.collectAsState()
     val autoUpdateEnabled by viewModel.autoUpdateEnabled.collectAsState()
     val includePreReleases by viewModel.includePreReleases.collectAsState()
+    var ownProfile by remember { mutableStateOf(OwnProfileUi()) }
+    var showProfileEditorDialog by remember { mutableStateOf(false) }
+    var showAccountPrivacyDialog by remember { mutableStateOf(false) }
+    var showBlockedContactsDialog by remember { mutableStateOf(false) }
+    var showCompanionScopeDialog by remember { mutableStateOf(false) }
+    var showStorageUsageDialog by remember { mutableStateOf(false) }
+    var showFontSizeDialog by remember { mutableStateOf(false) }
     var editingAutoDlNetwork by remember { mutableStateOf<AutoDownloadNetwork?>(null) }
     var showGalleryContactsDialog by remember { mutableStateOf(false) }
     var showWallpaperDialog by remember { mutableStateOf(false) }
@@ -3030,6 +3248,10 @@ private fun ToolsVaultTab(
     }
     var isBatteryUnrestricted by remember {
         mutableStateOf(WaRealtimeService.isIgnoringBatteryOptimizations(context))
+    }
+
+    LaunchedEffect(bridgeStatus.isLoggedIn, bridgeStatus.connectionState) {
+        viewModel.fetchOwnProfile().onSuccess { ownProfile = it }
     }
 
     DisposableEffect(context) {
@@ -3055,6 +3277,49 @@ private fun ToolsVaultTab(
         ),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
+        item(key = "patch_section_profile_card") {
+            val ownAvatarPath = remember(bridgeStatus.ownJid, allChats) {
+                val ownUser = bridgeStatus.ownJid.substringBefore("@").substringBefore(":")
+                allChats.firstOrNull { ch ->
+                    !ch.avatarPath.isNullOrBlank() &&
+                        ownUser.isNotBlank() &&
+                        ch.jid.substringBefore("@").substringBefore(":") == ownUser
+                }?.avatarPath
+            }
+            SettingsProfileHeaderCard(
+                ownJid = bridgeStatus.ownJid,
+                profile = ownProfile,
+                avatarPath = ownAvatarPath,
+                onClick = { showProfileEditorDialog = true }
+            )
+        }
+
+        item(key = "patch_section_account_privacy") {
+            ExpressiveSegmentedGroup(title = stringResource(R.string.settings_section_account_privacy)) {
+                ExpressiveSegmentedActionRow(
+                    icon = Icons.Rounded.AdminPanelSettings,
+                    title = stringResource(R.string.settings_wa_privacy_title),
+                    subtitle = stringResource(R.string.settings_wa_privacy_subtitle),
+                    position = ExpressiveSegmentPosition.TOP,
+                    onClick = { showAccountPrivacyDialog = true }
+                )
+                ExpressiveSegmentedActionRow(
+                    icon = Icons.Rounded.Block,
+                    title = stringResource(R.string.settings_blocked_contacts_title),
+                    subtitle = stringResource(R.string.settings_blocked_contacts_subtitle),
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onClick = { showBlockedContactsDialog = true }
+                )
+                ExpressiveSegmentedActionRow(
+                    icon = Icons.Rounded.Info,
+                    title = stringResource(R.string.settings_account_limits_title),
+                    subtitle = stringResource(R.string.settings_account_limits_subtitle),
+                    position = ExpressiveSegmentPosition.BOTTOM,
+                    onClick = { showCompanionScopeDialog = true }
+                )
+            }
+        }
+
         item(key = "patch_section_privacy") {
             ExpressiveSegmentedGroup(title = "Privacy & Ghost Mode") {
                 ExpressiveSegmentedSwitchRow(
@@ -3127,6 +3392,13 @@ private fun ToolsVaultTab(
 
         item(key = "patch_section_storage_media") {
             ExpressiveSegmentedGroup(title = "Storage & Media Auto-Download") {
+                ExpressiveSegmentedActionRow(
+                    icon = Icons.Rounded.CleaningServices,
+                    title = stringResource(R.string.settings_manage_storage_title),
+                    subtitle = stringResource(R.string.settings_manage_storage_subtitle),
+                    position = ExpressiveSegmentPosition.TOP,
+                    onClick = { showStorageUsageDialog = true }
+                )
                 ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.CloudDownload,
                     title = "Media auto-download",
@@ -3136,7 +3408,7 @@ private fun ToolsVaultTab(
                         "Off — tap media items in chats to download manually"
                     },
                     checked = stealth.autoDownloadEnabled,
-                    position = ExpressiveSegmentPosition.TOP,
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onCheckedChange = { viewModel.setAutoDownloadEnabled(it) }
                 )
                 ExpressiveSegmentedActionRow(
@@ -3292,6 +3564,23 @@ private fun ToolsVaultTab(
                     onCheckedChange = { viewModel.setUseSystemFont(it) }
                 )
                 ExpressiveSegmentedActionRow(
+                    icon = Icons.Rounded.FormatSize,
+                    title = stringResource(R.string.settings_font_size_title),
+                    subtitle = formatFontScaleLabel(stealth.chatFontScale),
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onClick = { showFontSizeDialog = true }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.KeyboardReturn,
+                    title = stringResource(R.string.settings_enter_sends_title),
+                    subtitle = stringResource(R.string.settings_enter_sends_subtitle),
+                    checked = stealth.enterIsSend,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(enterIsSend = it) }
+                    }
+                )
+                ExpressiveSegmentedActionRow(
                     icon = Icons.Rounded.EmojiEmotions,
                     title = stringResource(R.string.settings_reactions_title),
                     subtitle = reactionPreview,
@@ -3375,9 +3664,29 @@ private fun ToolsVaultTab(
                     title = stringResource(R.string.settings_look_hide_badges_title),
                     subtitle = stringResource(R.string.settings_look_hide_badges_subtitle),
                     checked = stealth.hideStealthStatusBadges,
-                    position = ExpressiveSegmentPosition.BOTTOM,
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onCheckedChange = {
                         viewModel.updateGlobalStealth { c -> c.copy(hideStealthStatusBadges = it) }
+                    }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.Groups,
+                    title = stringResource(R.string.settings_look_separate_groups_title),
+                    subtitle = stringResource(R.string.settings_look_separate_groups_subtitle),
+                    checked = stealth.separateGroupsAndChats,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(separateGroupsAndChats = it) }
+                    }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.VisibilityOff,
+                    title = stringResource(R.string.settings_look_hide_channels_title),
+                    subtitle = stringResource(R.string.settings_look_hide_channels_subtitle),
+                    checked = stealth.hideChannels,
+                    position = ExpressiveSegmentPosition.BOTTOM,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(hideChannels = it) }
                     }
                 )
             }
@@ -3385,6 +3694,46 @@ private fun ToolsVaultTab(
 
         item(key = "patch_section_notifications_sync") {
             ExpressiveSegmentedGroup(title = "Notifications & Background Sync") {
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.Notifications,
+                    title = stringResource(R.string.settings_notify_dm_title),
+                    subtitle = stringResource(R.string.settings_notify_dm_subtitle),
+                    checked = stealth.notifyDmEnabled,
+                    position = ExpressiveSegmentPosition.TOP,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(notifyDmEnabled = it) }
+                    }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.Groups,
+                    title = stringResource(R.string.settings_notify_group_title),
+                    subtitle = stringResource(R.string.settings_notify_group_subtitle),
+                    checked = stealth.notifyGroupEnabled,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(notifyGroupEnabled = it) }
+                    }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.VisibilityOff,
+                    title = stringResource(R.string.settings_notify_preview_title),
+                    subtitle = stringResource(R.string.settings_notify_preview_subtitle),
+                    checked = stealth.notifyShowPreview,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(notifyShowPreview = it) }
+                    }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.Vibration,
+                    title = stringResource(R.string.settings_notify_vibrate_title),
+                    subtitle = stringResource(R.string.settings_notify_vibrate_subtitle),
+                    checked = stealth.notifyVibrateEnabled,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onCheckedChange = {
+                        viewModel.updateGlobalStealth { c -> c.copy(notifyVibrateEnabled = it) }
+                    }
+                )
                 ExpressiveSegmentedActionRow(
                     icon = if (isSyncNotifHidden) Icons.Rounded.NotificationsOff else Icons.Rounded.Notifications,
                     title = if (isSyncNotifHidden) "Persistent Sync Banner" else "Hide Persistent Sync Banner",
@@ -3394,7 +3743,7 @@ private fun ToolsVaultTab(
                         "Remove the constant notification from your shade without breaking real-time sync or message alerts"
                     },
                     badgeText = if (isSyncNotifHidden) "HIDDEN" else "1-TAP GUIDE",
-                    position = ExpressiveSegmentPosition.TOP,
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onClick = {
                         if (isSyncNotifHidden) {
                             WaRealtimeService.openNotificationChannelSettings(
@@ -3542,6 +3891,58 @@ private fun ToolsVaultTab(
             },
             onDismiss = { showGalleryContactsDialog = false }
         )
+    }
+
+    if (showProfileEditorDialog) {
+        ProfileEditorDialog(
+            initialProfile = ownProfile,
+            onSaveName = { viewModel.saveOwnPushName(it) },
+            onSaveAbout = { viewModel.saveOwnAbout(it) },
+            onDismiss = {
+                showProfileEditorDialog = false
+                tabScope.launch { viewModel.fetchOwnProfile().onSuccess { ownProfile = it } }
+            }
+        )
+    }
+
+    if (showAccountPrivacyDialog) {
+        WhatsAppAccountPrivacyDialog(
+            initialTimerSec = stealth.defaultDisappearingSec,
+            onLoadPrivacy = { viewModel.fetchAccountPrivacy() },
+            onUpdateCategory = { cat, valStr -> viewModel.setAccountPrivacy(cat, valStr) },
+            onUpdateDefaultTimer = { sec -> viewModel.setDefaultDisappearingTimer(sec) },
+            onOpenBlockedContacts = { showBlockedContactsDialog = true },
+            onDismiss = { showAccountPrivacyDialog = false }
+        )
+    }
+
+    if (showBlockedContactsDialog) {
+        BlockedContactsDialog(
+            dmCandidates = allChats,
+            onLoadBlocked = { viewModel.fetchBlockedContacts() },
+            onSetBlocked = { jid, blk -> viewModel.setContactBlocked(jid, blk) },
+            onDismiss = { showBlockedContactsDialog = false }
+        )
+    }
+
+    if (showStorageUsageDialog) {
+        StorageUsageDialog(
+            onLoadStats = { viewModel.loadStorageStats() },
+            onClearTempCache = { viewModel.clearTempCache() },
+            onDismiss = { showStorageUsageDialog = false }
+        )
+    }
+
+    if (showFontSizeDialog) {
+        ChatFontSizeDialog(
+            currentScale = stealth.chatFontScale,
+            onSelectScale = { scale -> viewModel.updateGlobalStealth { c -> c.copy(chatFontScale = scale) } },
+            onDismiss = { showFontSizeDialog = false }
+        )
+    }
+
+    if (showCompanionScopeDialog) {
+        CompanionScopeInfoDialog(onDismiss = { showCompanionScopeDialog = false })
     }
 
     if (showWallpaperDialog) {

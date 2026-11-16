@@ -2,11 +2,15 @@ package com.wa.beastclient.ui.components
 
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.view.TextureView
 import android.widget.Toast
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -21,15 +25,19 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -52,20 +60,25 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import com.wa.beastclient.R
 import com.wa.beastclient.data.db.StatusEntity
 import com.wa.beastclient.ui.screens.WhatsAppAvatar
 import kotlinx.coroutines.delay
@@ -74,22 +87,71 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 
 data class StatusGroup(
     val senderJid: String,
     val senderName: String,
     val senderAvatarPath: String?,
-    val items: List<StatusEntity>
+    val items: List<StatusEntity>,
+    val isOwn: Boolean = false
 )
+
+internal fun normalizedStatusUser(raw: String): String =
+    raw.trim().substringBefore("@").substringBefore(":").lowercase(Locale.ROOT)
+
+internal fun canonicalStatusGroupJid(raw: String): String {
+    val clean = raw.trim()
+    if (clean.isEmpty()) return ""
+    val user = clean.substringBefore("@").substringBefore(":")
+    val domain = clean.substringAfter("@", "")
+    return if (domain.isNotEmpty()) "$user@$domain" else user
+}
+
+internal fun isOwnStatusSender(senderJid: String, ownJid: String): Boolean {
+    val senderUser = normalizedStatusUser(senderJid)
+    if (senderUser.isEmpty()) return false
+    if (senderUser == "me") return true
+    val ownUser = normalizedStatusUser(ownJid)
+    return ownUser.isNotEmpty() && senderUser == ownUser
+}
+
+internal fun isStatusMediaType(msgType: String, mimeType: String): Boolean {
+    val upper = msgType.trim().uppercase(Locale.ROOT)
+    return upper in setOf("IMAGE", "VIDEO", "AUDIO", "PTT") ||
+        mimeType.startsWith("image/", ignoreCase = true) ||
+        mimeType.startsWith("video/", ignoreCase = true) ||
+        mimeType.startsWith("audio/", ignoreCase = true)
+}
+
+internal fun partitionOwnAndContactStatuses(
+    statuses: List<StatusEntity>,
+    ownJid: String
+): Pair<List<StatusEntity>, List<StatusEntity>> {
+    val own = ArrayList<StatusEntity>()
+    val others = ArrayList<StatusEntity>()
+    statuses.forEach { st ->
+        if (isOwnStatusSender(st.senderJid, ownJid)) {
+            own.add(st)
+        } else {
+            others.add(st)
+        }
+    }
+    return own to others
+}
 
 @Composable
 fun FullScreenStatusViewer(
     groups: List<StatusGroup>,
     initialGroupIndex: Int = 0,
     initialStoryIndex: Int = 0,
+    downloadingStatusIds: Set<String> = emptySet(),
+    failedStatusIds: Map<String, String> = emptyMap(),
+    onRequestDownload: (StatusEntity) -> Unit = {},
     onDismiss: () -> Unit,
     onSaveToGallery: (StatusEntity) -> Unit,
-    onReply: ((StatusEntity) -> Unit)? = null
+    onReply: ((StatusEntity) -> Unit)? = null,
+    onAddStatus: (() -> Unit)? = null
 ) {
     val nonEmptyGroups = remember(groups) { groups.filter { it.items.isNotEmpty() } }
     if (nonEmptyGroups.isEmpty()) {
@@ -103,6 +165,9 @@ fun FullScreenStatusViewer(
         pageCount = { nonEmptyGroups.size }
     )
     val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val dismissThresholdPx = remember(density) { with(density) { 120.dp.toPx() } }
+    val verticalDragOffset = remember { Animatable(0f) }
 
     val storyIndices = remember(clampedInitialGroup, initialStoryIndex) {
         mutableStateMapOf<String, Int>().apply {
@@ -121,50 +186,124 @@ fun FullScreenStatusViewer(
             decorFitsSystemWindows = false
         )
     ) {
-        HorizontalPager(
-            state = pagerState,
-            beyondViewportPageCount = 1,
+        val dragFraction = (verticalDragOffset.value / 720f).coerceIn(0f, 1f)
+        val backdropAlpha = (1f - dragFraction * 0.65f).coerceIn(0.25f, 1f)
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black)
-        ) { page ->
-            val group = nonEmptyGroups[page]
-            val storyIndex = (storyIndices[group.senderJid] ?: 0).coerceIn(0, group.items.lastIndex)
-            val isPageActive = pagerState.currentPage == page && !pagerState.isScrollInProgress
+                .background(Color.Black.copy(alpha = backdropAlpha))
+                .pointerInput(dismissThresholdPx) {
+                    val touchSlop = viewConfiguration.touchSlop
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val pointerId = down.id
+                        var totalDx = 0f
+                        var totalDy = 0f
+                        var isDismissDrag = false
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                            if (!change.pressed) {
+                                if (isDismissDrag) {
+                                    change.consume()
+                                }
+                                break
+                            }
+                            val delta = change.positionChange()
+                            totalDx += delta.x
+                            totalDy += delta.y
+                            if (!isDismissDrag) {
+                                if (totalDy > touchSlop && totalDy > abs(totalDx) * 1.25f) {
+                                    isDismissDrag = true
+                                } else if (abs(totalDx) > touchSlop && abs(totalDx) > abs(totalDy)) {
+                                    // Horizontal swipe owns the gesture (pager/tap zones)
+                                    break
+                                }
+                            }
+                            if (isDismissDrag) {
+                                change.consume()
+                                val nextY = (verticalDragOffset.value + delta.y).coerceAtLeast(0f)
+                                scope.launch { verticalDragOffset.snapTo(nextY) }
+                            }
+                        }
+                        if (isDismissDrag) {
+                            if (verticalDragOffset.value >= dismissThresholdPx) {
+                                scope.launch {
+                                    verticalDragOffset.animateTo(
+                                        targetValue = size.height.toFloat().coerceAtLeast(dismissThresholdPx * 2f),
+                                        animationSpec = spring(stiffness = Spring.StiffnessMedium)
+                                    )
+                                    onDismiss()
+                                }
+                            } else {
+                                scope.launch {
+                                    verticalDragOffset.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+        ) {
+            HorizontalPager(
+                state = pagerState,
+                beyondViewportPageCount = 1,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val frac = (verticalDragOffset.value / 720f).coerceIn(0f, 1f)
+                        translationY = verticalDragOffset.value
+                        val scale = 1f - frac * 0.12f
+                        scaleX = scale
+                        scaleY = scale
+                    }
+                    .clip(RoundedCornerShape((dragFraction * 24f).dp))
+                    .background(Color.Black)
+            ) { page ->
+                val group = nonEmptyGroups[page]
+                val storyIndex = (storyIndices[group.senderJid] ?: 0).coerceIn(0, group.items.lastIndex)
+                val isPageActive = pagerState.currentPage == page && !pagerState.isScrollInProgress
 
-            StatusGroupPage(
-                group = group,
-                storyIndex = storyIndex,
-                isPageActive = isPageActive,
-                allowSingleGroupHorizontalSwipe = nonEmptyGroups.size == 1 && group.items.size > 1,
-                onAdvanceNext = {
-                    if (storyIndex < group.items.lastIndex) {
-                        storyIndices[group.senderJid] = storyIndex + 1
-                    } else if (page < nonEmptyGroups.lastIndex) {
-                        scope.launch {
-                            pagerState.animateScrollToPage(page + 1)
+                StatusGroupPage(
+                    group = group,
+                    storyIndex = storyIndex,
+                    isPageActive = isPageActive,
+                    allowSingleGroupHorizontalSwipe = nonEmptyGroups.size == 1 && group.items.size > 1,
+                    downloadingStatusIds = downloadingStatusIds,
+                    failedStatusIds = failedStatusIds,
+                    onRequestDownload = onRequestDownload,
+                    onAdvanceNext = {
+                        if (storyIndex < group.items.lastIndex) {
+                            storyIndices[group.senderJid] = storyIndex + 1
+                        } else if (page < nonEmptyGroups.lastIndex) {
+                            scope.launch {
+                                pagerState.animateScrollToPage(page + 1)
+                            }
+                        } else {
+                            onDismiss()
                         }
-                    } else {
-                        onDismiss()
-                    }
-                },
-                onStepPrevious = { resetCurrentProgress ->
-                    if (storyIndex > 0) {
-                        storyIndices[group.senderJid] = storyIndex - 1
-                    } else if (page > 0) {
-                        val prevGroup = nonEmptyGroups[page - 1]
-                        storyIndices[prevGroup.senderJid] = prevGroup.items.lastIndex
-                        scope.launch {
-                            pagerState.animateScrollToPage(page - 1)
+                    },
+                    onStepPrevious = { resetCurrentProgress ->
+                        if (storyIndex > 0) {
+                            storyIndices[group.senderJid] = storyIndex - 1
+                        } else if (page > 0) {
+                            val prevGroup = nonEmptyGroups[page - 1]
+                            storyIndices[prevGroup.senderJid] = prevGroup.items.lastIndex
+                            scope.launch {
+                                pagerState.animateScrollToPage(page - 1)
+                            }
+                        } else {
+                            resetCurrentProgress()
                         }
-                    } else {
-                        resetCurrentProgress()
-                    }
-                },
-                onDismiss = onDismiss,
-                onSaveToGallery = onSaveToGallery,
-                onReply = onReply
-            )
+                    },
+                    onDismiss = onDismiss,
+                    onSaveToGallery = onSaveToGallery,
+                    onReply = onReply,
+                    onAddStatus = onAddStatus
+                )
+            }
         }
     }
 }
@@ -175,11 +314,15 @@ private fun StatusGroupPage(
     storyIndex: Int,
     isPageActive: Boolean,
     allowSingleGroupHorizontalSwipe: Boolean,
+    downloadingStatusIds: Set<String>,
+    failedStatusIds: Map<String, String>,
+    onRequestDownload: (StatusEntity) -> Unit,
     onAdvanceNext: () -> Unit,
     onStepPrevious: (resetProgress: () -> Unit) -> Unit,
     onDismiss: () -> Unit,
     onSaveToGallery: (StatusEntity) -> Unit,
-    onReply: ((StatusEntity) -> Unit)?
+    onReply: ((StatusEntity) -> Unit)?,
+    onAddStatus: (() -> Unit)?
 ) {
     val context = LocalContext.current
     val statuses = group.items
@@ -197,6 +340,7 @@ private fun StatusGroupPage(
         }
     }
     val isVideo = current.msgType.uppercase() == "VIDEO" || current.mimeType.startsWith("video/", ignoreCase = true)
+    val isMediaStatus = isStatusMediaType(current.msgType, current.mimeType)
     val bitmap = remember(mediaFile, isVideo) {
         if (!isVideo && mediaFile != null) {
             runCatching { BitmapFactory.decodeFile(mediaFile.absolutePath)?.asImageBitmap() }.getOrNull()
@@ -204,9 +348,18 @@ private fun StatusGroupPage(
             null
         }
     }
+    val isDownloading = downloadingStatusIds.contains(current.id)
+    val failedReason = failedStatusIds[current.id]
+    val isMediaPending = isMediaStatus && ((isVideo && mediaFile == null) || (!isVideo && bitmap == null))
 
-    LaunchedEffect(current.id, storyIndex, isPaused, isVideo) {
-        if (isPaused || isVideo) return@LaunchedEffect
+    LaunchedEffect(current.id, isPageActive, isMediaPending) {
+        if (isPageActive && isMediaPending && !isDownloading && failedReason == null) {
+            onRequestDownload(current)
+        }
+    }
+
+    LaunchedEffect(current.id, storyIndex, isPaused, isVideo, isMediaPending) {
+        if (isPaused || isVideo || isMediaPending) return@LaunchedEffect
         val totalMs = 5500L
         val stepMs = 40L
         while (progress < 1f) {
@@ -282,6 +435,56 @@ private fun StatusGroupPage(
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize()
                 )
+            } else if (isMediaStatus) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xFF0B141A)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.padding(horizontal = 28.dp)
+                    ) {
+                        if (isDownloading) {
+                            CircularProgressIndicator(
+                                color = Color(0xFF25D366),
+                                strokeWidth = 2.8.dp,
+                                modifier = Modifier.size(38.dp)
+                            )
+                            Text(
+                                text = stringResource(R.string.status_loading_media),
+                                color = Color(0xFFD1D7DB),
+                                fontSize = 14.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(24.dp))
+                                    .background(Color(0xFF202C33))
+                                    .clickable { onRequestDownload(current) }
+                                    .padding(horizontal = 18.dp, vertical = 10.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Refresh,
+                                    contentDescription = null,
+                                    tint = Color(0xFF25D366),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Text(
+                                    text = failedReason ?: stringResource(R.string.status_tap_to_retry),
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+                }
             } else {
                 Box(
                     modifier = Modifier
@@ -374,8 +577,13 @@ private fun StatusGroupPage(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        val headerTitle = if (group.isOwn) {
+                            stringResource(R.string.status_my_status)
+                        } else {
+                            group.senderName.ifBlank { current.senderName }
+                        }
                         Text(
-                            text = group.senderName.ifBlank { current.senderName },
+                            text = headerTitle,
                             color = Color.White,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -422,7 +630,17 @@ private fun StatusGroupPage(
                                 }
                             )
                         }
-                        if (onReply != null) {
+                        if (group.isOwn && onAddStatus != null) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.status_composer_title), color = Color.White) },
+                                onClick = {
+                                    showOverflow = false
+                                    onDismiss()
+                                    onAddStatus()
+                                }
+                            )
+                        }
+                        if (!group.isOwn && onReply != null) {
                             DropdownMenuItem(
                                 text = { Text("Open chat", color = Color.White) },
                                 onClick = {
@@ -437,7 +655,7 @@ private fun StatusGroupPage(
             }
         }
 
-        // Bottom Caption + Reply Pill + Heart Button
+        // Bottom Caption + Reply Pill (for contacts) or My Status Footer (for own status)
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -451,7 +669,7 @@ private fun StatusGroupPage(
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            if ((bitmap != null || isVideo) && current.caption.isNotBlank()) {
+            if (isMediaStatus && current.caption.isNotBlank()) {
                 Text(
                     text = current.caption,
                     color = Color.White,
@@ -461,60 +679,96 @@ private fun StatusGroupPage(
                     modifier = Modifier.fillMaxWidth()
                 )
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(46.dp)
-                        .clip(RoundedCornerShape(23.dp))
-                        .background(Color(0xFF202C33).copy(alpha = 0.92f))
-                        .clickable {
-                            if (onReply != null) {
-                                onReply(current)
-                                onDismiss()
-                            }
-                        }
-                        .padding(horizontal = 18.dp),
-                    contentAlignment = Alignment.CenterStart
+            if (group.isOwn) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "Reply",
-                        color = Color(0xFFD1D7DB),
-                        fontSize = 15.sp
-                    )
-                }
-                listOf("❤️", "👍", "😮").forEach { emoji ->
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFF202C33).copy(alpha = 0.92f))
-                            .clickable {
-                                Toast.makeText(context, "Reacted $emoji to status", Toast.LENGTH_SHORT).show()
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(text = emoji, fontSize = 17.sp)
+                    if (onAddStatus != null) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(Color(0xFF202C33).copy(alpha = 0.92f))
+                                .clickable {
+                                    onDismiss()
+                                    onAddStatus()
+                                }
+                                .padding(horizontal = 16.dp, vertical = 9.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Add,
+                                contentDescription = null,
+                                tint = Color(0xFF25D366),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = stringResource(R.string.status_composer_title),
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     }
                 }
-                Box(
-                    modifier = Modifier
-                        .size(46.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFF202C33).copy(alpha = 0.92f))
-                        .clickable { liked = !liked },
-                    contentAlignment = Alignment.Center
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(
-                        imageVector = if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                        contentDescription = "Like status",
-                        tint = if (liked) Color(0xFFFF4D6D) else Color.White,
-                        modifier = Modifier.size(22.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(46.dp)
+                            .clip(RoundedCornerShape(23.dp))
+                            .background(Color(0xFF202C33).copy(alpha = 0.92f))
+                            .clickable {
+                                if (onReply != null) {
+                                    onReply(current)
+                                    onDismiss()
+                                }
+                            }
+                            .padding(horizontal = 18.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        Text(
+                            text = "Reply",
+                            color = Color(0xFFD1D7DB),
+                            fontSize = 15.sp
+                        )
+                    }
+                    listOf("❤️", "👍", "😮").forEach { emoji ->
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF202C33).copy(alpha = 0.92f))
+                                .clickable {
+                                    Toast.makeText(context, "Reacted $emoji to status", Toast.LENGTH_SHORT).show()
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(text = emoji, fontSize = 17.sp)
+                        }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(46.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF202C33).copy(alpha = 0.92f))
+                            .clickable { liked = !liked },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                            contentDescription = "Like status",
+                            tint = if (liked) Color(0xFFFF4D6D) else Color.White,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
             }
         }
@@ -555,16 +809,17 @@ private fun StatusVideoPlayer(
     }
     LaunchedEffect(player) {
         while (true) {
-            val dur = player.duration.coerceAtLeast(1L)
-            val pos = player.currentPosition.coerceAtLeast(0L)
-            onProgress((pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f))
+            val dur = player.duration
+            if (dur > 0L) {
+                val pos = player.currentPosition.coerceAtLeast(0L)
+                onProgress((pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f))
+            }
             delay(50L)
         }
     }
-    AndroidView(
-        factory = { ctx ->
-            TextureView(ctx).also { player.setVideoTextureView(it) }
-        },
+    AspectFitVideoSurface(
+        player = player,
+        file = file,
         modifier = Modifier.fillMaxSize()
     )
 }

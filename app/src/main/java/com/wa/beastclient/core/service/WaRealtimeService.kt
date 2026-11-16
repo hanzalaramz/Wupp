@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.media.MediaMetadataRetriever
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -69,6 +70,31 @@ data class BridgeStatus(
     val isSyncing: Boolean = false,
     val lastError: String? = null
 )
+
+/**
+ * Resolves the UI message type and bridge upload wire mode for outbound attachments.
+ * Videos remain native VIDEO messages even when [OutboundQualityMode.ORIGINAL] is active so
+ * they render with preview thumbnails and playback controls instead of raw document filenames.
+ */
+internal fun resolveOutboundMediaDispatch(
+    mimeType: String,
+    qualityMode: OutboundQualityMode,
+    isVoiceNote: Boolean
+): Pair<String, String> = when {
+    isVoiceNote -> "PTT" to qualityMode.wireValue
+    mimeType.startsWith("video/", ignoreCase = true) -> {
+        val wireMode = if (qualityMode == OutboundQualityMode.ORIGINAL) {
+            OutboundQualityMode.HD.wireValue
+        } else {
+            qualityMode.wireValue
+        }
+        "VIDEO" to wireMode
+    }
+    qualityMode == OutboundQualityMode.ORIGINAL -> "DOCUMENT" to OutboundQualityMode.ORIGINAL.wireValue
+    mimeType.startsWith("image/", ignoreCase = true) -> "IMAGE" to qualityMode.wireValue
+    mimeType.startsWith("audio/", ignoreCase = true) -> "AUDIO" to qualityMode.wireValue
+    else -> "DOCUMENT" to qualityMode.wireValue
+}
 
 /**
  * Persistent remoteMessaging foreground service hosting the Go whatsmeow bridge,
@@ -824,6 +850,9 @@ class WaRealtimeService : Service() {
         }
         val chat = dao.getChat(msg.chatJid)
         if (chat?.isMuted == true || chat?.isArchived == true) return
+        val stealthCfg = StealthMatrixManager.config.value
+        if (isGroup && !stealthCfg.notifyGroupEnabled) return
+        if (!isGroup && !stealthCfg.notifyDmEnabled) return
 
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         ensureMessageNotificationChannel(mgr)
@@ -847,7 +876,9 @@ class WaRealtimeService : Service() {
             else -> "New message"
         }
 
-        val contentText = if (isGroup) {
+        val contentText = if (!stealthCfg.notifyShowPreview) {
+            "New message"
+        } else if (isGroup) {
             val senderLabel = msg.senderName.takeIf { it.isNotBlank() }
                 ?: msg.senderJid.substringBefore("@").substringBefore(":")
             if (senderLabel.isNotBlank()) "$senderLabel: $bodyPreview" else bodyPreview
@@ -867,7 +898,7 @@ class WaRealtimeService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(this, MESSAGES_CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, MESSAGES_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_wupp)
             .setContentTitle(chatTitle)
             .setContentText(contentText)
@@ -880,7 +911,10 @@ class WaRealtimeService : Service() {
             .setShowWhen(true)
             .setGroup("wupp_messages")
             .setContentIntent(contentPendingIntent)
-            .build()
+        if (!stealthCfg.notifyVibrateEnabled) {
+            builder.setVibrate(longArrayOf(0L))
+        }
+        val notification = builder.build()
 
         runCatching { mgr.notify(notifId, notification) }
             .onFailure { Log.w(TAG, "Failed to post message notification: ${it.message}") }
@@ -1769,6 +1803,45 @@ class WaRealtimeService : Service() {
             }
         }
 
+        fun requestStatusMediaDownload(context: Context, status: StatusEntity, userInitiated: Boolean = true) {
+            if (status.id.isBlank()) return
+            val upperType = status.msgType.uppercase()
+            val isMedia = upperType in setOf("IMAGE", "VIDEO", "AUDIO", "PTT") ||
+                status.mimeType.startsWith("image/", ignoreCase = true) ||
+                status.mimeType.startsWith("video/", ignoreCase = true) ||
+                status.mimeType.startsWith("audio/", ignoreCase = true)
+            if (!isMedia) return
+            if (_downloadingMediaIds.value.contains(status.id)) return
+            if (!userInitiated && _failedMediaIds.value.containsKey(status.id)) return
+
+            val appCtx = context.applicationContext
+            _downloadingMediaIds.value = _downloadingMediaIds.value + status.id
+            if (userInitiated) {
+                _failedMediaIds.value = _failedMediaIds.value - status.id
+            }
+            companionScope.launch {
+                if (!runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+                    _downloadingMediaIds.value = _downloadingMediaIds.value - status.id
+                    return@launch
+                }
+                val dao = WaUiDatabase.getInstance(appCtx).waDao()
+                runCatching {
+                    val hasCached = runCatching { Whatsbridge.hasCachedMediaMeta(status.id) }.getOrDefault(false)
+                    Whatsbridge.requestMediaDownload("status@broadcast", status.senderJid, status.id, status.timestamp)
+                    delay(if (hasCached) 15_000L else 25_000L)
+                    val refreshed = dao.getStatusById(status.id)
+                    if (refreshed?.localMediaPath.isNullOrBlank() && _downloadingMediaIds.value.contains(status.id)) {
+                        _downloadingMediaIds.value = _downloadingMediaIds.value - status.id
+                        _failedMediaIds.value = _failedMediaIds.value + (status.id to "Tap to retry")
+                    }
+                }.onFailure {
+                    _downloadingMediaIds.value = _downloadingMediaIds.value - status.id
+                    _failedMediaIds.value = _failedMediaIds.value + (status.id to (it.message ?: "Download failed"))
+                    Log.w(TAG, "requestStatusMediaDownload failed for ${status.id}: ${it.message}")
+                }
+            }
+        }
+
         private suspend fun triggerMediaDownloadWithAnchor(dao: WaDao, msg: MessageEntity) {
             Whatsbridge.requestMediaDownload(msg.chatJid, msg.senderJid, msg.id, msg.timestamp)
             val newer = dao.getNextNewerMessage(msg.chatJid, msg.timestamp)
@@ -1882,6 +1955,16 @@ class WaRealtimeService : Service() {
                 }
 
                 val prepared = EagerMediaVault.prepareOutboundMedia(context, sourceFile, mimeType, qualityMode)
+                val (msgType, wireQualityMode) = resolveOutboundMediaDispatch(
+                    mimeType = prepared.mimeType,
+                    qualityMode = qualityMode,
+                    isVoiceNote = isVoiceNote
+                )
+                val effectiveDurationSec = if (msgType == "VIDEO" && durationSec <= 0) {
+                    probeOutboundVideoDurationSec(prepared.file)
+                } else {
+                    durationSec
+                }
                 val waveformCsv = if (isVoiceNote || mimeType.startsWith("audio/")) {
                     EagerMediaVault.extract40BarWaveform(prepared.file).joinToString(",")
                 } else ""
@@ -1892,22 +1975,13 @@ class WaRealtimeService : Service() {
                         prepared.file.absolutePath,
                         prepared.mimeType,
                         caption,
-                        qualityMode.wireValue,
+                        wireQualityMode,
                         isVoiceNote,
-                        durationSec.toLong(),
+                        effectiveDurationSec.toLong(),
                         waveformCsv
                     )
                 } else {
                     "MEDIA_${UUID.randomUUID().toString().take(12).uppercase()}"
-                }
-
-                val msgType = when {
-                    isVoiceNote -> "PTT"
-                    qualityMode == OutboundQualityMode.ORIGINAL -> "DOCUMENT"
-                    prepared.mimeType.startsWith("image/") -> "IMAGE"
-                    prepared.mimeType.startsWith("video/") -> "VIDEO"
-                    prepared.mimeType.startsWith("audio/") -> "AUDIO"
-                    else -> "DOCUMENT"
                 }
 
                 val entity = MessageEntity(
@@ -1923,7 +1997,7 @@ class WaRealtimeService : Service() {
                     localMediaPath = prepared.file.absolutePath,
                     mediaSha256 = prepared.sha256,
                     fileSize = prepared.fileSize,
-                    durationSec = durationSec,
+                    durationSec = effectiveDurationSec,
                     waveformCsv = waveformCsv,
                     deliveryStatus = if (runCatching { Whatsbridge.isConnected() }.getOrDefault(false)) "SENT" else "LOCAL_SENT"
                 )
@@ -1950,6 +2024,19 @@ class WaRealtimeService : Service() {
             }
         }
 
+        private fun probeOutboundVideoDurationSec(file: File): Int {
+            val retriever = MediaMetadataRetriever()
+            return try {
+                retriever.setDataSource(file.absolutePath)
+                val ms = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                if (ms > 0L) ((ms + 500L) / 1000L).toInt().coerceAtLeast(1) else 0
+            } catch (_: Throwable) {
+                0
+            } finally {
+                runCatching { retriever.release() }
+            }
+        }
+
         suspend fun editOwnMessage(context: Context, chatJid: String, messageId: String, newText: String): Result<Unit> =
             withContext(Dispatchers.IO) {
                 runCatching {
@@ -1962,21 +2049,55 @@ class WaRealtimeService : Service() {
                 }
             }
 
-        suspend fun revokeMessageRemoteOrSimulateAntiDelete(
+        suspend fun revokeMessageForEveryone(
             context: Context,
             chatJid: String,
-            messageId: String,
-            simulateIncomingRevoke: Boolean
+            messageId: String
         ): Result<Unit> = withContext(Dispatchers.IO) {
             runCatching {
-                val dao = WaUiDatabase.getInstance(context).waDao()
-                if (simulateIncomingRevoke) {
-                    dao.markMessageRevoked(messageId, System.currentTimeMillis())
-                } else if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+                val appCtx = context.applicationContext
+                val dao = WaUiDatabase.getInstance(appCtx).waDao()
+                if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
                     Whatsbridge.revokeMessage(chatJid, messageId)
+                }
+                if (StealthMatrixManager.config.value.antiDeleteEnabled) {
                     dao.markMessageRevoked(messageId, System.currentTimeMillis())
                 } else {
-                    dao.markMessageRevoked(messageId, System.currentTimeMillis())
+                    deleteMessagePermanentlyInternal(appCtx, dao, messageId)
+                }
+                Unit
+            }
+        }
+
+        suspend fun deleteMessagePermanently(
+            context: Context,
+            messageId: String
+        ): Result<Unit> = withContext(Dispatchers.IO) {
+            runCatching {
+                val appCtx = context.applicationContext
+                val dao = WaUiDatabase.getInstance(appCtx).waDao()
+                deleteMessagePermanentlyInternal(appCtx, dao, messageId)
+            }
+        }
+
+        private suspend fun deleteMessagePermanentlyInternal(
+            appCtx: Context,
+            dao: WaDao,
+            messageId: String
+        ) {
+            val orphanMediaPath = dao.deleteMessagePermanentlyFromDb(messageId)
+            if (!orphanMediaPath.isNullOrBlank()) {
+                runCatching {
+                    val file = File(orphanMediaPath)
+                    val canonicalPath = file.canonicalPath
+                    val safeRoots = listOfNotNull(
+                        appCtx.filesDir?.canonicalPath,
+                        appCtx.cacheDir?.canonicalPath,
+                        appCtx.getExternalFilesDir(null)?.canonicalPath
+                    )
+                    if (file.exists() && safeRoots.any { canonicalPath.startsWith(it) }) {
+                        file.delete()
+                    }
                 }
             }
         }
@@ -2488,5 +2609,253 @@ class WaRealtimeService : Service() {
                 Unit
             }
         }
+
+        private fun unwrapReflectFailure(err: Throwable): Throwable =
+            if (err is java.lang.reflect.InvocationTargetException && err.targetException != null) {
+                err.targetException
+            } else {
+                err
+            }
+
+        private fun hasBridgeMethod(name: String, vararg paramTypes: Class<*>): Boolean =
+            runCatching {
+                Whatsbridge::class.java.getMethod(name, *paramTypes)
+                true
+            }.getOrDefault(false)
+
+        suspend fun fetchOwnProfile(): Result<OwnProfileUi> = withContext(Dispatchers.IO) {
+            runCatching {
+                val ownJid = _bridgeStatus.value.ownJid
+                val phone = ownJid.substringBefore("@").substringBefore(":").takeIf { it.isNotBlank() }?.let { "+$it" }.orEmpty()
+                if (!hasBridgeMethod("getOwnProfileJson")) {
+                    return@runCatching OwnProfileUi(
+                        ownJid = ownJid,
+                        phone = phone,
+                        pushName = "",
+                        about = "",
+                        syncSupported = false
+                    )
+                }
+                val raw = try {
+                    Whatsbridge::class.java.getMethod("getOwnProfileJson").invoke(null) as? String
+                } catch (t: Throwable) {
+                    throw unwrapReflectFailure(t)
+                }
+                val obj = JSONObject(raw.orEmpty().ifBlank { "{}" })
+                OwnProfileUi(
+                    ownJid = obj.optString("ownJid", ownJid),
+                    phone = obj.optString("phone", phone),
+                    pushName = obj.optString("pushName", ""),
+                    about = obj.optString("about", ""),
+                    syncSupported = true
+                )
+            }
+        }
+
+        suspend fun updateOwnPushName(name: String): Result<Unit> = withContext(Dispatchers.IO) {
+            runCatching {
+                try {
+                    Whatsbridge::class.java
+                        .getMethod("setOwnPushName", String::class.java)
+                        .invoke(null, name.trim())
+                } catch (t: Throwable) {
+                    throw unwrapReflectFailure(t)
+                }
+                Unit
+            }
+        }
+
+        suspend fun updateOwnAbout(about: String): Result<Unit> = withContext(Dispatchers.IO) {
+            runCatching {
+                try {
+                    Whatsbridge::class.java
+                        .getMethod("setOwnAbout", String::class.java)
+                        .invoke(null, about.trim())
+                } catch (t: Throwable) {
+                    throw unwrapReflectFailure(t)
+                }
+                Unit
+            }
+        }
+
+        suspend fun fetchAccountPrivacySettings(): Result<AccountPrivacyUi> = withContext(Dispatchers.IO) {
+            runCatching {
+                val timerSec = StealthMatrixManager.config.value.defaultDisappearingSec
+                if (!hasBridgeMethod("getAccountPrivacySettingsJson")) {
+                    return@runCatching AccountPrivacyUi(
+                        defaultDisappearingSec = timerSec,
+                        syncSupported = false
+                    )
+                }
+                val raw = try {
+                    Whatsbridge::class.java.getMethod("getAccountPrivacySettingsJson").invoke(null) as? String
+                } catch (t: Throwable) {
+                    throw unwrapReflectFailure(t)
+                }
+                parseAccountPrivacyJson(raw.orEmpty(), timerSec, syncSupported = true)
+            }
+        }
+
+        suspend fun updateAccountPrivacySetting(category: String, value: String): Result<AccountPrivacyUi> =
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val raw = try {
+                        Whatsbridge::class.java
+                            .getMethod("setAccountPrivacySetting", String::class.java, String::class.java)
+                            .invoke(null, category, value) as? String
+                    } catch (t: Throwable) {
+                        throw unwrapReflectFailure(t)
+                    }
+                    parseAccountPrivacyJson(
+                        raw.orEmpty(),
+                        StealthMatrixManager.config.value.defaultDisappearingSec,
+                        syncSupported = true
+                    )
+                }
+            }
+
+        suspend fun setDefaultDisappearingTimerSec(seconds: Int): Result<Unit> = withContext(Dispatchers.IO) {
+            runCatching {
+                val clamped = seconds.coerceAtLeast(0)
+                if (hasBridgeMethod("setDefaultDisappearingTimerSec", Long::class.javaPrimitiveType!!)) {
+                    try {
+                        Whatsbridge::class.java
+                            .getMethod("setDefaultDisappearingTimerSec", Long::class.javaPrimitiveType!!)
+                            .invoke(null, clamped.toLong())
+                    } catch (t: Throwable) {
+                        throw unwrapReflectFailure(t)
+                    }
+                }
+                StealthMatrixManager.updateConfig { it.copy(defaultDisappearingSec = clamped) }
+            }
+        }
+
+        suspend fun fetchBlockedContacts(): Result<Pair<List<BlockedContactUi>, Boolean>> =
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!hasBridgeMethod("getBlocklistJson")) {
+                        return@runCatching emptyList<BlockedContactUi>() to false
+                    }
+                    val raw = try {
+                        Whatsbridge::class.java.getMethod("getBlocklistJson").invoke(null) as? String
+                    } catch (t: Throwable) {
+                        throw unwrapReflectFailure(t)
+                    }
+                    val arr = JSONArray(raw.orEmpty().ifBlank { "[]" })
+                    val items = ArrayList<BlockedContactUi>(arr.length())
+                    for (i in 0 until arr.length()) {
+                        val o = arr.optJSONObject(i) ?: continue
+                        val jid = o.optString("jid")
+                        if (jid.isBlank()) continue
+                        items += BlockedContactUi(
+                            jid = jid,
+                            name = o.optString("name", jid.substringBefore("@")),
+                            phone = o.optString("phone", "")
+                        )
+                    }
+                    items to true
+                }
+            }
+
+        suspend fun setContactBlocked(jid: String, blocked: Boolean): Result<Unit> =
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    try {
+                        Whatsbridge::class.java
+                            .getMethod("setContactBlocked", String::class.java, Boolean::class.javaPrimitiveType!!)
+                            .invoke(null, jid, blocked)
+                    } catch (t: Throwable) {
+                        throw unwrapReflectFailure(t)
+                    }
+                    Unit
+                }
+            }
+
+        fun computeStorageStats(context: Context): WuppStorageStats {
+            val appCtx = context.applicationContext
+            val dbBytes = (appCtx.databaseList() ?: emptyArray())
+                .sumOf { dbName -> appCtx.getDatabasePath(dbName)?.length() ?: 0L }
+            val mediaRoot = File(appCtx.filesDir, "wa_vault")
+            val altFilesSize = folderByteSize(appCtx.filesDir)
+            val vaultBytes = if (mediaRoot.exists()) folderByteSize(mediaRoot) else altFilesSize
+            val cacheBytes = folderByteSize(appCtx.cacheDir)
+            return WuppStorageStats(
+                dbBytes = dbBytes,
+                vaultBytes = vaultBytes,
+                tempCacheBytes = cacheBytes
+            )
+        }
+
+        fun clearSafeTempCache(context: Context): Long {
+            val appCtx = context.applicationContext
+            val before = folderByteSize(appCtx.cacheDir)
+            appCtx.cacheDir?.listFiles()?.forEach { child ->
+                runCatching {
+                    if (child.isDirectory) child.deleteRecursively() else child.delete()
+                }
+            }
+            return before
+        }
+
+        private fun folderByteSize(dir: File?): Long {
+            if (dir == null || !dir.exists()) return 0L
+            if (dir.isFile) return dir.length()
+            var total = 0L
+            dir.walkTopDown().forEach { f ->
+                if (f.isFile) total += f.length()
+            }
+            return total
+        }
+
+        private fun parseAccountPrivacyJson(
+            raw: String,
+            timerSec: Int,
+            syncSupported: Boolean
+        ): AccountPrivacyUi {
+            val obj = JSONObject(raw.ifBlank { "{}" })
+            return AccountPrivacyUi(
+                lastSeen = obj.optString("lastSeen", "all").ifBlank { "all" },
+                online = obj.optString("online", "all").ifBlank { "all" },
+                profile = obj.optString("profile", "all").ifBlank { "all" },
+                status = obj.optString("status", "contacts").ifBlank { "contacts" },
+                groupAdd = obj.optString("groupAdd", "all").ifBlank { "all" },
+                readReceipts = obj.optString("readReceipts", "all").ifBlank { "all" },
+                callAdd = obj.optString("callAdd", "all").ifBlank { "all" },
+                defaultDisappearingSec = timerSec,
+                syncSupported = syncSupported
+            )
+        }
     }
 }
+
+data class OwnProfileUi(
+    val ownJid: String = "",
+    val phone: String = "",
+    val pushName: String = "",
+    val about: String = "",
+    val syncSupported: Boolean = false
+)
+
+data class AccountPrivacyUi(
+    val lastSeen: String = "all",
+    val online: String = "all",
+    val profile: String = "all",
+    val status: String = "contacts",
+    val groupAdd: String = "all",
+    val readReceipts: String = "all",
+    val callAdd: String = "all",
+    val defaultDisappearingSec: Int = 0,
+    val syncSupported: Boolean = false
+)
+
+data class BlockedContactUi(
+    val jid: String,
+    val name: String,
+    val phone: String
+)
+
+data class WuppStorageStats(
+    val dbBytes: Long = 0L,
+    val vaultBytes: Long = 0L,
+    val tempCacheBytes: Long = 0L
+)

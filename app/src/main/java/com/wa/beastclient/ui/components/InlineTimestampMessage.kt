@@ -39,6 +39,7 @@ import com.wa.beastclient.R
 import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
+import com.wa.beastclient.ui.theme.LocalWuppChatFontScale
 import com.wa.beastclient.ui.theme.LocalWuppShowSeconds
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -59,6 +60,7 @@ fun InlineTimestampMessage(
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
     val showSeconds = LocalWuppShowSeconds.current
+    val fontScale = LocalWuppChatFontScale.current
     var lastLayout: TextLayoutResult? = null
 
     val displayText = msg.body
@@ -101,8 +103,8 @@ fun InlineTimestampMessage(
                     Text(
                         text = styledText,
                         color = colors.textPrimary,
-                        fontSize = 15.sp,
-                        lineHeight = 20.sp,
+                        fontSize = (15f * fontScale).sp,
+                        lineHeight = (20f * fontScale).sp,
                         onTextLayout = { lastLayout = it }
                     )
                     MessageMetaCluster(

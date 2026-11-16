@@ -2,7 +2,6 @@ package com.wa.beastclient.ui.components
 
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.view.TextureView
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -12,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -64,7 +64,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.media3.common.MediaItem
@@ -139,6 +138,7 @@ fun FullScreenMediaViewer(
             } else if (isVideo && mediaFile != null) {
                 VideoLightboxStage(
                     file = mediaFile,
+                    showChrome = showChrome,
                     onToggleChrome = { showChrome = !showChrome }
                 )
             } else if (bitmap != null) {
@@ -422,6 +422,7 @@ fun FullScreenMediaViewer(
 @Composable
 private fun VideoLightboxStage(
     file: File,
+    showChrome: Boolean = true,
     onToggleChrome: () -> Unit
 ) {
     val context = LocalContext.current
@@ -466,46 +467,56 @@ private fun VideoLightboxStage(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .clickable { onToggleChrome() },
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onToggleChrome
+            ),
         contentAlignment = Alignment.Center
     ) {
-        AndroidView(
-            factory = { ctx ->
-                TextureView(ctx).also { tv ->
-                    player.setVideoTextureView(tv)
-                }
-            },
+        AspectFitVideoSurface(
+            player = player,
+            file = file,
             modifier = Modifier.fillMaxSize()
         )
-        Box(
-            modifier = Modifier
-                .size(62.dp)
-                .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.52f))
-                .clickable {
-                    if (player.playbackState == Player.STATE_ENDED) {
-                        player.seekTo(0L)
-                        player.play()
-                    } else if (player.isPlaying) {
-                        player.pause()
-                    } else {
-                        player.play()
-                    }
-                },
-            contentAlignment = Alignment.Center
+        AnimatedVisibility(
+            visible = showChrome || !isPlaying,
+            enter = fadeIn(),
+            exit = fadeOut()
         ) {
-            Icon(
-                imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                contentDescription = if (isPlaying) "Pause" else "Play",
-                tint = Color.White,
-                modifier = Modifier.size(34.dp)
-            )
-        }
-        if (durationMs > 0L) {
-            Column(
+            Box(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(horizontal = 16.dp, vertical = 92.dp)
+                    .size(62.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.56f))
+                    .clickable {
+                        if (player.playbackState == Player.STATE_ENDED) {
+                            player.seekTo(0L)
+                            player.play()
+                        } else if (player.isPlaying) {
+                            player.pause()
+                        } else {
+                            player.play()
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    contentDescription = if (isPlaying) "Pause" else "Play",
+                    tint = Color.White,
+                    modifier = Modifier.size(34.dp)
+                )
+            }
+        }
+        AnimatedVisibility(
+            visible = durationMs > 0L && (showChrome || !isPlaying),
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 92.dp)
             ) {
                 Slider(
                     value = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f),

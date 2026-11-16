@@ -5,4 +5,20 @@
         <item name="android:navigationBarColor">#111B21</item>
         <item name="android:windowBackground">#0B141A</item>
     </style>
+
+    <style name="ThemeOverlay.Wupp.EmojiPicker.Dark" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorAccent">#25D366</item>
+        <item name="android:colorControlNormal">#8696A0</item>
+        <item name="android:textColorPrimary">#E9EDEF</item>
+        <item name="android:colorButtonNormal">#202C33</item>
+        <item name="android:colorBackground">#0B141A</item>
+    </style>
+
+    <style name="ThemeOverlay.Wupp.EmojiPicker.Light" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorAccent">#00A884</item>
+        <item name="android:colorControlNormal">#667781</item>
+        <item name="android:textColorPrimary">#111B21</item>
+        <item name="android:colorButtonNormal">#F0F2F5</item>
+        <item name="android:colorBackground">#FFFFFF</item>
+    </style>
 </resources>

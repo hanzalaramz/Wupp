@@ -36,6 +36,8 @@ import com.wa.beastclient.domain.stealth.EffectiveChatPrivacy
 import com.wa.beastclient.domain.stealth.GlobalStealthConfig
 import com.wa.beastclient.domain.stealth.PrimaryHeartbeatStatus
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
+import com.wa.beastclient.ui.components.StagedOutboundMedia
+import com.wa.beastclient.ui.components.probeVideoMetadata
 import com.wa.beastclient.ui.theme.LocaleHelper
 import com.wa.beastclient.ui.theme.WuppThemeMode
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +64,45 @@ enum class HomeFilterChip(val label: String) {
     LOCKED("Locked"),
     DELETED("Deleted"),
     EDITED("Edited")
+}
+
+internal fun filterHomeThreads(
+    chats: List<ChatEntity>,
+    chip: HomeFilterChip,
+    query: String,
+    hideLocked: Boolean,
+    groupFilter: Boolean? = null
+): List<ChatEntity> {
+    val chatThreads = chats.filter {
+        !it.isCommunityParent &&
+            !it.jid.endsWith("@newsletter") &&
+            it.jid != "status@broadcast" &&
+            !it.jid.endsWith("@broadcast") &&
+            !it.isPhantomEmptyDm() &&
+            !(it.name.startsWith("@") && it.lastMessagePreview.isBlank()) &&
+            (groupFilter == null || it.isGroup == groupFilter)
+    }
+    val effectiveChip = if (groupFilter != null && chip == HomeFilterChip.GROUPS) {
+        HomeFilterChip.ALL
+    } else {
+        chip
+    }
+    val byChip = when (effectiveChip) {
+        HomeFilterChip.ALL -> chatThreads.filter { !hideLocked || !it.isLocked }
+        HomeFilterChip.UNREAD -> chatThreads.filter { (!hideLocked || !it.isLocked) && it.unreadCount > 0 }
+        HomeFilterChip.FAVORITES -> chatThreads.filter { (!hideLocked || !it.isLocked) && it.isFavorite }
+        HomeFilterChip.GROUPS -> chatThreads.filter { (!hideLocked || !it.isLocked) && it.isGroup }
+        HomeFilterChip.LOCKED -> if (hideLocked) emptyList() else chatThreads.filter { it.isLocked }
+        HomeFilterChip.DELETED -> chatThreads.filter { (!hideLocked || !it.isLocked) && (it.hasDeletedMessages || it.lastMessageIsDeleted) }
+        HomeFilterChip.EDITED -> chatThreads.filter { (!hideLocked || !it.isLocked) && it.hasEditedMessages }
+    }
+    val q = query.trim().lowercase()
+    return if (q.isEmpty()) byChip
+    else byChip.filter {
+        it.name.lowercase().contains(q) ||
+            it.jid.lowercase().contains(q) ||
+            it.lastMessagePreview.lowercase().contains(q)
+    }
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -103,6 +144,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _selectedFilter = MutableStateFlow(HomeFilterChip.ALL)
     val selectedFilter: StateFlow<HomeFilterChip> = _selectedFilter.asStateFlow()
+
+    private val _selectedGroupsFilter = MutableStateFlow(HomeFilterChip.ALL)
+    val selectedGroupsFilter: StateFlow<HomeFilterChip> = _selectedGroupsFilter.asStateFlow()
 
     private val _homeSearchQuery = MutableStateFlow("")
     val homeSearchQuery: StateFlow<String> = _homeSearchQuery.asStateFlow()
@@ -147,38 +191,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }.stateIn(viewModelScope, SharingStarted.Lazily, 0)
 
-    val filteredChats: StateFlow<List<ChatEntity>> = combine(
+    private val homeFilterCriteria = combine(
         allChats,
-        _selectedFilter,
         _homeSearchQuery,
         appLockConfig,
         lockedChatsRevealed
-    ) { chats, chip, query, lockCfg, revealed ->
-        val hideLocked = lockCfg.hideLockedChatsBehindLock && !revealed
-        val chatThreads = chats.filter {
-            !it.isCommunityParent &&
-                !it.jid.endsWith("@newsletter") &&
-                it.jid != "status@broadcast" &&
-                !it.jid.endsWith("@broadcast") &&
-                !it.isPhantomEmptyDm() &&
-                !(it.name.startsWith("@") && it.lastMessagePreview.isBlank())
-        }
-        val byChip = when (chip) {
-            HomeFilterChip.ALL -> chatThreads.filter { !hideLocked || !it.isLocked }
-            HomeFilterChip.UNREAD -> chatThreads.filter { (!hideLocked || !it.isLocked) && it.unreadCount > 0 }
-            HomeFilterChip.FAVORITES -> chatThreads.filter { (!hideLocked || !it.isLocked) && it.isFavorite }
-            HomeFilterChip.GROUPS -> chatThreads.filter { (!hideLocked || !it.isLocked) && it.isGroup }
-            HomeFilterChip.LOCKED -> if (hideLocked) emptyList() else chatThreads.filter { it.isLocked }
-            HomeFilterChip.DELETED -> chatThreads.filter { (!hideLocked || !it.isLocked) && (it.hasDeletedMessages || it.lastMessageIsDeleted) }
-            HomeFilterChip.EDITED -> chatThreads.filter { (!hideLocked || !it.isLocked) && it.hasEditedMessages }
-        }
-        val q = query.trim().lowercase()
-        if (q.isEmpty()) byChip
-        else byChip.filter {
-            it.name.lowercase().contains(q) ||
-                it.jid.lowercase().contains(q) ||
-                it.lastMessagePreview.lowercase().contains(q)
-        }
+    ) { chats, query, lockCfg, revealed ->
+        QuadFilterState(chats, query, lockCfg.hideLockedChatsBehindLock && !revealed)
+    }
+
+    private data class QuadFilterState(
+        val chats: List<ChatEntity>,
+        val query: String,
+        val hideLocked: Boolean
+    )
+
+    val filteredChats: StateFlow<List<ChatEntity>> = combine(
+        homeFilterCriteria,
+        _selectedFilter,
+        stealthConfig
+    ) { state, chip, stealth ->
+        val groupFilter = if (stealth.separateGroupsAndChats) false else null
+        filterHomeThreads(state.chats, chip, state.query, state.hideLocked, groupFilter = groupFilter)
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val filteredGroups: StateFlow<List<ChatEntity>> = combine(
+        homeFilterCriteria,
+        _selectedGroupsFilter
+    ) { state, chip ->
+        filterHomeThreads(state.chats, chip, state.query, state.hideLocked, groupFilter = true)
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val channels: StateFlow<List<ChatEntity>> = allChats
@@ -207,6 +248,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectFilter(chip: HomeFilterChip) {
         _selectedFilter.value = chip
+    }
+
+    fun selectGroupsFilter(chip: HomeFilterChip) {
+        _selectedGroupsFilter.value = chip
     }
 
     fun toggleArchivedIncluded() {
@@ -250,6 +295,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         WaRealtimeService.requestMediaDownload(appContext, msg, userInitiated)
     }
 
+    fun requestStatusMediaDownload(status: StatusEntity, userInitiated: Boolean = true) {
+        WaRealtimeService.requestStatusMediaDownload(appContext, status, userInitiated)
+    }
+
     fun observeChat(chatJid: String): Flow<ChatEntity?> = dao.observeChat(chatJid)
 
     fun observeContact(jid: String): Flow<ContactEntity?> = dao.observeContact(jid)
@@ -289,6 +338,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         withContext(Dispatchers.IO) {
             if (query.trim().length < 2) emptyList()
             else dao.searchInChat(chatJid, query.trim())
+        }
+
+    suspend fun findMessageExistsInChat(chatJid: String, messageId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val id = messageId.trim()
+            id.isNotEmpty() && dao.getMessage(id)?.chatJid == chatJid
         }
 
     fun observeEdits(messageId: String): Flow<List<MessageEditEntity>> =
@@ -604,19 +659,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun revokeOrSimulateAntiDelete(chatJid: String, messageId: String, simulateIncoming: Boolean) {
+    fun revokeMessageForEveryone(chatJid: String, messageId: String) {
+        val antiDeleteOn = stealthConfig.value.antiDeleteEnabled
         viewModelScope.launch {
-            WaRealtimeService.revokeMessageRemoteOrSimulateAntiDelete(
-                appContext,
-                chatJid,
-                messageId,
-                simulateIncoming
-            ).onSuccess {
-                showToast(
-                    if (simulateIncoming) "Anti-Delete captured: original bubble kept intact!"
-                    else "Revoke sent & local copy preserved"
-                )
-            }
+            WaRealtimeService.revokeMessageForEveryone(appContext, chatJid, messageId)
+                .onSuccess {
+                    showToast(
+                        if (antiDeleteOn) "Deleted for everyone · Local copy kept (Anti-Delete)"
+                        else "Message deleted for everyone"
+                    )
+                }
+                .onFailure { err ->
+                    showToast(err.message ?: "Delete for everyone failed")
+                }
+        }
+    }
+
+    fun deleteMessageFromDevice(messageId: String) {
+        viewModelScope.launch {
+            WaRealtimeService.deleteMessagePermanently(appContext, messageId)
+                .onSuccess {
+                    showToast("Deleted from device")
+                }
+                .onFailure { err ->
+                    showToast(err.message ?: "Delete failed")
+                }
         }
     }
 
@@ -636,6 +703,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    suspend fun stageMediaForPreview(uri: Uri, rawMimeType: String?): StagedOutboundMedia? {
+        val resolvedMime = rawMimeType?.takeIf {
+            it.isNotBlank() && !it.equals("application/octet-stream", ignoreCase = true)
+        } ?: "application/octet-stream"
+        val ext = when {
+            resolvedMime.contains("png", ignoreCase = true) -> "png"
+            resolvedMime.contains("webp", ignoreCase = true) -> "webp"
+            resolvedMime.contains("gif", ignoreCase = true) -> "gif"
+            resolvedMime.contains("mp4", ignoreCase = true) -> "mp4"
+            resolvedMime.contains("quicktime", ignoreCase = true) -> "mov"
+            resolvedMime.contains("x-matroska", ignoreCase = true) -> "mkv"
+            resolvedMime.contains("webm", ignoreCase = true) -> "webm"
+            resolvedMime.contains("3gpp", ignoreCase = true) -> "3gp"
+            resolvedMime.contains("pdf", ignoreCase = true) -> "pdf"
+            resolvedMime.startsWith("video/", ignoreCase = true) -> "mp4"
+            resolvedMime.startsWith("image/", ignoreCase = true) -> "jpg"
+            else -> "bin"
+        }
+        val copied = EagerMediaVault.copyUriToCacheFile(appContext, uri, ext)
+        if (copied == null) {
+            showToast("Unable to read selected file")
+            return null
+        }
+        val isVideo = resolvedMime.startsWith("video/", ignoreCase = true)
+        val durationSec = if (isVideo) {
+            withContext(Dispatchers.IO) { probeVideoMetadata(copied).durationSec }
+        } else {
+            0
+        }
+        return StagedOutboundMedia(
+            file = copied,
+            mimeType = resolvedMime,
+            isVideo = isVideo,
+            durationSec = durationSec,
+            fileSize = copied.length()
+        )
+    }
+
+    fun sendStagedMedia(
+        chatJid: String,
+        staged: StagedOutboundMedia,
+        caption: String,
+        qualityMode: OutboundQualityMode
+    ) {
+        viewModelScope.launch {
+            WaRealtimeService.sendMediaMessage(
+                context = appContext,
+                chatJid = chatJid,
+                sourceFile = staged.file,
+                mimeType = staged.mimeType,
+                caption = caption,
+                qualityMode = qualityMode,
+                isVoiceNote = false,
+                durationSec = staged.durationSec
+            ).onFailure { err ->
+                showToast(err.message ?: "Media send failed")
+            }
+        }
+    }
+
     fun sendPickedMedia(
         chatJid: String,
         uri: Uri,
@@ -644,28 +771,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         qualityMode: OutboundQualityMode
     ) {
         viewModelScope.launch {
-            val ext = when {
-                mimeType.contains("png") -> "png"
-                mimeType.contains("webp") -> "webp"
-                mimeType.contains("mp4") -> "mp4"
-                mimeType.contains("pdf") -> "pdf"
-                mimeType.startsWith("image/") -> "jpg"
-                else -> "bin"
-            }
-            val copied = EagerMediaVault.copyUriToCacheFile(appContext, uri, ext)
-            if (copied == null) {
-                showToast("Unable to read selected file")
-                return@launch
-            }
+            val staged = stageMediaForPreview(uri, mimeType) ?: return@launch
             WaRealtimeService.sendMediaMessage(
                 context = appContext,
                 chatJid = chatJid,
-                sourceFile = copied,
-                mimeType = mimeType,
+                sourceFile = staged.file,
+                mimeType = staged.mimeType,
                 caption = caption,
                 qualityMode = qualityMode,
                 isVoiceNote = false,
-                durationSec = 0
+                durationSec = staged.durationSec
             ).onFailure { err ->
                 showToast(err.message ?: "Media send failed")
             }
@@ -939,6 +1054,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun requestFullProfilePicture(jid: String) {
         if (jid.isBlank()) return
         WaRealtimeService.requestFullProfilePicture(jid)
+    }
+
+    suspend fun fetchOwnProfile() = WaRealtimeService.fetchOwnProfile()
+
+    suspend fun saveOwnPushName(name: String) = WaRealtimeService.updateOwnPushName(name)
+        .onSuccess { showToast("Display name updated") }
+        .onFailure { showToast(it.message ?: "Failed to update display name") }
+
+    suspend fun saveOwnAbout(about: String) = WaRealtimeService.updateOwnAbout(about)
+        .onSuccess { showToast("About updated") }
+        .onFailure { showToast(it.message ?: "Failed to update About") }
+
+    suspend fun fetchAccountPrivacy() = WaRealtimeService.fetchAccountPrivacySettings()
+
+    suspend fun setAccountPrivacy(category: String, value: String) =
+        WaRealtimeService.updateAccountPrivacySetting(category, value)
+            .onFailure { showToast(it.message ?: "Failed to update privacy setting") }
+
+    suspend fun setDefaultDisappearingTimer(seconds: Int) =
+        WaRealtimeService.setDefaultDisappearingTimerSec(seconds)
+            .onSuccess { showToast("Default timer updated") }
+            .onFailure { showToast(it.message ?: "Failed to update timer") }
+
+    suspend fun fetchBlockedContacts() = WaRealtimeService.fetchBlockedContacts()
+
+    suspend fun setContactBlocked(jid: String, blocked: Boolean) =
+        WaRealtimeService.setContactBlocked(jid, blocked)
+            .onSuccess { showToast(if (blocked) "Contact blocked" else "Contact unblocked") }
+            .onFailure { showToast(it.message ?: "Blocklist update failed") }
+
+    suspend fun loadStorageStats() = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        WaRealtimeService.computeStorageStats(appContext)
+    }
+
+    suspend fun clearTempCache(): Long = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        WaRealtimeService.clearSafeTempCache(appContext)
     }
 
     private fun showToast(text: String) {

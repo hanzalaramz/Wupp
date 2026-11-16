@@ -161,6 +161,7 @@ dependencies {
     implementation("androidx.compose.animation:animation")
 
     implementation("androidx.core:core-ktx:1.19.1")
+    implementation("androidx.emoji2:emoji2-emojipicker:1.7.0")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
@@ -185,5 +186,6 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.13.0")
 
+    testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

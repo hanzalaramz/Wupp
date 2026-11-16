@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.3.1-pre.1] - 2026-11-16
+
+✨ Outbound video & pre-send preview, native PDF/document viewer, in-app emoji dock, WhatsApp Settings ports, and major status, quote-jump, and delete fixes.
+
+### ✨ Key Changes
+- 😄 **Emoji Picker Dock (#26):** Native Android emoji picker with live search and smooth keyboard switching in chat.
+- 📄 **PDF & Document Viewer (#42, #38):** First-page PDF previews on document cards, Save to Downloads, and native external/in-app PDF opening.
+- 🎬 **Video Send & Aspect-Fit Playback (#40):** Send gallery videos in Original/HD/Compressed modes with pre-send media preview, captions, and aspect-ratio-preserving video playback.
+- ⭕ **Status Viewer & Composer (#39):** Fixed status loading states, swipe-down to close, dedicated My Status viewing, and Add Status composer actions.
+- 🗂️ **Separate Groups Tab & Hide Channels (#41):** Optional dedicated Groups tab and Hide Channels toggle under Appearance & Looks.
+- 🗑️ **Permanent Anti-Delete Removal (#37):** Confirmation prompts for Delete for everyone, Delete for me, and permanently deleting Anti-Delete messages from device.
+- 💬 **Tap Quote to Jump (#34):** Tap any quoted reply banner to scroll to and highlight the original message.
+- ⚙️ **Ported WhatsApp Settings (#36):** Manage Account Privacy, Display Name & About, Blocked Contacts, Default Timer, Enter-to-send, Chat Font Size, Notification controls, and Storage cache.
+- 🎨 **Unified Classic Theme (#30):** Enabling Classic mode now applies the flat WhatsApp look to top search bars, bottom navigation, and chat composer boxes.
+
 ## [0.3.0] - 2026-11-16
 
 ✨ Material 3 Expressive & Liquid Glass redesign, Local App Lock, Customize Looks, Turkish support, custom reactions, and sync & stability fixes.

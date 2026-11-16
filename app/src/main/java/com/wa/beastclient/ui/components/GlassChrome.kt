@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -74,7 +75,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wa.beastclient.R
 import com.wa.beastclient.ui.theme.LocalWaColors
+import com.wa.beastclient.ui.theme.LocalWuppClassicUi
 import com.wa.beastclient.ui.theme.WaColors
+
+internal enum class ChromeSurfaceStyle {
+    LIQUID_GLASS,
+    CLASSIC_FLAT
+}
+
+internal fun resolveChromeSurfaceStyle(classicMode: Boolean): ChromeSurfaceStyle =
+    if (classicMode) ChromeSurfaceStyle.CLASSIC_FLAT else ChromeSurfaceStyle.LIQUID_GLASS
 
 /**
  * Shared live backdrop state captured via a GPU GraphicsLayer so floating glass surfaces
@@ -193,8 +203,19 @@ fun Modifier.wuppGlassSurface(
     colors: WaColors,
     shape: Shape = CircleShape,
     elevation: Dp = 14.dp,
-    alpha: Float = if (colors.isDark) 0.76f else 0.88f
+    alpha: Float = if (colors.isDark) 0.76f else 0.88f,
+    classicMode: Boolean = false
 ): Modifier {
+    if (resolveChromeSurfaceStyle(classicMode) == ChromeSurfaceStyle.CLASSIC_FLAT) {
+        return this
+            .clip(shape)
+            .background(colors.elevatedBar)
+            .border(
+                width = 0.75.dp,
+                color = colors.divider,
+                shape = shape
+            )
+    }
     val topColor = if (colors.isDark) {
         colors.elevatedBar.copy(alpha = alpha)
     } else {
@@ -243,9 +264,32 @@ fun WuppGlassContainer(
     elevation: Dp = 18.dp,
     backdropState: WuppBackdropState? = null,
     blurRadius: Dp = 30.dp,
+    classicMode: Boolean = LocalWuppClassicUi.current,
     contentAlignment: Alignment = Alignment.TopStart,
     content: @Composable BoxScope.() -> Unit
 ) {
+    if (resolveChromeSurfaceStyle(classicMode) == ChromeSurfaceStyle.CLASSIC_FLAT) {
+        Box(
+            modifier = modifier
+                .shadow(
+                    elevation = 1.dp,
+                    shape = shape,
+                    ambientColor = Color.Black.copy(alpha = 0.08f),
+                    spotColor = Color.Black.copy(alpha = 0.08f)
+                )
+                .clip(shape)
+                .background(colors.elevatedBar)
+                .border(
+                    width = 0.75.dp,
+                    color = colors.divider,
+                    shape = shape
+                ),
+            contentAlignment = contentAlignment
+        ) {
+            content()
+        }
+        return
+    }
     val hasHardwareBlur = backdropState != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val tintTop = when {
         hasHardwareBlur && colors.isDark -> Color(0xFF1A2226).copy(alpha = 0.36f)
@@ -361,21 +405,39 @@ fun WuppGlassNavBar(
     onSelectTab: (Int) -> Unit,
     backdropState: WuppBackdropState? = null,
     classicMode: Boolean = false,
+    separateGroupsAndChats: Boolean = false,
+    unreadGroupsCount: Int = 0,
     chatsLabel: String = "Chats",
+    groupsLabel: String = "Groups",
     updatesLabel: String = "Updates",
     communitiesLabel: String = "Communities",
     settingsLabel: String = "Settings",
     modifier: Modifier = Modifier
 ) {
     val colors = LocalWaColors.current
-    val tabs = remember(unreadChatsCount, chatsLabel, updatesLabel, communitiesLabel, settingsLabel) {
-        listOf(
-            GlassNavTab(0, chatsLabel, drawableRes = R.drawable.vec_ic_chat_filled, badgeCount = unreadChatsCount),
-            GlassNavTab(1, updatesLabel, drawableRes = R.drawable.vec_ic_status),
-            GlassNavTab(2, communitiesLabel, drawableRes = R.drawable.vec_ic_avatar_community),
-            GlassNavTab(3, settingsLabel, imageVector = Icons.Rounded.Shield)
-        )
+    val tabs = remember(
+        separateGroupsAndChats,
+        unreadChatsCount,
+        unreadGroupsCount,
+        chatsLabel,
+        groupsLabel,
+        updatesLabel,
+        communitiesLabel,
+        settingsLabel
+    ) {
+        buildList {
+            add(GlassNavTab(0, chatsLabel, drawableRes = R.drawable.vec_ic_chat_filled, badgeCount = unreadChatsCount))
+            if (separateGroupsAndChats) {
+                add(GlassNavTab(4, groupsLabel, imageVector = Icons.Rounded.Groups, badgeCount = unreadGroupsCount))
+            }
+            add(GlassNavTab(1, updatesLabel, drawableRes = R.drawable.vec_ic_status))
+            add(GlassNavTab(2, communitiesLabel, drawableRes = R.drawable.vec_ic_avatar_community))
+            add(GlassNavTab(3, settingsLabel, imageVector = Icons.Rounded.Shield))
+        }
     }
+    val fiveTabs = tabs.size >= 5
+    val labelFontSize = if (fiveTabs) 9.5.sp else 10.5.sp
+    val classicLabelFontSize = if (fiveTabs) 9.5.sp else 11.sp
 
     if (classicMode) {
         androidx.compose.material3.Surface(
@@ -389,7 +451,7 @@ fun WuppGlassNavBar(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(64.dp)
-                        .padding(horizontal = 6.dp),
+                        .padding(horizontal = if (fiveTabs) 2.dp else 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     tabs.forEach { tab ->
@@ -406,7 +468,7 @@ fun WuppGlassNavBar(
                                 modifier = Modifier
                                     .clip(CircleShape)
                                     .background(if (selected) colors.pillActiveBg else Color.Transparent)
-                                    .padding(horizontal = 16.dp, vertical = 5.dp),
+                                    .padding(horizontal = if (fiveTabs) 12.dp else 16.dp, vertical = 5.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 if (tab.drawableRes != null) {
@@ -446,9 +508,11 @@ fun WuppGlassNavBar(
                             Text(
                                 text = tab.label,
                                 color = if (selected) colors.textPrimary else colors.textSecondary,
-                                fontSize = 11.sp,
+                                fontSize = classicLabelFontSize,
                                 fontWeight = if (selected) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal,
-                                maxLines = 1
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -469,7 +533,7 @@ fun WuppGlassNavBar(
                 )
             )
             .navigationBarsPadding()
-            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .padding(horizontal = if (fiveTabs) 10.dp else 14.dp, vertical = 10.dp)
     ) {
         WuppGlassContainer(
             modifier = Modifier
@@ -487,8 +551,9 @@ fun WuppGlassNavBar(
                     .padding(4.dp)
             ) {
                 val tabWidth = maxWidth / tabs.size
+                val activePosition = tabs.indexOfFirst { it.index == currentTab }.coerceAtLeast(0)
                 val indicatorOffset by animateDpAsState(
-                    targetValue = tabWidth * currentTab.coerceIn(0, tabs.lastIndex),
+                    targetValue = tabWidth * activePosition,
                     animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
                     label = "glass_nav_indicator_offset"
                 )
@@ -617,7 +682,7 @@ fun WuppGlassNavBar(
                             Text(
                                 text = tab.label,
                                 color = tintColor,
-                                fontSize = 10.5.sp,
+                                fontSize = labelFontSize,
                                 lineHeight = 12.sp,
                                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                                 maxLines = 1,

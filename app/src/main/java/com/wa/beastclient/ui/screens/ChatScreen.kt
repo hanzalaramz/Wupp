@@ -1,18 +1,22 @@
 package com.wa.beastclient.ui.screens
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -28,6 +32,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,12 +40,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -52,6 +60,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Reply
@@ -64,13 +75,16 @@ import androidx.compose.material.icons.rounded.CallMade
 import androidx.compose.material.icons.rounded.CallMissed
 import androidx.compose.material.icons.rounded.CallReceived
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Collections
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MoreVert
@@ -121,9 +135,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -131,18 +149,27 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.paging.LoadState
 import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.paging.compose.itemKey
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import com.airbnb.lottie.compose.LottieAnimation
 import com.airbnb.lottie.compose.LottieCompositionSpec
 import com.airbnb.lottie.compose.LottieConstants
@@ -156,25 +183,38 @@ import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.MainViewModel
 import com.wa.beastclient.ui.QuotedSenderMeta
 import com.wa.beastclient.ui.ResolvedParticipantUi
+import com.wa.beastclient.ui.components.ChatEmojiPickerDock
 import com.wa.beastclient.ui.components.ChatMediaVisibilitySelector
+import com.wa.beastclient.ui.components.DocumentMessageCard
 import com.wa.beastclient.ui.components.DoodleBackground
 import com.wa.beastclient.ui.components.FullScreenMediaViewer
+import com.wa.beastclient.ui.components.InAppPdfViewerDialog
 import com.wa.beastclient.ui.components.InlineTimestampMessage
 import com.wa.beastclient.ui.components.MessageMetaCluster
+import com.wa.beastclient.ui.components.OutboundMediaPreviewDialog
 import com.wa.beastclient.ui.components.ProfilePhotoLightbox
+import com.wa.beastclient.ui.components.StagedOutboundMedia
 import com.wa.beastclient.ui.components.SwipeToReplyBox
 import com.wa.beastclient.ui.components.VoiceNoteBubble
 import com.wa.beastclient.ui.components.WallpaperPickerDialog
 import com.wa.beastclient.ui.components.WhatsAppBubbleShape
 import com.wa.beastclient.ui.components.WhatsAppClusterInnerShape
 import com.wa.beastclient.ui.components.WuppGlassContainer
+import com.wa.beastclient.ui.components.buildDocumentExportFileName
+import com.wa.beastclient.ui.components.deleteBeforeSelection
 import com.wa.beastclient.ui.components.expressivePressScale
 import com.wa.beastclient.ui.components.formatMessageClock
+import com.wa.beastclient.ui.components.insertTextAtSelection
+import com.wa.beastclient.ui.components.isDocumentMessage
+import com.wa.beastclient.ui.components.openDocumentNatively
 import com.wa.beastclient.ui.components.rememberWuppBackdropState
+import com.wa.beastclient.ui.components.resolveDocumentDisplayName
+import com.wa.beastclient.ui.components.resolveDocumentMimeType
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
 import com.wa.beastclient.ui.theme.LocalWuppShowSeconds
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -226,6 +266,79 @@ fun ChatScreen(
     val pagedItems = remember(chatJid) { viewModel.pagedMessages(chatJid) }.collectAsLazyPagingItems()
     val listState = remember(chatJid) { LazyListState() }
     var scrollToBottomPending by remember(chatJid) { mutableStateOf(false) }
+    var highlightedMessageId by remember(chatJid) { mutableStateOf<String?>(null) }
+    var activeJumpJob by remember(chatJid) { mutableStateOf<Job?>(null) }
+    val quotedNotFoundLabel = stringResource(R.string.chat_quoted_not_found)
+
+    LaunchedEffect(highlightedMessageId) {
+        if (highlightedMessageId != null) {
+            delay(1500L)
+            highlightedMessageId = null
+        }
+    }
+
+    val jumpToQuotedMessage: (String) -> Unit = { rawQuotedId ->
+        val qid = rawQuotedId.trim()
+        if (qid.isNotEmpty()) {
+            activeJumpJob?.cancel()
+            activeJumpJob = scope.launch {
+                val immediateIdx = findLoadedQuotedItemIndex(pagedItems.itemSnapshotList, qid)
+                if (immediateIdx >= 0) {
+                    if (abs(immediateIdx - listState.firstVisibleItemIndex) <= 35) {
+                        listState.animateScrollToItem(immediateIdx)
+                    } else {
+                        listState.scrollToItem(immediateIdx)
+                    }
+                    highlightedMessageId = qid
+                    return@launch
+                }
+
+                val existsInChat = viewModel.findMessageExistsInChat(chatJid, qid)
+                if (!existsInChat) {
+                    Toast.makeText(context, quotedNotFoundLabel, Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+
+                var foundIdx = -1
+                var step = 0
+                while (step < 40) {
+                    val prevCount = pagedItems.itemCount
+                    if (prevCount > 0) {
+                        pagedItems[prevCount - 1]
+                    }
+                    withTimeoutOrNull(2000L) {
+                        snapshotFlow { pagedItems.itemSnapshotList to pagedItems.loadState.append }
+                            .first { (snap, appendState) ->
+                                findLoadedQuotedItemIndex(snap, qid) >= 0 ||
+                                    snap.size > prevCount ||
+                                    (appendState is LoadState.NotLoading && appendState.endOfPaginationReached)
+                            }
+                    }
+                    foundIdx = findLoadedQuotedItemIndex(pagedItems.itemSnapshotList, qid)
+                    if (foundIdx >= 0) break
+                    val appendState = pagedItems.loadState.append
+                    if (appendState is LoadState.NotLoading &&
+                        appendState.endOfPaginationReached &&
+                        pagedItems.itemCount == prevCount
+                    ) {
+                        break
+                    }
+                    step++
+                }
+
+                if (foundIdx >= 0) {
+                    if (abs(foundIdx - listState.firstVisibleItemIndex) <= 35) {
+                        listState.animateScrollToItem(foundIdx)
+                    } else {
+                        listState.scrollToItem(foundIdx)
+                    }
+                    highlightedMessageId = qid
+                } else {
+                    Toast.makeText(context, quotedNotFoundLabel, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
     var lastLatestMsgId by remember(chatJid) { mutableStateOf<String?>(null) }
     var latestVisibleMsg: MessageEntity? = null
     val latestPeekCount = minOf(pagedItems.itemCount, 8)
@@ -287,11 +400,66 @@ fun ChatScreen(
         if (quotedIds.isNotEmpty()) viewModel.resolveQuotedSendersLocally(quotedIds)
     }
 
-    var draftText by rememberSaveable(chatJid) { mutableStateOf("") }
+    var draftValue by rememberSaveable(chatJid, stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(""))
+    }
     var replyTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var ghostMentionEveryone by remember { mutableStateOf(false) }
     var qualityMode by remember { mutableStateOf(OutboundQualityMode.HD) }
     var showAttachTray by remember { mutableStateOf(false) }
+    var showEmojiPicker by remember(chatJid) { mutableStateOf(false) }
+    var holdDockForIme by remember(chatJid) { mutableStateOf(false) }
+
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val draftFocusRequester = remember { FocusRequester() }
+    val draftInteractionSource = remember { MutableInteractionSource() }
+    val density = LocalDensity.current
+    val maxLandscapeDockDp = (LocalConfiguration.current.screenHeightDp * 0.48f).dp
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val navBarBottomPx = WindowInsets.navigationBars.getBottom(density)
+    val imeExclusivePx = (imeBottomPx - navBarBottomPx).coerceAtLeast(0)
+    val imeExclusiveDp = with(density) { imeExclusivePx.toDp() }
+    val uiPrefs = remember(context) {
+        context.getSharedPreferences("wupp_ui_prefs", Context.MODE_PRIVATE)
+    }
+    var rememberedKeyboardDp by remember {
+        mutableStateOf(uiPrefs.getFloat("cached_ime_height_dp", 296f).coerceIn(220f, 420f).dp)
+    }
+    LaunchedEffect(imeExclusivePx) {
+        val minImePx = with(density) { 120.dp.toPx() }
+        if (imeExclusivePx > minImePx) {
+            val measured = with(density) { imeExclusivePx.toDp().value }.coerceIn(220f, 420f)
+            if (abs(measured - rememberedKeyboardDp.value) > 4f) {
+                rememberedKeyboardDp = measured.dp
+                uiPrefs.edit().putFloat("cached_ime_height_dp", measured).apply()
+            }
+        }
+    }
+    LaunchedEffect(holdDockForIme, imeExclusivePx) {
+        if (holdDockForIme) {
+            if (imeExclusivePx > 0) {
+                holdDockForIme = false
+            } else {
+                delay(320L)
+                holdDockForIme = false
+            }
+        }
+    }
+    LaunchedEffect(draftInteractionSource) {
+        draftInteractionSource.interactions.collect { interaction ->
+            if (interaction is PressInteraction.Release && showEmojiPicker) {
+                holdDockForIme = true
+                showEmojiPicker = false
+                keyboardController?.show()
+            }
+        }
+    }
+    LaunchedEffect(isRecordingVoice, isGroupAnnounceLocked, canSendOutbound) {
+        if (isRecordingVoice || isGroupAnnounceLocked || !canSendOutbound) {
+            showEmojiPicker = false
+            holdDockForIme = false
+        }
+    }
 
     var showSearchInChat by remember { mutableStateOf(false) }
     var inChatQuery by remember { mutableStateOf("") }
@@ -303,12 +471,20 @@ fun ChatScreen(
     var editHistoryTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var groupReceiptsTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var actionMenuTarget by remember { mutableStateOf<MessageEntity?>(null) }
+    var deleteConfirmTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var showMoreReactionEmojis by remember { mutableStateOf(false) }
     var editMessageDialogTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var mediaLightboxTarget by remember { mutableStateOf<MessageEntity?>(null) }
+    var pdfViewerTarget by remember { mutableStateOf<Pair<File, String>?>(null) }
+    var pendingOutboundPreview by remember { mutableStateOf<StagedOutboundMedia?>(null) }
     var showProfilePhotoLightbox by remember { mutableStateOf(false) }
     var participantAvatarTarget by remember { mutableStateOf<Triple<String, String, String?>?>(null) }
     var showWallpaperDialog by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = showEmojiPicker) {
+        showEmojiPicker = false
+        holdDockForIme = false
+    }
 
     BackHandler(enabled = actionMenuTarget != null) {
         actionMenuTarget = null
@@ -320,16 +496,34 @@ fun ChatScreen(
         LottieCompositionSpec.Asset("lottie/typing_indicator_bounce_v3.json")
     )
 
+    fun handlePickedAttachment(uri: Uri, fallbackMime: String) {
+        val mime = context.contentResolver.getType(uri) ?: fallbackMime
+        showAttachTray = false
+        if (mime.startsWith("image/", ignoreCase = true) || mime.startsWith("video/", ignoreCase = true)) {
+            scope.launch {
+                pendingOutboundPreview = viewModel.stageMediaForPreview(uri, mime)
+            }
+        } else {
+            scrollToBottomPending = true
+            viewModel.sendPickedMedia(chatJid, uri, mime, draftValue.text.trim(), qualityMode)
+            draftValue = TextFieldValue("")
+            scope.launch { listState.animateScrollToItem(0) }
+        }
+    }
+
+    val pickVisualMediaLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            handlePickedAttachment(uri, "image/jpeg")
+        }
+    }
+
     val pickMediaLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
-            val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
-            showAttachTray = false
-            scrollToBottomPending = true
-            viewModel.sendPickedMedia(chatJid, uri, mime, draftText.trim(), qualityMode)
-            draftText = ""
-            scope.launch { listState.animateScrollToItem(0) }
+            handlePickedAttachment(uri, "application/octet-stream")
         }
     }
 
@@ -427,13 +621,10 @@ fun ChatScreen(
                             }
                             IconButton(
                                 onClick = {
-                                    viewModel.revokeOrSimulateAntiDelete(
-                                        chatJid,
-                                        selectedMsg.id,
-                                        simulateIncoming = !selectedMsg.isFromMe
-                                    )
+                                    deleteConfirmTarget = selectedMsg
                                     actionMenuTarget = null
                                     showMoreReactionEmojis = false
+                                    showSelectionOverflow = false
                                 }
                             ) {
                                 Icon(Icons.Rounded.Delete, "Delete", tint = colors.textPrimary)
@@ -469,14 +660,53 @@ fun ChatScreen(
                                         )
                                     }
                                     if (!selectedMsg.localMediaPath.isNullOrBlank()) {
+                                        val isSelectedDoc = isDocumentMessage(selectedMsg)
+                                        if (isSelectedDoc) {
+                                            DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.chat_doc_open_with)) },
+                                                onClick = {
+                                                    showSelectionOverflow = false
+                                                    val docFile = File(selectedMsg.localMediaPath)
+                                                    if (docFile.exists()) {
+                                                        openDocumentNatively(context, selectedMsg, docFile) { pdfFile ->
+                                                            pdfViewerTarget = pdfFile to resolveDocumentDisplayName(
+                                                                selectedMsg,
+                                                                resolveDocumentMimeType(selectedMsg, pdfFile),
+                                                                pdfFile
+                                                            )
+                                                        }
+                                                    } else {
+                                                        viewModel.requestMediaDownload(selectedMsg, userInitiated = true)
+                                                    }
+                                                    actionMenuTarget = null
+                                                    showMoreReactionEmojis = false
+                                                }
+                                            )
+                                        }
                                         DropdownMenuItem(
-                                            text = { Text("Save to Gallery") },
+                                            text = {
+                                                Text(
+                                                    if (isSelectedDoc) stringResource(R.string.chat_doc_save_downloads)
+                                                    else "Save to Gallery"
+                                                )
+                                            },
                                             onClick = {
                                                 showSelectionOverflow = false
+                                                val targetFile = File(selectedMsg.localMediaPath)
+                                                val exportName = if (isSelectedDoc) {
+                                                    buildDocumentExportFileName(selectedMsg, targetFile)
+                                                } else {
+                                                    "WA_${selectedMsg.msgType}_${selectedMsg.id}.${targetFile.extension.ifBlank { "bin" }}"
+                                                }
+                                                val exportMime = if (isSelectedDoc) {
+                                                    resolveDocumentMimeType(selectedMsg, targetFile)
+                                                } else {
+                                                    selectedMsg.mimeType
+                                                }
                                                 viewModel.exportMediaToGallery(
                                                     selectedMsg.localMediaPath,
-                                                    "WA_${selectedMsg.msgType}_${selectedMsg.id}.${File(selectedMsg.localMediaPath).extension.ifBlank { "bin" }}",
-                                                    selectedMsg.mimeType
+                                                    exportName,
+                                                    exportMime
                                                 )
                                                 actionMenuTarget = null
                                                 showMoreReactionEmojis = false
@@ -710,7 +940,7 @@ fun ChatScreen(
             wallpaperScaleOverride = effectiveWallpaper.scale,
             wallpaperOffsetXOverride = effectiveWallpaper.offsetXFraction,
             wallpaperOffsetYOverride = effectiveWallpaper.offsetYFraction,
-            backdropState = wallpaperBackdropState,
+            backdropState = if (stealthConfig.classicWhatsAppLook) null else wallpaperBackdropState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
@@ -778,11 +1008,21 @@ fun ChatScreen(
                             above.isFromMe != msg.isFromMe ||
                             above.senderJid != msg.senderJid
                         val isSelected = actionMenuTarget?.id == msg.id
+                        val isHighlighted = highlightedMessageId == msg.id
+                        val rowBgColor by animateColorAsState(
+                            targetValue = when {
+                                isHighlighted -> colors.brightGreen.copy(alpha = 0.24f)
+                                isSelected -> colors.brightGreen.copy(alpha = 0.14f)
+                                else -> Color.Transparent
+                            },
+                            animationSpec = tween(durationMillis = 360),
+                            label = "msg_row_highlight_bg"
+                        )
 
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(if (isSelected) colors.brightGreen.copy(alpha = 0.14f) else Color.Transparent)
+                                .background(rowBgColor)
                         ) {
                             if (showDateHeader && msg.timestamp > 0L) {
                                 DateHeaderPill(timestamp = msg.timestamp)
@@ -826,6 +1066,20 @@ fun ChatScreen(
                                         senderAvatarPath
                                     )
                                 }
+                                val handleOpenDocument: () -> Unit = {
+                                    val docFile = msg.localMediaPath?.takeIf { it.isNotBlank() }?.let(::File)
+                                    if (docFile != null && docFile.exists() && docFile.length() > 0L) {
+                                        openDocumentNatively(context, msg, docFile) { pdfFile ->
+                                            pdfViewerTarget = pdfFile to resolveDocumentDisplayName(
+                                                msg,
+                                                resolveDocumentMimeType(msg, pdfFile),
+                                                pdfFile
+                                            )
+                                        }
+                                    } else {
+                                        viewModel.requestMediaDownload(msg, userInitiated = true)
+                                    }
+                                }
                                 if (isChannel || isGroupAnnounceLocked) {
                                     MessageBubbleRow(
                                         msg = msg,
@@ -841,10 +1095,12 @@ fun ChatScreen(
                                         isDownloadingMedia = downloadingMediaIds.contains(msg.id),
                                         mediaDownloadError = failedMediaIds[msg.id],
                                         onClickEditBadge = { editHistoryTarget = msg },
+                                        onClickQuoted = jumpToQuotedMessage,
                                         onManualSendPlayedReceipt = { viewModel.markAudioPlayedExplicitly(msg) },
                                         onAutoRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = false) },
                                         onRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = true) },
                                         onOpenMedia = { mediaLightboxTarget = msg },
+                                        onOpenDocument = handleOpenDocument,
                                         onLongPress = {
                                             showMoreReactionEmojis = false
                                             actionMenuTarget = msg
@@ -866,10 +1122,12 @@ fun ChatScreen(
                                             isDownloadingMedia = downloadingMediaIds.contains(msg.id),
                                             mediaDownloadError = failedMediaIds[msg.id],
                                             onClickEditBadge = { editHistoryTarget = msg },
+                                            onClickQuoted = jumpToQuotedMessage,
                                             onManualSendPlayedReceipt = { viewModel.markAudioPlayedExplicitly(msg) },
                                             onAutoRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = false) },
                                             onRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = true) },
                                             onOpenMedia = { mediaLightboxTarget = msg },
+                                            onOpenDocument = handleOpenDocument,
                                             onLongPress = {
                                                 showMoreReactionEmojis = false
                                                 actionMenuTarget = msg
@@ -1146,21 +1404,49 @@ fun ChatScreen(
                                 }
                             }
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                val pickInteraction = remember { MutableInteractionSource() }
+                                val galleryInteraction = remember { MutableInteractionSource() }
                                 Button(
+                                    onClick = {
+                                        AppLockManager.suspendNextBackgroundLock()
+                                        pickVisualMediaLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                        )
+                                    },
+                                    interactionSource = galleryInteraction,
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen),
+                                    modifier = Modifier.expressivePressScale(galleryInteraction, pressedScale = 0.96f)
+                                ) {
+                                    Icon(Icons.Rounded.Collections, null, modifier = Modifier.size(16.dp), tint = Color.White)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = stringResource(R.string.chat_attach_gallery),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color.White
+                                    )
+                                }
+                                val docInteraction = remember { MutableInteractionSource() }
+                                OutlinedButton(
                                     onClick = {
                                         AppLockManager.suspendNextBackgroundLock()
                                         pickMediaLauncher.launch("*/*")
                                     },
-                                    interactionSource = pickInteraction,
+                                    interactionSource = docInteraction,
                                     shape = RoundedCornerShape(16.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen),
-                                    modifier = Modifier.expressivePressScale(pickInteraction, pressedScale = 0.96f)
+                                    modifier = Modifier.expressivePressScale(docInteraction, pressedScale = 0.96f)
                                 ) {
-                                    Text("Pick File / Photo", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                                    Icon(Icons.Rounded.Description, null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = stringResource(R.string.chat_attach_document),
+                                        fontSize = 12.sp
+                                    )
                                 }
                                 if (chat?.isGroup == true) {
                                     val mentionInteraction = remember { MutableInteractionSource() }
@@ -1193,7 +1479,8 @@ fun ChatScreen(
                             colors = colors,
                             shape = RoundedCornerShape(16.dp),
                             elevation = 8.dp,
-                            backdropState = wallpaperBackdropState
+                            backdropState = wallpaperBackdropState,
+                            classicMode = stealthConfig.classicWhatsAppLook
                         ) {
                             Row(
                                 modifier = Modifier
@@ -1243,7 +1530,8 @@ fun ChatScreen(
                         colors = colors,
                         shape = RoundedCornerShape(26.dp),
                         elevation = 12.dp,
-                        backdropState = wallpaperBackdropState
+                        backdropState = wallpaperBackdropState,
+                        classicMode = stealthConfig.classicWhatsAppLook
                     ) {
                         Row(
                             modifier = Modifier
@@ -1271,13 +1559,28 @@ fun ChatScreen(
                             }
                         } else {
                             IconButton(
-                                onClick = { },
+                                enabled = canSendOutbound,
+                                onClick = {
+                                    if (showEmojiPicker) {
+                                        holdDockForIme = true
+                                        showEmojiPicker = false
+                                        draftFocusRequester.requestFocus()
+                                        keyboardController?.show()
+                                    } else {
+                                        showAttachTray = false
+                                        holdDockForIme = false
+                                        showEmojiPicker = true
+                                        keyboardController?.hide()
+                                    }
+                                },
                                 modifier = Modifier.size(34.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Rounded.SentimentSatisfiedAlt,
-                                    contentDescription = "Emoji",
-                                    tint = colors.textSecondary,
+                                    imageVector = if (showEmojiPicker) Icons.Rounded.Keyboard else Icons.Rounded.SentimentSatisfiedAlt,
+                                    contentDescription = stringResource(
+                                        if (showEmojiPicker) R.string.chat_switch_to_keyboard else R.string.chat_switch_to_emoji
+                                    ),
+                                    tint = if (showEmojiPicker) colors.brightGreen else colors.textSecondary,
                                     modifier = Modifier.size(23.dp)
                                 )
                             }
@@ -1293,17 +1596,28 @@ fun ChatScreen(
                                 Spacer(modifier = Modifier.width(6.dp))
                             }
                             Box(modifier = Modifier.weight(1f).padding(vertical = 6.dp, horizontal = 4.dp)) {
-                                if (draftText.isEmpty()) {
+                                if (draftValue.text.isEmpty()) {
                                     Text(
                                         text = if (canSendOutbound) stringResource(R.string.chat_input_placeholder) else "Blocked by Error 463 guard",
                                         color = colors.textSecondary,
                                         fontSize = 15.5.sp
                                     )
                                 }
+                                val sendCurrentDraft: () -> Unit = {
+                                    if (canSendOutbound && draftValue.text.isNotBlank()) {
+                                        scrollToBottomPending = true
+                                        viewModel.sendText(chatJid, draftValue.text, replyTarget, ghostMentionEveryone)
+                                        draftValue = TextFieldValue("")
+                                        replyTarget = null
+                                        ghostMentionEveryone = false
+                                        scope.launch { listState.animateScrollToItem(0) }
+                                    }
+                                }
                                 BasicTextField(
-                                    value = draftText,
-                                    onValueChange = { draftText = it },
+                                    value = draftValue,
+                                    onValueChange = { draftValue = it },
                                     enabled = canSendOutbound,
+                                    interactionSource = draftInteractionSource,
                                     textStyle = TextStyle(
                                         color = colors.textPrimary,
                                         fontSize = 15.5.sp,
@@ -1311,20 +1625,37 @@ fun ChatScreen(
                                     ),
                                     cursorBrush = SolidColor(colors.brightGreen),
                                     maxLines = 6,
-                                    modifier = Modifier.fillMaxWidth()
+                                    keyboardOptions = KeyboardOptions(
+                                        imeAction = if (stealthConfig.enterIsSend) ImeAction.Send else ImeAction.Default
+                                    ),
+                                    keyboardActions = KeyboardActions(
+                                        onSend = { sendCurrentDraft() }
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .focusRequester(draftFocusRequester)
                                 )
                             }
                             IconButton(
-                                onClick = { showAttachTray = !showAttachTray },
+                                onClick = {
+                                    val nextTray = !showAttachTray
+                                    showAttachTray = nextTray
+                                    if (nextTray) {
+                                        showEmojiPicker = false
+                                        holdDockForIme = false
+                                    }
+                                },
                                 modifier = Modifier.size(34.dp)
                             ) {
                                 Icon(Icons.Rounded.AttachFile, "Attach", tint = colors.textSecondary)
                             }
-                            AnimatedVisibility(visible = draftText.isBlank()) {
+                            AnimatedVisibility(visible = draftValue.text.isBlank()) {
                                 IconButton(
                                     onClick = {
                                         AppLockManager.suspendNextBackgroundLock()
-                                        pickMediaLauncher.launch("image/*")
+                                        pickVisualMediaLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                        )
                                     },
                                     modifier = Modifier.size(34.dp)
                                 ) {
@@ -1347,7 +1678,8 @@ fun ChatScreen(
                     val fabCorner by animateDpAsState(
                         targetValue = when {
                             isRecordingVoice -> 14.dp
-                            draftText.isNotBlank() -> 16.dp
+                            stealthConfig.classicWhatsAppLook -> 24.dp
+                            draftValue.text.isNotBlank() -> 16.dp
                             else -> 24.dp
                         },
                         animationSpec = fabMotion.fastSpatialSpec(),
@@ -1378,10 +1710,10 @@ fun ChatScreen(
                                         viewModel.toggleVoiceRecording(chatJid, true)
                                         scope.launch { listState.animateScrollToItem(0) }
                                     }
-                                    draftText.isNotBlank() -> {
+                                    draftValue.text.isNotBlank() -> {
                                         scrollToBottomPending = true
-                                        viewModel.sendText(chatJid, draftText, replyTarget, ghostMentionEveryone)
-                                        draftText = ""
+                                        viewModel.sendText(chatJid, draftValue.text, replyTarget, ghostMentionEveryone)
+                                        draftValue = TextFieldValue("")
                                         replyTarget = null
                                         ghostMentionEveryone = false
                                         scope.launch { listState.animateScrollToItem(0) }
@@ -1404,7 +1736,7 @@ fun ChatScreen(
                         AnimatedContent(
                             targetState = when {
                                 isRecordingVoice -> 2
-                                draftText.isNotBlank() -> 1
+                                draftValue.text.isNotBlank() -> 1
                                 else -> 0
                             },
                             transitionSpec = {
@@ -1429,6 +1761,42 @@ fun ChatScreen(
                                     modifier = Modifier.size(22.dp)
                                 )
                             }
+                        }
+                    }
+                }
+
+                // Native Keyboard-Height Emoji Dock
+                val desiredDockDp = minOf(rememberedKeyboardDp, maxLandscapeDockDp)
+                val targetDockDp = if (showEmojiPicker || holdDockForIme) {
+                    (desiredDockDp - imeExclusiveDp).coerceAtLeast(0.dp)
+                } else {
+                    0.dp
+                }
+                val animatedDockDp by animateDpAsState(
+                    targetValue = targetDockDp,
+                    animationSpec = tween(
+                        durationMillis = if (imeExclusivePx > 0 || holdDockForIme) 0 else 190
+                    ),
+                    label = "emoji_dock_height"
+                )
+                if (showEmojiPicker || animatedDockDp > 0.dp) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(animatedDockDp)
+                            .clipToBounds()
+                    ) {
+                        if (showEmojiPicker) {
+                            ChatEmojiPickerDock(
+                                dockHeight = desiredDockDp,
+                                colors = colors,
+                                onEmojiSelected = { emoji ->
+                                    draftValue = insertTextAtSelection(draftValue, emoji)
+                                },
+                                onBackspace = {
+                                    draftValue = deleteBeforeSelection(draftValue)
+                                }
+                            )
                         }
                     }
                 }
@@ -1717,6 +2085,139 @@ fun ChatScreen(
             }
         )
     }
+
+    pdfViewerTarget?.let { (file, title) ->
+        InAppPdfViewerDialog(
+            file = file,
+            title = title,
+            colors = colors,
+            onDismiss = { pdfViewerTarget = null }
+        )
+    }
+
+    pendingOutboundPreview?.let { staged ->
+        val recipientLabel = chat?.name?.takeIf { it.isNotBlank() } ?: chatJid.substringBefore("@")
+        OutboundMediaPreviewDialog(
+            staged = staged,
+            recipientLabel = recipientLabel,
+            initialCaption = draftValue.text.trim(),
+            initialQualityMode = qualityMode,
+            onDismiss = { pendingOutboundPreview = null },
+            onSend = { captionText, chosenQuality ->
+                pendingOutboundPreview = null
+                qualityMode = chosenQuality
+                scrollToBottomPending = true
+                viewModel.sendStagedMedia(chatJid, staged, captionText, chosenQuality)
+                draftValue = TextFieldValue("")
+                scope.launch { listState.animateScrollToItem(0) }
+            }
+        )
+    }
+
+    deleteConfirmTarget?.let { target ->
+        val mode = resolveMessageDeleteDialogMode(target)
+        val dialogTitle = when (mode) {
+            MessageDeleteDialogMode.PERMANENT_DELETE_CAPTURED -> stringResource(R.string.chat_delete_captured_title)
+            MessageDeleteDialogMode.DELETE_FOR_ME_INCOMING,
+            MessageDeleteDialogMode.DELETE_OUTGOING_OPTIONS -> stringResource(R.string.chat_delete_dialog_title)
+        }
+        val dialogBody = when (mode) {
+            MessageDeleteDialogMode.PERMANENT_DELETE_CAPTURED -> stringResource(R.string.chat_delete_captured_body)
+            MessageDeleteDialogMode.DELETE_FOR_ME_INCOMING -> stringResource(R.string.chat_delete_incoming_body)
+            MessageDeleteDialogMode.DELETE_OUTGOING_OPTIONS -> stringResource(R.string.chat_delete_outgoing_body)
+        }
+        AlertDialog(
+            onDismissRequest = { deleteConfirmTarget = null },
+            containerColor = colors.elevatedBar,
+            titleContentColor = colors.textPrimary,
+            textContentColor = colors.textSecondary,
+            title = { Text(dialogTitle, fontWeight = FontWeight.SemiBold) },
+            text = { Text(dialogBody, fontSize = 14.sp) },
+            confirmButton = {
+                if (mode == MessageDeleteDialogMode.DELETE_OUTGOING_OPTIONS) {
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        TextButton(
+                            onClick = {
+                                viewModel.revokeMessageForEveryone(chatJid, target.id)
+                                deleteConfirmTarget = null
+                            }
+                        ) {
+                            Text(
+                                text = stringResource(R.string.chat_delete_for_everyone),
+                                color = colors.antiDeleteRed,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        TextButton(
+                            onClick = {
+                                viewModel.deleteMessageFromDevice(target.id)
+                                deleteConfirmTarget = null
+                            }
+                        ) {
+                            Text(
+                                text = stringResource(R.string.chat_delete_for_me),
+                                color = colors.accentGreen,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        TextButton(onClick = { deleteConfirmTarget = null }) {
+                            Text("Cancel", color = colors.textSecondary)
+                        }
+                    }
+                } else {
+                    TextButton(
+                        onClick = {
+                            viewModel.deleteMessageFromDevice(target.id)
+                            deleteConfirmTarget = null
+                        }
+                    ) {
+                        Text(
+                            text = if (mode == MessageDeleteDialogMode.PERMANENT_DELETE_CAPTURED) {
+                                stringResource(R.string.chat_delete_from_device)
+                            } else {
+                                stringResource(R.string.chat_delete_for_me)
+                            },
+                            color = colors.antiDeleteRed,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            },
+            dismissButton = if (mode == MessageDeleteDialogMode.DELETE_OUTGOING_OPTIONS) {
+                null
+            } else {
+                {
+                    TextButton(onClick = { deleteConfirmTarget = null }) {
+                        Text("Cancel", color = colors.textSecondary)
+                    }
+                }
+            }
+        )
+    }
+}
+
+internal fun findLoadedQuotedItemIndex(
+    items: List<MessageEntity?>,
+    quotedId: String
+): Int {
+    val cleanId = quotedId.trim()
+    if (cleanId.isEmpty()) return -1
+    return items.indexOfFirst { it != null && it.id == cleanId }
+}
+
+internal enum class MessageDeleteDialogMode {
+    PERMANENT_DELETE_CAPTURED,
+    DELETE_FOR_ME_INCOMING,
+    DELETE_OUTGOING_OPTIONS
+}
+
+internal fun resolveMessageDeleteDialogMode(msg: MessageEntity): MessageDeleteDialogMode = when {
+    msg.isDeletedBySender -> MessageDeleteDialogMode.PERMANENT_DELETE_CAPTURED
+    msg.isFromMe -> MessageDeleteDialogMode.DELETE_OUTGOING_OPTIONS
+    else -> MessageDeleteDialogMode.DELETE_FOR_ME_INCOMING
 }
 
 @Composable
@@ -1755,10 +2256,12 @@ private fun MessageBubbleRow(
     isDownloadingMedia: Boolean = false,
     mediaDownloadError: String? = null,
     onClickEditBadge: () -> Unit,
+    onClickQuoted: (String) -> Unit = {},
     onManualSendPlayedReceipt: () -> Unit,
     onAutoRequestDownload: () -> Unit = {},
     onRequestDownload: () -> Unit = {},
     onOpenMedia: () -> Unit,
+    onOpenDocument: () -> Unit = {},
     onLongPress: () -> Unit
 ) {
     val colors = LocalWaColors.current
@@ -1777,23 +2280,34 @@ private fun MessageBubbleRow(
         !msg.localMediaPath.isNullOrBlank() &&
             File(msg.localMediaPath).let { it.exists() && it.length() > 0L }
     }
+    val isDocCard = remember(msg.id, msg.msgType, msg.mimeType, msg.body, msg.isViewOnce, msg.isDeletedBySender) {
+        isDocumentMessage(msg)
+    }
     val isMediaCard = (msg.msgType == "IMAGE" || msg.msgType == "VIDEO") &&
         !msg.isViewOnce &&
         msg.msgType != "VIEW_ONCE_STRIPPED" &&
         !msg.isDeletedBySender
 
-    val sideStartPad = if (isMediaCard) {
-        if (!isChannel && showTail && !effectiveOutgoing) 9.dp else 3.dp
-    } else {
-        if (!isChannel && showTail && !effectiveOutgoing) 15.dp else 12.dp
+    val sideStartPad = when {
+        isMediaCard -> if (!isChannel && showTail && !effectiveOutgoing) 9.dp else 3.dp
+        isDocCard -> if (!isChannel && showTail && !effectiveOutgoing) 10.dp else 6.dp
+        else -> if (!isChannel && showTail && !effectiveOutgoing) 15.dp else 12.dp
     }
-    val sideEndPad = if (isMediaCard) {
-        if (!isChannel && showTail && effectiveOutgoing) 9.dp else 3.dp
-    } else {
-        if (!isChannel && showTail && effectiveOutgoing) 15.dp else 12.dp
+    val sideEndPad = when {
+        isMediaCard -> if (!isChannel && showTail && effectiveOutgoing) 9.dp else 3.dp
+        isDocCard -> if (!isChannel && showTail && effectiveOutgoing) 10.dp else 6.dp
+        else -> if (!isChannel && showTail && effectiveOutgoing) 15.dp else 12.dp
     }
-    val topBottomPad = if (isMediaCard) 3.dp else 8.dp
-    val bubbleMaxW = if (isMediaCard) 256.dp else 305.dp
+    val topBottomPad = when {
+        isMediaCard -> 3.dp
+        isDocCard -> 5.dp
+        else -> 8.dp
+    }
+    val bubbleMaxW = when {
+        isMediaCard -> 256.dp
+        isDocCard -> 285.dp
+        else -> 305.dp
+    }
     val showGroupGutter = isGroup && !effectiveOutgoing
 
     Row(
@@ -1855,20 +2369,21 @@ private fun MessageBubbleRow(
                                 if (hasVaultFile) {
                                     onOpenMedia()
                                 } else {
-                                    Toast.makeText(
-                                        context,
-                                        "Open this View Once message in WhatsApp on your phone",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
+                                Toast.makeText(
+                                    context,
+                                    "Open this View Once message in WhatsApp on your phone",
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             }
-                            !msg.localMediaPath.isNullOrBlank() && msg.msgType != "PTT" && msg.msgType != "AUDIO" -> onOpenMedia()
-                            msg.msgType == "IMAGE" || msg.msgType == "VIDEO" -> onRequestDownload()
                         }
-                    },
-                    onLongClick = onLongPress
-                )
-                .padding(start = sideStartPad, end = sideEndPad, top = topBottomPad, bottom = topBottomPad)
+                        isDocCard -> if (hasVaultFile) onOpenDocument() else onRequestDownload()
+                        !msg.localMediaPath.isNullOrBlank() && msg.msgType != "PTT" && msg.msgType != "AUDIO" -> onOpenMedia()
+                        msg.msgType == "IMAGE" || msg.msgType == "VIDEO" -> onRequestDownload()
+                    }
+                },
+                onLongClick = onLongPress
+            )
+            .padding(start = sideStartPad, end = sideEndPad, top = topBottomPad, bottom = topBottomPad)
         ) {
             Column {
                 // Sender color label in Groups
@@ -1882,8 +2397,11 @@ private fun MessageBubbleRow(
                     Row(
                         modifier = Modifier
                             .then(
-                                if (isMediaCard) Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                                else Modifier.padding(bottom = 2.dp)
+                                when {
+                                    isMediaCard -> Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                    isDocCard -> Modifier.padding(horizontal = 4.dp, vertical = 3.dp)
+                                    else -> Modifier.padding(bottom = 2.dp)
+                                }
                             ),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -1940,6 +2458,12 @@ private fun MessageBubbleRow(
                             )
                             .clip(RoundedCornerShape(10.dp))
                             .background(colors.quotedBg)
+                            .clickable {
+                                val targetId = msg.quotedId?.trim().orEmpty()
+                                if (targetId.isNotEmpty()) {
+                                    onClickQuoted(targetId)
+                                }
+                            }
                             .padding(horizontal = 8.dp, vertical = 6.dp)
                     ) {
                         Box(
@@ -2384,7 +2908,46 @@ private fun MessageBubbleRow(
                         }
                     }
 
-                    // Standard Text, Document, Sticker, or Anti-Deleted text bubble
+                    // Documents (PDFs, Office files, archives, etc.)
+                    isDocCard -> {
+                        val localDocFile = remember(msg.localMediaPath) {
+                            msg.localMediaPath?.takeIf { it.isNotBlank() }?.let { p ->
+                                File(p).takeIf { it.exists() && it.length() > 0L }
+                            }
+                        }
+                        LaunchedEffect(msg.id, localDocFile != null) {
+                            if (localDocFile == null && !isDownloadingMedia && mediaDownloadError == null) {
+                                onAutoRequestDownload()
+                            }
+                        }
+                        DocumentMessageCard(
+                            msg = msg,
+                            localFile = localDocFile,
+                            colors = colors,
+                            isDownloading = isDownloadingMedia,
+                            errorMsg = mediaDownloadError,
+                            onClick = {
+                                if (localDocFile != null) onOpenDocument() else onRequestDownload()
+                            },
+                            onLongClick = onLongPress
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.End)
+                                .padding(horizontal = 4.dp)
+                        ) {
+                            MessageMetaCluster(
+                                timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
+                                isEdited = msg.isEdited,
+                                isEphemeral = msg.isEphemeral,
+                                isFromMe = msg.isFromMe,
+                                deliveryStatus = msg.deliveryStatus
+                            )
+                        }
+                    }
+
+                    // Standard Text, Sticker, or Anti-Deleted text bubble
                     else -> {
                         InlineTimestampMessage(msg = msg)
                     }

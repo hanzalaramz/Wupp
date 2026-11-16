@@ -52,6 +52,15 @@ data class GlobalStealthConfig(
     val showSecondsInTimestamps: Boolean = false,
     val hideHomeCameraShortcut: Boolean = false,
     val hideStealthStatusBadges: Boolean = false,
+    val separateGroupsAndChats: Boolean = false,
+    val hideChannels: Boolean = false,
+    val enterIsSend: Boolean = false,
+    val chatFontScale: Float = 1.0f,
+    val notifyDmEnabled: Boolean = true,
+    val notifyGroupEnabled: Boolean = true,
+    val notifyShowPreview: Boolean = true,
+    val notifyVibrateEnabled: Boolean = true,
+    val defaultDisappearingSec: Int = 0,
     val appLanguage: String = LocaleHelper.LANG_SYSTEM,
     val chatWallpaperUri: String = "",
     val chatWallpaperDim: Float = 0.28f,
@@ -124,6 +133,15 @@ object StealthMatrixManager {
     private const val KEY_SHOW_SECONDS_TIME = "show_seconds_timestamps"
     private const val KEY_HIDE_HOME_CAMERA = "hide_home_camera_shortcut"
     private const val KEY_HIDE_STEALTH_BADGES = "hide_stealth_status_badges"
+    private const val KEY_SEPARATE_GROUPS_CHATS = "separate_groups_chats"
+    private const val KEY_HIDE_CHANNELS = "hide_channels"
+    private const val KEY_ENTER_IS_SEND = "enter_is_send"
+    private const val KEY_CHAT_FONT_SCALE = "chat_font_scale"
+    private const val KEY_NOTIFY_DM = "notify_dm_enabled"
+    private const val KEY_NOTIFY_GROUP = "notify_group_enabled"
+    private const val KEY_NOTIFY_PREVIEW = "notify_show_preview"
+    private const val KEY_NOTIFY_VIBRATE = "notify_vibrate_enabled"
+    private const val KEY_DEFAULT_DISAPPEARING_SEC = "default_disappearing_sec"
     private const val KEY_APP_LANGUAGE = "app_language"
 
     val DEFAULT_QUICK_REACTIONS: List<String> = listOf("👍", "❤️", "😂", "😮", "😢", "🙏", "😊")
@@ -176,6 +194,15 @@ object StealthMatrixManager {
                 showSecondsInTimestamps = prefs.getBoolean(KEY_SHOW_SECONDS_TIME, false),
                 hideHomeCameraShortcut = prefs.getBoolean(KEY_HIDE_HOME_CAMERA, false),
                 hideStealthStatusBadges = prefs.getBoolean(KEY_HIDE_STEALTH_BADGES, false),
+                separateGroupsAndChats = prefs.getBoolean(KEY_SEPARATE_GROUPS_CHATS, false),
+                hideChannels = prefs.getBoolean(KEY_HIDE_CHANNELS, false),
+                enterIsSend = prefs.getBoolean(KEY_ENTER_IS_SEND, false),
+                chatFontScale = prefs.getFloat(KEY_CHAT_FONT_SCALE, 1.0f).coerceIn(0.85f, 1.25f),
+                notifyDmEnabled = prefs.getBoolean(KEY_NOTIFY_DM, true),
+                notifyGroupEnabled = prefs.getBoolean(KEY_NOTIFY_GROUP, true),
+                notifyShowPreview = prefs.getBoolean(KEY_NOTIFY_PREVIEW, true),
+                notifyVibrateEnabled = prefs.getBoolean(KEY_NOTIFY_VIBRATE, true),
+                defaultDisappearingSec = prefs.getInt(KEY_DEFAULT_DISAPPEARING_SEC, 0).coerceAtLeast(0),
                 appLanguage = prefs.getString(KEY_APP_LANGUAGE, LocaleHelper.LANG_SYSTEM) ?: LocaleHelper.LANG_SYSTEM,
                 chatWallpaperUri = prefs.getString(KEY_CHAT_WALLPAPER_URI, "") ?: "",
                 chatWallpaperDim = prefs.getFloat(KEY_CHAT_WALLPAPER_DIM, 0.28f),
@@ -220,6 +247,15 @@ object StealthMatrixManager {
                 .putBoolean(KEY_SHOW_SECONDS_TIME, updated.showSecondsInTimestamps)
                 .putBoolean(KEY_HIDE_HOME_CAMERA, updated.hideHomeCameraShortcut)
                 .putBoolean(KEY_HIDE_STEALTH_BADGES, updated.hideStealthStatusBadges)
+                .putBoolean(KEY_SEPARATE_GROUPS_CHATS, updated.separateGroupsAndChats)
+                .putBoolean(KEY_HIDE_CHANNELS, updated.hideChannels)
+                .putBoolean(KEY_ENTER_IS_SEND, updated.enterIsSend)
+                .putFloat(KEY_CHAT_FONT_SCALE, updated.chatFontScale.coerceIn(0.85f, 1.25f))
+                .putBoolean(KEY_NOTIFY_DM, updated.notifyDmEnabled)
+                .putBoolean(KEY_NOTIFY_GROUP, updated.notifyGroupEnabled)
+                .putBoolean(KEY_NOTIFY_PREVIEW, updated.notifyShowPreview)
+                .putBoolean(KEY_NOTIFY_VIBRATE, updated.notifyVibrateEnabled)
+                .putInt(KEY_DEFAULT_DISAPPEARING_SEC, updated.defaultDisappearingSec.coerceAtLeast(0))
                 .putString(KEY_APP_LANGUAGE, updated.appLanguage)
                 .putString(KEY_CHAT_WALLPAPER_URI, updated.chatWallpaperUri)
                 .putFloat(KEY_CHAT_WALLPAPER_DIM, updated.chatWallpaperDim)

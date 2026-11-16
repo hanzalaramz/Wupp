@@ -810,7 +810,7 @@ func SendMediaMessage(
 	mimeLower := strings.ToLower(strings.TrimSpace(mimeType))
 
 	switch {
-	case modeLower == "original":
+	case modeLower == "original" && !strings.HasPrefix(mimeLower, "video/"):
 		waMediaType = whatsmeow.MediaDocument
 	case isVoiceNote || strings.HasPrefix(mimeLower, "audio/"):
 		waMediaType = whatsmeow.MediaAudio
@@ -3658,9 +3658,12 @@ func extractMessageContent(m *waE2E.Message) (
 		return "", mt, am.GetMimetype(), int(am.GetSeconds()), am.GetFileLength(), am
 	case m.GetDocumentMessage() != nil:
 		dm := m.GetDocumentMessage()
-		capTxt := dm.GetCaption()
+		capTxt := strings.TrimSpace(dm.GetCaption())
 		if capTxt == "" {
-			capTxt = dm.GetFileName()
+			capTxt = strings.TrimSpace(dm.GetFileName())
+		}
+		if capTxt == "" {
+			capTxt = strings.TrimSpace(dm.GetTitle())
 		}
 		return capTxt, "DOCUMENT", dm.GetMimetype(), 0, dm.GetFileLength(), dm
 	case m.GetStickerMessage() != nil:
@@ -4834,4 +4837,245 @@ func SendReaction(chatJid, targetMessageId, senderJid string, fromMe bool, emoji
 	defer cancel()
 	_, sErr := cli.SendMessage(ctx, chatParsed, msg)
 	return sErr
+}
+
+// GetOwnProfileJson returns the connected WhatsApp account's phone, push name, and About text.
+func GetOwnProfileJson() (string, error) {
+	mu.Lock()
+	cli := client
+	mu.Unlock()
+	if cli == nil || cli.Store == nil || cli.Store.ID == nil {
+		return "", errors.New("client not logged in")
+	}
+	own := cli.Store.ID.ToNonAD()
+	pushName := strings.TrimSpace(cli.Store.PushName)
+	about := ""
+	if cli.IsConnected() {
+		ctx, cancel := context.WithTimeout(baseCtx, 10*time.Second)
+		if infoMap, err := cli.GetUserInfo(ctx, []types.JID{own}); err == nil {
+			if info, ok := infoMap[own]; ok {
+				about = strings.TrimSpace(info.Status)
+			}
+		}
+		cancel()
+	}
+	payload := map[string]any{
+		"ownJid":   own.String(),
+		"phone":    "+" + own.User,
+		"pushName": pushName,
+		"about":    about,
+	}
+	b, _ := json.Marshal(payload)
+	return string(b), nil
+}
+
+// SetOwnPushName updates the user's WhatsApp display push name via App State sync.
+func SetOwnPushName(name string) error {
+	clean := strings.TrimSpace(name)
+	if clean == "" {
+		return errors.New("display name cannot be empty")
+	}
+	mu.Lock()
+	cli := client
+	mu.Unlock()
+	if cli == nil || !cli.IsConnected() {
+		return errors.New("client not connected")
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 15*time.Second)
+	defer cancel()
+	if err := cli.SendAppState(ctx, appstate.BuildSettingPushName(clean)); err != nil {
+		return err
+	}
+	if cli.Store != nil {
+		cli.Store.PushName = clean
+	}
+	return nil
+}
+
+// SetOwnAbout updates the user's WhatsApp profile "About" text.
+func SetOwnAbout(text string) error {
+	clean := strings.TrimSpace(text)
+	if clean == "" {
+		return errors.New("about text cannot be empty")
+	}
+	mu.Lock()
+	cli := client
+	mu.Unlock()
+	if cli == nil || !cli.IsConnected() {
+		return errors.New("client not connected")
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 15*time.Second)
+	defer cancel()
+	return cli.SetStatusMessage(ctx, types.SetStatusInput{
+		Text: &clean,
+	})
+}
+
+func serializePrivacySettings(s *types.PrivacySettings) string {
+	payload := map[string]string{
+		"lastSeen":     string(s.LastSeen),
+		"online":       string(s.Online),
+		"profile":      string(s.Profile),
+		"status":       string(s.Status),
+		"groupAdd":     string(s.GroupAdd),
+		"readReceipts": string(s.ReadReceipts),
+		"callAdd":      string(s.CallAdd),
+		"messages":     string(s.Messages),
+		"defense":      string(s.Defense),
+	}
+	b, _ := json.Marshal(payload)
+	return string(b)
+}
+
+// GetAccountPrivacySettingsJson fetches the user's synced WhatsApp server privacy settings.
+func GetAccountPrivacySettingsJson() (string, error) {
+	mu.Lock()
+	cli := client
+	mu.Unlock()
+	if cli == nil || !cli.IsConnected() {
+		return "", errors.New("client not connected")
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 15*time.Second)
+	defer cancel()
+	settings, err := cli.TryFetchPrivacySettings(ctx, true)
+	if err != nil {
+		return "", err
+	}
+	return serializePrivacySettings(settings), nil
+}
+
+// SetAccountPrivacySetting updates a WhatsApp server privacy category and returns updated JSON.
+func SetAccountPrivacySetting(category string, value string) (string, error) {
+	mu.Lock()
+	cli := client
+	mu.Unlock()
+	if cli == nil || !cli.IsConnected() {
+		return "", errors.New("client not connected")
+	}
+	cat := types.PrivacySettingType(strings.TrimSpace(category))
+	val := types.PrivacySetting(strings.TrimSpace(value))
+	switch cat {
+	case types.PrivacySettingTypeGroupAdd,
+		types.PrivacySettingTypeLastSeen,
+		types.PrivacySettingTypeStatus,
+		types.PrivacySettingTypeProfile,
+		types.PrivacySettingTypeReadReceipts,
+		types.PrivacySettingTypeOnline,
+		types.PrivacySettingTypeCallAdd,
+		types.PrivacySettingTypeMessages,
+		types.PrivacySettingTypeDefense:
+	default:
+		return "", fmt.Errorf("unsupported privacy category: %s", category)
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 15*time.Second)
+	defer cancel()
+	updated, err := cli.SetPrivacySetting(ctx, cat, val)
+	if err != nil {
+		return "", err
+	}
+	return serializePrivacySettings(&updated), nil
+}
+
+// SetDefaultDisappearingTimerSec updates the account-wide default disappearing message duration.
+func SetDefaultDisappearingTimerSec(seconds int64) error {
+	if seconds < 0 {
+		seconds = 0
+	}
+	mu.Lock()
+	cli := client
+	mu.Unlock()
+	if cli == nil || !cli.IsConnected() {
+		return errors.New("client not connected")
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 15*time.Second)
+	defer cancel()
+	return cli.SetDefaultDisappearingTimer(ctx, time.Duration(seconds)*time.Second)
+}
+
+// GetBlocklistJson returns the user's blocked contacts resolved with local names when known.
+func GetBlocklistJson() (string, error) {
+	mu.Lock()
+	cli := client
+	mu.Unlock()
+	if cli == nil || !cli.IsConnected() {
+		return "", errors.New("client not connected")
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 15*time.Second)
+	defer cancel()
+	bl, err := cli.GetBlocklist(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	type blockedEntry struct {
+		JID   string `json:"jid"`
+		PN    string `json:"pn"`
+		LID   string `json:"lid"`
+		Name  string `json:"name"`
+		Phone string `json:"phone"`
+	}
+	entries := make([]blockedEntry, 0, len(bl.Items))
+	for _, item := range bl.Items {
+		target := item.PN
+		if target.IsEmpty() {
+			target = item.LID
+		}
+		if target.IsEmpty() {
+			continue
+		}
+		phone := ""
+		if !item.PN.IsEmpty() && item.PN.Server == types.DefaultUserServer {
+			phone = "+" + item.PN.User
+		}
+		name := ""
+		if cli.Store != nil && cli.Store.Contacts != nil {
+			if c, cErr := cli.Store.Contacts.GetContact(ctx, target); cErr == nil && c.Found {
+				if strings.TrimSpace(c.FullName) != "" {
+					name = strings.TrimSpace(c.FullName)
+				} else if strings.TrimSpace(c.PushName) != "" {
+					name = strings.TrimSpace(c.PushName)
+				}
+			}
+		}
+		if name == "" {
+			if phone != "" {
+				name = phone
+			} else {
+				name = target.User
+			}
+		}
+		entries = append(entries, blockedEntry{
+			JID:   target.String(),
+			PN:    item.PN.String(),
+			LID:   item.LID.String(),
+			Name:  name,
+			Phone: phone,
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+	})
+	b, _ := json.Marshal(entries)
+	return string(b), nil
+}
+
+// SetContactBlocked blocks or unblocks a contact JID via WhatsApp server blocklist.
+func SetContactBlocked(jidStr string, blocked bool) error {
+	mu.Lock()
+	cli := client
+	mu.Unlock()
+	if cli == nil || !cli.IsConnected() {
+		return errors.New("client not connected")
+	}
+	target, err := types.ParseJID(strings.TrimSpace(jidStr))
+	if err != nil {
+		return fmt.Errorf("invalid jid: %s", jidStr)
+	}
+	action := events.BlocklistChangeActionUnblock
+	if blocked {
+		action = events.BlocklistChangeActionBlock
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 15*time.Second)
+	defer cancel()
+	_, uErr := cli.UpdateBlocklist(ctx, target, action, "")
+	return uErr
 }

@@ -14,6 +14,7 @@
 
     <!-- Navigation & Home -->
     <string name="nav_chats">Chats</string>
+    <string name="nav_groups">Groups</string>
     <string name="nav_updates">Updates</string>
     <string name="nav_communities">Communities</string>
     <string name="nav_settings">Settings</string>
@@ -51,6 +52,17 @@
     <string name="chat_status_online">online</string>
     <string name="chat_status_typing">typing…</string>
     <string name="chat_status_recording">recording audio…</string>
+    <string name="chat_switch_to_emoji">Emoji</string>
+    <string name="chat_switch_to_keyboard">Keyboard</string>
+    <string name="chat_emoji_panel_title">Emoji</string>
+    <string name="chat_emoji_backspace">Backspace</string>
+    <string name="chat_doc_save_downloads">Save to Downloads</string>
+    <string name="chat_doc_open_with">Open file</string>
+    <string name="chat_doc_download">Download %1$s</string>
+    <string name="chat_doc_no_viewer">No app found to open this file</string>
+    <string name="chat_media_add_caption">Add a caption…</string>
+    <string name="chat_attach_gallery">Gallery (Photo &amp; Video)</string>
+    <string name="chat_attach_document">Document / File</string>
 
     <!-- Reaction Customizer (#24) -->
     <string name="reaction_dialog_title">Quick Reaction Emojis</string>
@@ -120,8 +132,8 @@
     <string name="settings_look_vertical_status_subtitle">Display Updates status list vertically instead of horizontal cards</string>
     <string name="settings_look_always_bio_title">Always Show Cached Bio</string>
     <string name="settings_look_always_bio_subtitle">Show locally synced About/bio in chat header &amp; profile preview (no extra server lookups)</string>
-    <string name="settings_look_classic_ui_title">Classic WhatsApp Navigation</string>
-    <string name="settings_look_classic_ui_subtitle">Flatter classic bottom bar instead of floating glass pill</string>
+    <string name="settings_look_classic_ui_title">Classic WhatsApp Theme</string>
+    <string name="settings_look_classic_ui_subtitle">Reset floating frosted-glass pills on top bars, bottom navigation, and the chat box to the flat classic WhatsApp look</string>
     <string name="settings_look_compact_rows_title">Compact Chat List</string>
     <string name="settings_look_compact_rows_subtitle">Tighter vertical spacing to fit more chats on screen</string>
     <string name="settings_look_seconds_title">Show Seconds in Timestamps</string>
@@ -130,6 +142,10 @@
     <string name="settings_look_hide_camera_subtitle">Clean up the top bar on Chats tab</string>
     <string name="settings_look_hide_badges_title">Hide Stealth Status Badges</string>
     <string name="settings_look_hide_badges_subtitle">Hide Ghost / Online pill badges from Home for a stock look</string>
+    <string name="settings_look_separate_groups_title">Separate Chats &amp; Groups Tabs</string>
+    <string name="settings_look_separate_groups_subtitle">Show a dedicated Groups tab on Home instead of mixing groups into Chats</string>
+    <string name="settings_look_hide_channels_title">Hide Channels</string>
+    <string name="settings_look_hide_channels_subtitle">Hide subscribed Channels from the Updates tab</string>
 
     <!-- Wallpaper Positioning (#21) -->
     <string name="wallpaper_zoom_label">Zoom (%1$.2fx)</string>
@@ -144,4 +160,54 @@
     <string name="link_companion_notice">Keep official WhatsApp installed — Wupp is a companion client, not a standalone replacement.</string>
     <string name="link_mode_qr">QR code</string>
     <string name="link_mode_phone">Phone number</string>
+
+    <!-- Status Viewer & Composer (#39) -->
+    <string name="status_loading_media">Downloading status media…</string>
+    <string name="status_tap_to_retry">Media unavailable locally — tap to retry</string>
+    <string name="status_my_status">My status</string>
+    <string name="status_add_update">Tap to add status update</string>
+    <string name="status_composer_title">Post Status Update</string>
+    <string name="status_composer_text_tab">Text</string>
+    <string name="status_composer_media_tab">Photo / Video</string>
+    <string name="status_composer_placeholder">Type a status…</string>
+    <string name="status_composer_share_wa">Post in WhatsApp</string>
+    <string name="status_composer_pick_media">Choose photo or video</string>
+    <string name="status_composer_zero_risk_note">Opens official WhatsApp to post to My Status — 0% companion flag risk.</string>
+    <string name="status_composer_no_wa_fallback">WhatsApp could not be opened directly; choose it from the share sheet.</string>
+
+    <!-- Message Delete & Anti-Delete Device Removal (#37) -->
+    <string name="chat_delete_dialog_title">Delete message?</string>
+    <string name="chat_delete_captured_title">Delete from device?</string>
+    <string name="chat_delete_captured_body">This deleted message was preserved by Anti-Delete. Permanently remove it from this device?</string>
+    <string name="chat_delete_incoming_body">This will permanently remove the message from this device.</string>
+    <string name="chat_delete_outgoing_body">Choose whether to remove this message for everyone or only from this device.</string>
+    <string name="chat_delete_for_everyone">Delete for everyone</string>
+    <string name="chat_delete_for_me">Delete for me</string>
+    <string name="chat_delete_from_device">Delete from device</string>
+
+    <!-- WhatsApp Daily-Driver Settings (#36) -->
+    <string name="settings_section_account_privacy">ACCOUNT &amp; PRIVACY</string>
+    <string name="settings_section_chats">CHATS &amp; COMPOSER</string>
+    <string name="settings_wa_privacy_title">WhatsApp Account Privacy</string>
+    <string name="settings_wa_privacy_subtitle">Last seen, profile photo, about, groups, silence unknown callers &amp; default timer</string>
+    <string name="settings_blocked_contacts_title">Blocked Contacts</string>
+    <string name="settings_blocked_contacts_subtitle">Manage contacts blocked on your WhatsApp account</string>
+    <string name="settings_account_limits_title">Linked Companion Scope</string>
+    <string name="settings_account_limits_subtitle">Two-step verification, phone change, and Drive backups stay in official WhatsApp</string>
+    <string name="settings_enter_sends_title">Enter is Send</string>
+    <string name="settings_enter_sends_subtitle">Keyboard Enter key sends the message immediately</string>
+    <string name="settings_font_size_title">Chat Font Size</string>
+    <string name="settings_notify_dm_title">Direct Message Alerts</string>
+    <string name="settings_notify_dm_subtitle">Notify for incoming 1-on-1 messages</string>
+    <string name="settings_notify_group_title">Group Message Alerts</string>
+    <string name="settings_notify_group_subtitle">Notify for incoming unmuted group messages</string>
+    <string name="settings_notify_preview_title">Show Notification Previews</string>
+    <string name="settings_notify_preview_subtitle">Show sender &amp; message text in notifications (hide for lock-screen privacy)</string>
+    <string name="settings_notify_vibrate_title">Vibrate on Alerts</string>
+    <string name="settings_notify_vibrate_subtitle">Vibrate when new message notifications arrive</string>
+    <string name="settings_manage_storage_title">Manage Storage &amp; Cache</string>
+    <string name="settings_manage_storage_subtitle">Inspect database, saved media vault, and safely clear temp cache</string>
+
+    <!-- Quoted Message Jump (#34) -->
+    <string name="chat_quoted_not_found">Original message not found on this device</string>
 </resources>

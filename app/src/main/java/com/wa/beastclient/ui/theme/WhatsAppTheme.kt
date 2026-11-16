@@ -180,6 +180,8 @@ fun colorsForTheme(mode: WuppThemeMode): WaColors = when (mode) {
 val LocalWaColors = staticCompositionLocalOf { WaDarkColors }
 val LocalWaMonoFamily = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
 val LocalWuppShowSeconds = staticCompositionLocalOf { false }
+val LocalWuppChatFontScale = staticCompositionLocalOf { 1.0f }
+val LocalWuppClassicUi = staticCompositionLocalOf { false }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -187,6 +189,8 @@ fun WhatsAppTheme(
     themeMode: WuppThemeMode = WuppThemeMode.DARK,
     useSystemFont: Boolean = false,
     showSecondsInTimestamps: Boolean = false,
+    chatFontScale: Float = 1.0f,
+    classicUi: Boolean = false,
     assetManager: AssetManager,
     content: @Composable () -> Unit
 ) {
@@ -333,7 +337,9 @@ fun WhatsAppTheme(
     CompositionLocalProvider(
         LocalWaColors provides waColors,
         LocalWaMonoFamily provides sansFamily,
-        LocalWuppShowSeconds provides showSecondsInTimestamps
+        LocalWuppShowSeconds provides showSecondsInTimestamps,
+        LocalWuppChatFontScale provides chatFontScale.coerceIn(0.85f, 1.25f),
+        LocalWuppClassicUi provides classicUi
     ) {
         MaterialExpressiveTheme(
             colorScheme = m3Scheme,
