@@ -1181,7 +1181,9 @@ fun HomeScreen(
         ThemePickerDialog(
             selectedTheme = stealth.themeMode,
             onSelectTheme = { viewModel.setThemeMode(it) },
-            onDismiss = { showThemePickerDialog = false }
+            onDismiss = { showThemePickerDialog = false },
+            selectedAccent = stealth.accentColor,
+            onSelectAccent = { viewModel.setAccentColor(it) }
         )
     }
 
@@ -1276,17 +1278,17 @@ fun HomeScreen(
             msg = msg,
             senderDisplayName = chatName,
             onDismiss = { activeVaultViewer = null },
-            onSaveToGallery = {
-                val ext = if (msg.mimeType.contains("mp4", ignoreCase = true)) "mp4" else "png"
+            onSaveToGallery = { item ->
+                val ext = if (item.mimeType.contains("mp4", ignoreCase = true)) "mp4" else "png"
                 viewModel.exportMediaToGallery(
-                    msg.localMediaPath,
-                    "WA_ViewOnce_${msg.id}.$ext",
-                    msg.mimeType.ifBlank { "image/png" }
+                    item.localMediaPath,
+                    "WA_ViewOnce_${item.id}.$ext",
+                    item.mimeType.ifBlank { "image/png" }
                 )
             },
-            onReply = {
-                if (msg.chatJid.isNotBlank()) {
-                    onOpenChat(msg.chatJid)
+            onReply = { item ->
+                if (item.chatJid.isNotBlank()) {
+                    onOpenChat(item.chatJid)
                 }
             }
         )
@@ -3340,7 +3342,6 @@ private fun ToolsVaultTab(
     val bridgeStatus by viewModel.bridgeStatus.collectAsState()
     val allChats by viewModel.allChats.collectAsState()
     val updateState by viewModel.updateState.collectAsState()
-    val autoUpdateEnabled by viewModel.autoUpdateEnabled.collectAsState()
     val includePreReleases by viewModel.includePreReleases.collectAsState()
     var ownProfile by remember { mutableStateOf(OwnProfileUi()) }
     var showProfileEditorDialog by remember { mutableStateOf(false) }
@@ -3657,7 +3658,9 @@ private fun ToolsVaultTab(
                         }
                         ThemeSelectorGrid(
                             selectedTheme = stealth.themeMode,
-                            onSelectTheme = { viewModel.setThemeMode(it) }
+                            onSelectTheme = { viewModel.setThemeMode(it) },
+                            selectedAccent = stealth.accentColor,
+                            onSelectAccent = { viewModel.setAccentColor(it) }
                         )
                     }
                 }
@@ -3919,14 +3922,6 @@ private fun ToolsVaultTab(
                             else -> viewModel.checkForUpdates(silent = false)
                         }
                     }
-                )
-                ExpressiveSegmentedSwitchRow(
-                    icon = Icons.Rounded.CheckCircle,
-                    title = "Auto-Check for Updates",
-                    subtitle = "Notify and prompt to download when a new GitHub release ships",
-                    checked = autoUpdateEnabled,
-                    position = ExpressiveSegmentPosition.MIDDLE,
-                    onCheckedChange = { viewModel.setAutoUpdateEnabled(it) }
                 )
                 ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.SystemUpdate,

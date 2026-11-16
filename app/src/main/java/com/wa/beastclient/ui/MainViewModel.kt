@@ -304,6 +304,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun observeRecentMessages(chatJid: String, limit: Int = 20): Flow<List<MessageEntity>> =
         dao.observeRecentMessages(chatJid, limit)
 
+    fun observeMyReaction(messageId: String): Flow<String?> = dao.observeMyReaction(messageId)
+
+    fun observeChatGalleryMedia(chatJid: String): Flow<List<MessageEntity>> =
+        dao.observeChatGalleryMedia(chatJid)
+
     fun observeContact(jid: String): Flow<ContactEntity?> = dao.observeContact(jid)
 
     fun observeEffectivePrivacy(chatJid: String): Flow<EffectiveChatPrivacy> =
@@ -362,6 +367,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setThemeMode(themeMode: WuppThemeMode) {
         StealthMatrixManager.updateConfig { it.copy(themeMode = themeMode) }
+    }
+
+    fun setAccentColor(accentColor: com.wa.beastclient.ui.theme.WuppAccentColor) {
+        StealthMatrixManager.updateConfig { it.copy(accentColor = accentColor) }
     }
 
     fun setUseSystemFont(enabled: Boolean) {
@@ -543,7 +552,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun muteChats(jids: Collection<String>, muted: Boolean) {
         if (jids.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
-            jids.forEach { dao.updateMuted(it, muted, 0L) }
+            jids.forEach { jid ->
+                dao.updateMuted(jid, muted, 0L)
+                WaRealtimeService.toggleChannelMute(appContext, jid, muted)
+            }
         }
     }
 
@@ -748,7 +760,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         chatJid: String,
         staged: StagedOutboundMedia,
         caption: String,
-        qualityMode: OutboundQualityMode
+        qualityMode: OutboundQualityMode,
+        isViewOnce: Boolean = false
     ) {
         viewModelScope.launch {
             WaRealtimeService.sendMediaMessage(
@@ -759,7 +772,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 caption = caption,
                 qualityMode = qualityMode,
                 isVoiceNote = false,
-                durationSec = staged.durationSec
+                durationSec = staged.durationSec,
+                isViewOnce = isViewOnce
             ).onFailure { err ->
                 showToast(err.message ?: "Media send failed")
             }

@@ -30,6 +30,7 @@ import com.wa.beastclient.data.db.ContactEntity
 import com.wa.beastclient.data.db.GroupReceiptEntity
 import com.wa.beastclient.data.db.MessageEditEntity
 import com.wa.beastclient.data.db.MessageEntity
+import com.wa.beastclient.data.db.MessageReactionEntity
 import com.wa.beastclient.data.db.PresenceLogEntity
 import com.wa.beastclient.data.db.ProfileHistoryEntity
 import com.wa.beastclient.data.db.StatusEntity
@@ -205,6 +206,7 @@ class WaRealtimeService : Service() {
                 dao.deleteShowcaseMessages()
                 dao.deleteShowcaseStatuses()
                 dao.deleteEmptyUnknownMessages()
+                dao.deleteOrphanReactions()
                 dao.normalizeViewOncePreviews()
                 val healPrefs = getSharedPreferences("wupp_migrations", Context.MODE_PRIVATE)
                 if (!healPrefs.getBoolean("newsletter_unread_healed_v1", false)) {
@@ -810,9 +812,13 @@ class WaRealtimeService : Service() {
         if (dao.getChat(msg.chatJid)?.avatarPath.isNullOrBlank()) {
             requestSingleAvatarIfNeeded(msg.chatJid)
         }
-        if (isActiveChat) {
+        if (isActiveChat || (msg.isFromMe && !isSync)) {
             dao.clearLocalUnread(msg.chatJid)
-            if (shouldAutoRead && runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+            if (msg.isFromMe && !isSync) {
+                val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                runCatching { mgr?.cancel(notificationIdForChat(msg.chatJid)) }
+            }
+            if (isActiveChat && shouldAutoRead && runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
                 val senderParam = if (isGrp) msg.senderJid else ""
                 runCatching { Whatsbridge.markReadManual(msg.chatJid, senderParam, msg.id) }
                     .onFailure { Log.w(TAG, "Auto markRead failed for ${msg.id}: ${it.message}") }
@@ -1031,14 +1037,24 @@ class WaRealtimeService : Service() {
             }
             return
         }
-        val updated = when {
-            summary.isNotBlank() -> summary
-            emoji.isBlank() -> ""
-            existing.reactionSummary.isBlank() -> emoji
-            existing.reactionSummary.contains(emoji) -> existing.reactionSummary
-            else -> "${existing.reactionSummary} $emoji"
+        if (summary.isNotBlank() || existing.chatJid.endsWith("@newsletter")) {
+            // Channel reactions arrive as aggregate counts, not per-participant entries.
+            val updated = when {
+                summary.isNotBlank() -> summary
+                emoji.isBlank() -> ""
+                existing.reactionSummary.isBlank() -> emoji
+                existing.reactionSummary.contains(emoji) -> existing.reactionSummary
+                else -> "${existing.reactionSummary} $emoji"
+            }
+            dao.updateReactionSummary(targetId, updated)
+        } else {
+            val actor = if (isFromMe) {
+                MessageReactionEntity.ME_ACTOR
+            } else {
+                senderJid.ifBlank { "unknown" }
+            }
+            dao.applyReaction(targetId, actor, emoji, ts)
         }
-        dao.updateReactionSummary(targetId, updated)
         if (summary.isBlank() && emoji.isNotBlank() && !existing.chatJid.endsWith("@newsletter")) {
             val chat = dao.getChat(existing.chatJid)
             if (chat != null && ts > chat.lastMessageTimestamp) {
@@ -1442,13 +1458,50 @@ class WaRealtimeService : Service() {
                     }
                 }
             }
-            "MUTE" -> dao.updateMuted(jid, json.optBoolean("muted"), json.optLong("muteEnd"))
-            "PIN" -> dao.updatePinned(jid, json.optBoolean("pinned"), json.optLong("timestamp"))
-            "ARCHIVE" -> dao.updateArchivedFromSync(jid, json.optBoolean("archived"))
+            "MUTE" -> {
+                val muted = json.optBoolean("muted")
+                val muteEnd = json.optLong("muteEnd")
+                dao.updateMuted(jid, muted, muteEnd)
+                if (altJid.isNotBlank() && altJid != jid) {
+                    dao.updateMuted(altJid, muted, muteEnd)
+                }
+            }
+            "PIN" -> {
+                val pinned = json.optBoolean("pinned")
+                val ts = json.optLong("timestamp")
+                dao.updatePinned(jid, pinned, ts)
+                if (altJid.isNotBlank() && altJid != jid) {
+                    dao.updatePinned(altJid, pinned, ts)
+                }
+            }
+            "ARCHIVE" -> {
+                val archived = json.optBoolean("archived")
+                dao.updateArchivedFromSync(jid, archived)
+                if (altJid.isNotBlank() && altJid != jid) {
+                    dao.updateArchivedFromSync(altJid, archived)
+                }
+            }
             "GROUP_ANNOUNCE" -> setGroupAnnounceLocked(applicationContext, jid, json.optBoolean("locked", false))
             "MARK_READ" -> {
                 StealthMatrixManager.recordPrimaryHeartbeat(json.optLong("timestamp", System.currentTimeMillis()))
-                if (json.optBoolean("read")) dao.clearLocalUnread(jid)
+                val targets = listOfNotNull(
+                    jid.takeIf { it.isNotBlank() },
+                    altJid.takeIf { it.isNotBlank() && it != jid }
+                )
+                if (json.optBoolean("read")) {
+                    val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                    targets.forEach { t ->
+                        dao.clearLocalUnread(t)
+                        runCatching { mgr?.cancel(notificationIdForChat(t)) }
+                    }
+                } else {
+                    targets.forEach { t ->
+                        val c = dao.getChat(t)
+                        if (c != null && c.unreadCount <= 0) {
+                            dao.updateUnreadCount(t, 1)
+                        }
+                    }
+                }
             }
             "DELETE_CHAT", "CLEAR_CHAT" -> {
                 val lastMsgTsMs = json.optLong("lastMessageTimestampMs", 0L)
@@ -1946,7 +1999,8 @@ class WaRealtimeService : Service() {
             caption: String,
             qualityMode: OutboundQualityMode,
             isVoiceNote: Boolean,
-            durationSec: Int
+            durationSec: Int,
+            isViewOnce: Boolean = false
         ): Result<MessageEntity> = withContext(Dispatchers.IO) {
             runCatching {
                 val dao = WaUiDatabase.getInstance(context).waDao()
@@ -1954,10 +2008,15 @@ class WaRealtimeService : Service() {
                     error("ERROR_463_GUARD: First message to unsaved contact blocked to protect account reputation.")
                 }
 
-                val prepared = EagerMediaVault.prepareOutboundMedia(context, sourceFile, mimeType, qualityMode)
+                val effectiveQuality = if (isViewOnce && qualityMode == OutboundQualityMode.ORIGINAL) {
+                    OutboundQualityMode.HD
+                } else {
+                    qualityMode
+                }
+                val prepared = EagerMediaVault.prepareOutboundMedia(context, sourceFile, mimeType, effectiveQuality)
                 val (msgType, wireQualityMode) = resolveOutboundMediaDispatch(
                     mimeType = prepared.mimeType,
-                    qualityMode = qualityMode,
+                    qualityMode = effectiveQuality,
                     isVoiceNote = isVoiceNote
                 )
                 val effectiveDurationSec = if (msgType == "VIDEO" && durationSec <= 0) {
@@ -1968,6 +2027,11 @@ class WaRealtimeService : Service() {
                 val waveformCsv = if (isVoiceNote || mimeType.startsWith("audio/")) {
                     EagerMediaVault.extract40BarWaveform(prepared.file).joinToString(",")
                 } else ""
+                val wireModeWithVo = if (isViewOnce && (msgType == "IMAGE" || msgType == "VIDEO")) {
+                    "${wireQualityMode}:viewonce"
+                } else {
+                    wireQualityMode
+                }
 
                 val stanzaId = if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
                     Whatsbridge.sendMediaMessage(
@@ -1975,7 +2039,7 @@ class WaRealtimeService : Service() {
                         prepared.file.absolutePath,
                         prepared.mimeType,
                         caption,
-                        wireQualityMode,
+                        wireModeWithVo,
                         isVoiceNote,
                         effectiveDurationSec.toLong(),
                         waveformCsv
@@ -1984,6 +2048,7 @@ class WaRealtimeService : Service() {
                     "MEDIA_${UUID.randomUUID().toString().take(12).uppercase()}"
                 }
 
+                val voActive = isViewOnce && (msgType == "IMAGE" || msgType == "VIDEO")
                 val entity = MessageEntity(
                     id = stanzaId,
                     chatJid = chatJid,
@@ -1999,7 +2064,9 @@ class WaRealtimeService : Service() {
                     fileSize = prepared.fileSize,
                     durationSec = effectiveDurationSec,
                     waveformCsv = waveformCsv,
-                    deliveryStatus = if (runCatching { Whatsbridge.isConnected() }.getOrDefault(false)) "SENT" else "LOCAL_SENT"
+                    deliveryStatus = if (runCatching { Whatsbridge.isConnected() }.getOrDefault(false)) "SENT" else "LOCAL_SENT",
+                    isViewOnce = voActive,
+                    viewOnceState = if (voActive) "AVAILABLE" else "NONE"
                 )
                 dao.upsertIncomingMessageAndRefreshChat(
                     message = entity,
@@ -2215,17 +2282,31 @@ class WaRealtimeService : Service() {
         ): Result<Unit> = withContext(Dispatchers.IO) {
             runCatching {
                 val dao = WaUiDatabase.getInstance(context).waDao()
-                val existingSummary = targetMsg.reactionSummary.trim()
-                val toggledOff = emoji.isBlank() || existingSummary == emoji
-                val finalEmoji = if (toggledOff) "" else emoji
-                val updatedSummary = when {
-                    finalEmoji.isBlank() -> ""
-                    existingSummary.isBlank() -> finalEmoji
-                    existingSummary.contains(finalEmoji) -> existingSummary
-                    else -> "$existingSummary $finalEmoji"
+                val isChannel = chatJid.endsWith("@newsletter")
+                val finalEmoji: String
+                if (isChannel) {
+                    val existingSummary = targetMsg.reactionSummary.trim()
+                    finalEmoji = if (emoji.isBlank() || existingSummary == emoji) "" else emoji
+                    val updatedSummary = when {
+                        finalEmoji.isBlank() -> ""
+                        existingSummary.isBlank() -> finalEmoji
+                        existingSummary.contains(finalEmoji) -> existingSummary
+                        else -> "$existingSummary $finalEmoji"
+                    }
+                    dao.updateReactionSummary(targetMsg.id, updatedSummary)
+                } else {
+                    // WhatsApp keeps a single reaction per person: tapping the same emoji clears it,
+                    // tapping another one replaces it, and other participants' reactions stay intact.
+                    val currentMine = dao.getMyReaction(targetMsg.id)
+                    finalEmoji = if (emoji.isBlank() || currentMine == emoji) "" else emoji
+                    dao.applyReaction(
+                        messageId = targetMsg.id,
+                        actor = MessageReactionEntity.ME_ACTOR,
+                        emoji = finalEmoji,
+                        timestamp = System.currentTimeMillis()
+                    )
                 }
-                dao.updateReactionSummary(targetMsg.id, updatedSummary)
-                if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false) && !chatJid.endsWith("@newsletter")) {
+                if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false) && !isChannel) {
                     Whatsbridge::class.java
                         .getMethod(
                             "sendReaction",

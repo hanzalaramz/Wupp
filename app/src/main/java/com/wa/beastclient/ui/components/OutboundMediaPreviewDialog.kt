@@ -2,6 +2,8 @@ package com.wa.beastclient.ui.components
 
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.widget.Toast
+import androidx.compose.ui.res.painterResource
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -85,10 +87,11 @@ fun OutboundMediaPreviewDialog(
     initialCaption: String,
     initialQualityMode: OutboundQualityMode,
     onDismiss: () -> Unit,
-    onSend: (caption: String, qualityMode: OutboundQualityMode) -> Unit
+    onSend: (caption: String, qualityMode: OutboundQualityMode, isViewOnce: Boolean) -> Unit
 ) {
     val context = LocalContext.current
     var caption by remember(staged.file.absolutePath) { mutableStateOf(initialCaption) }
+    var isViewOnce by remember(staged.file.absolutePath) { mutableStateOf(false) }
     var qualityMode by remember(staged.file.absolutePath) {
         mutableStateOf(
             if (staged.isVideo && initialQualityMode == OutboundQualityMode.ORIGINAL) {
@@ -279,7 +282,7 @@ fun OutboundMediaPreviewDialog(
                             .clickable(enabled = !staged.isVideo) {
                                 qualityMode = when (qualityMode) {
                                     OutboundQualityMode.STANDARD -> OutboundQualityMode.HD
-                                    OutboundQualityMode.HD -> OutboundQualityMode.ORIGINAL
+                                    OutboundQualityMode.HD -> if (isViewOnce) OutboundQualityMode.STANDARD else OutboundQualityMode.ORIGINAL
                                     OutboundQualityMode.ORIGINAL -> OutboundQualityMode.STANDARD
                                 }
                             }
@@ -352,10 +355,42 @@ fun OutboundMediaPreviewDialog(
                     Spacer(modifier = Modifier.width(8.dp))
                     Box(
                         modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (isViewOnce) Color(0xFF25D366).copy(alpha = 0.24f)
+                                else Color(0xFF1F2C34).copy(alpha = 0.92f)
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = if (isViewOnce) Color(0xFF25D366) else Color.White.copy(alpha = 0.35f),
+                                shape = CircleShape
+                            )
+                            .clickable {
+                                isViewOnce = !isViewOnce
+                                if (isViewOnce && qualityMode == OutboundQualityMode.ORIGINAL) {
+                                    qualityMode = OutboundQualityMode.HD
+                                }
+                                val kind = if (staged.isVideo) "Video" else "Photo"
+                                val msg = if (isViewOnce) "$kind set to view once" else "View once off"
+                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.vec_ic_view_once),
+                            contentDescription = "View once",
+                            tint = if (isViewOnce) Color(0xFF25D366) else Color.White,
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
                             .size(48.dp)
                             .clip(CircleShape)
                             .background(Color(0xFF25D366))
-                            .clickable { onSend(caption.trim(), qualityMode) },
+                            .clickable { onSend(caption.trim(), qualityMode, isViewOnce) },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(

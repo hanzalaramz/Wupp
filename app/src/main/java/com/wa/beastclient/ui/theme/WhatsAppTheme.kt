@@ -44,6 +44,38 @@ enum class WuppThemeMode(
     }
 }
 
+enum class WuppAccentColor(
+    val storageKey: String,
+    val label: String,
+    val accentArgb: Long,
+    val brightArgb: Long
+) {
+    DEFAULT("default", "Theme Default", 0L, 0L),
+    EMERALD("emerald", "Emerald", 0xFF00A884L, 0xFF25D366L),
+    OCEAN("ocean", "Ocean Blue", 0xFF2563EBL, 0xFF3B82F6L),
+    VIOLET("violet", "Royal Violet", 0xFF7C3AEDL, 0xFFA855F7L),
+    ROSE("rose", "Crimson Rose", 0xFFE11D48L, 0xFFF43F5EL),
+    AMBER("amber", "Sunset Gold", 0xFFD97706L, 0xFFF59E0BL),
+    CYAN("cyan", "Cyber Cyan", 0xFF0891B2L, 0xFF06B6D4L),
+    PINK("pink", "Neon Pink", 0xFFDB2777L, 0xFFEC4899L);
+
+    companion object {
+        fun fromStorageKey(key: String?): WuppAccentColor =
+            entries.firstOrNull { it.storageKey.equals(key, ignoreCase = true) } ?: DEFAULT
+    }
+}
+
+internal fun blendRgb(base: Color, tint: Color, ratio: Float): Color {
+    val t = ratio.coerceIn(0f, 1f)
+    val inv = 1f - t
+    return Color(
+        red = base.red * inv + tint.red * t,
+        green = base.green * inv + tint.green * t,
+        blue = base.blue * inv + tint.blue * t,
+        alpha = 1f
+    )
+}
+
 @Immutable
 data class WaColors(
     val themeMode: WuppThemeMode,
@@ -170,11 +202,37 @@ val WaAuroraColors = WaColors(
     doodleTintAlpha = 0.075f
 )
 
-fun colorsForTheme(mode: WuppThemeMode): WaColors = when (mode) {
-    WuppThemeMode.LIGHT -> WaLightColors
-    WuppThemeMode.DARK -> WaDarkColors
-    WuppThemeMode.AMOLED -> WaAmoledColors
-    WuppThemeMode.AURORA -> WaAuroraColors
+fun colorsForTheme(
+    mode: WuppThemeMode,
+    accent: WuppAccentColor = WuppAccentColor.DEFAULT
+): WaColors {
+    val base = when (mode) {
+        WuppThemeMode.LIGHT -> WaLightColors
+        WuppThemeMode.DARK -> WaDarkColors
+        WuppThemeMode.AMOLED -> WaAmoledColors
+        WuppThemeMode.AURORA -> WaAuroraColors
+    }
+    if (accent == WuppAccentColor.DEFAULT) return base
+    val accentColor = Color(accent.accentArgb)
+    val brightColor = Color(accent.brightArgb)
+    val outgoing = if (base.isDark) {
+        blendRgb(base.appSurface, accentColor, 0.36f)
+    } else {
+        blendRgb(Color.White, brightColor, 0.22f)
+    }
+    val pillBg = if (base.isDark) {
+        blendRgb(base.appSurface, accentColor, 0.24f)
+    } else {
+        blendRgb(Color.White, brightColor, 0.20f)
+    }
+    val pillText = if (base.isDark) brightColor else accentColor
+    return base.copy(
+        accentGreen = accentColor,
+        brightGreen = brightColor,
+        outgoingBubble = outgoing,
+        pillActiveBg = pillBg,
+        pillActiveText = pillText
+    )
 }
 
 val LocalWaColors = staticCompositionLocalOf { WaDarkColors }
@@ -187,6 +245,7 @@ val LocalWuppClassicUi = staticCompositionLocalOf { false }
 @Composable
 fun WhatsAppTheme(
     themeMode: WuppThemeMode = WuppThemeMode.DARK,
+    accentColor: WuppAccentColor = WuppAccentColor.DEFAULT,
     useSystemFont: Boolean = false,
     showSecondsInTimestamps: Boolean = false,
     chatFontScale: Float = 1.0f,
@@ -194,7 +253,7 @@ fun WhatsAppTheme(
     assetManager: AssetManager,
     content: @Composable () -> Unit
 ) {
-    val waColors = colorsForTheme(themeMode)
+    val waColors = colorsForTheme(themeMode, accentColor)
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {

@@ -352,6 +352,19 @@ interface WaDao {
     @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, rowid DESC LIMIT :limit")
     fun observeRecentMessages(chatJid: String, limit: Int = 200): Flow<List<MessageEntity>>
 
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE chat_jid = :chatJid
+          AND is_view_once = 0
+          AND (msg_type = 'IMAGE' OR msg_type = 'VIDEO')
+          AND local_media_path IS NOT NULL
+          AND local_media_path != ''
+        ORDER BY timestamp ASC, rowid ASC
+        """
+    )
+    fun observeChatGalleryMedia(chatJid: String): Flow<List<MessageEntity>>
+
     @Query("SELECT * FROM messages WHERE id = :messageId LIMIT 1")
     suspend fun getMessage(messageId: String): MessageEntity?
 
@@ -483,6 +496,74 @@ interface WaDao {
     @Query("UPDATE messages SET reaction_summary = :summary WHERE id = :messageId")
     suspend fun updateReactionSummary(messageId: String, summary: String)
 
+    @Query("SELECT * FROM message_reactions WHERE message_id = :messageId ORDER BY updated_at ASC, actor ASC")
+    suspend fun getReactionsFor(messageId: String): List<MessageReactionEntity>
+
+    @Query("SELECT emoji FROM message_reactions WHERE message_id = :messageId AND actor = 'me' LIMIT 1")
+    suspend fun getMyReaction(messageId: String): String?
+
+    @Query("SELECT emoji FROM message_reactions WHERE message_id = :messageId AND actor = 'me' LIMIT 1")
+    fun observeMyReaction(messageId: String): Flow<String?>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertReaction(reaction: MessageReactionEntity)
+
+    @Query("DELETE FROM message_reactions WHERE message_id = :messageId AND actor = :actor")
+    suspend fun deleteReaction(messageId: String, actor: String)
+
+    @Query("SELECT reaction_summary FROM messages WHERE id = :messageId LIMIT 1")
+    suspend fun getReactionSummary(messageId: String): String?
+
+    @Query("DELETE FROM message_reactions WHERE message_id NOT IN (SELECT id FROM messages)")
+    suspend fun deleteOrphanReactions()
+
+    /**
+     * Applies one actor's reaction (blank [emoji] removes it) and rebuilds the message's
+     * `reaction_summary` from the per-actor rows. A pre-existing summary that has no per-actor
+     * rows yet is preserved as `legacy:` rows so older reactions are never lost.
+     */
+    @Transaction
+    suspend fun applyReaction(messageId: String, actor: String, emoji: String, timestamp: Long) {
+        if (getReactionsFor(messageId).isEmpty()) {
+            getReactionSummary(messageId).orEmpty()
+                .split(Regex("\\s+"))
+                .filter { it.isNotBlank() }
+                .distinct()
+                .forEach { token ->
+                    upsertReaction(
+                        MessageReactionEntity(
+                            messageId = messageId,
+                            actor = MessageReactionEntity.LEGACY_PREFIX + token,
+                            emoji = token,
+                            updatedAt = 0L
+                        )
+                    )
+                }
+        }
+        val clean = emoji.trim()
+        if (clean.isEmpty()) {
+            deleteReaction(messageId, actor)
+        } else {
+            // A legacy token with the same emoji is assumed to be this reaction's earlier copy.
+            if (actor == MessageReactionEntity.ME_ACTOR) {
+                deleteReaction(messageId, MessageReactionEntity.LEGACY_PREFIX + clean)
+            }
+            upsertReaction(
+                MessageReactionEntity(
+                    messageId = messageId,
+                    actor = actor,
+                    emoji = clean,
+                    updatedAt = timestamp
+                )
+            )
+        }
+        val summary = getReactionsFor(messageId)
+            .map { it.emoji }
+            .distinct()
+            .joinToString(" ")
+        updateReactionSummary(messageId, summary)
+    }
+
     @Query(
         """
         SELECT messages.* FROM messages
@@ -499,7 +580,7 @@ interface WaDao {
         SELECT * FROM messages
         WHERE chat_jid = :chatJid AND (body LIKE '%' || :query || '%' OR audio_transcript LIKE '%' || :query || '%')
         ORDER BY timestamp DESC
-        LIMIT 80
+        LIMIT 5000
         """
     )
     suspend fun searchInChat(chatJid: String, query: String): List<MessageEntity>
@@ -757,7 +838,7 @@ interface WaDao {
                         isArchived = resolvedArchived,
                         isLocked = chat.isLocked || existing.isLocked,
                         localArchiveOverride = existing.localArchiveOverride,
-                        unreadCount = if (isCurrentlyOpen) 0 else maxOf(existing.unreadCount, chat.unreadCount),
+                        unreadCount = if (isCurrentlyOpen) 0 else chat.unreadCount,
                         lastMessageTimestamp = maxOf(existing.lastMessageTimestamp, chat.lastMessageTimestamp),
                         isCommunityParent = chat.isCommunityParent || existing.isCommunityParent,
                         parentGroupJid = chat.parentGroupJid.ifBlank { existing.parentGroupJid },
@@ -884,12 +965,17 @@ interface WaDao {
             )
         } else {
             val shouldAdvancePreview = effectiveMessage.timestamp >= existingChat.lastMessageTimestamp
+            val resolvedUnread = when {
+                effectiveMessage.isFromMe && shouldAdvancePreview -> 0
+                shouldBumpUnread -> existingChat.unreadCount + 1
+                else -> existingChat.unreadCount
+            }
             upsertChat(
                 existingChat.copy(
                     name = if (existingChat.name.isBlank() || existingChat.name == existingChat.jid.substringBefore("@")) {
                         chatNameHint.ifBlank { existingChat.name }
                     } else existingChat.name,
-                    unreadCount = if (shouldBumpUnread) existingChat.unreadCount + 1 else existingChat.unreadCount,
+                    unreadCount = resolvedUnread,
                     lastMessageId = if (shouldAdvancePreview) effectiveMessage.id else existingChat.lastMessageId,
                     lastMessagePreview = if (shouldAdvancePreview) preview else existingChat.lastMessagePreview,
                     lastMessageType = if (shouldAdvancePreview) effectiveType else existingChat.lastMessageType,

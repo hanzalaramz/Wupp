@@ -47,6 +47,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.ui.theme.LocalWaColors
+import com.wa.beastclient.ui.theme.WuppAccentColor
 import com.wa.beastclient.ui.theme.WuppThemeMode
 import com.wa.beastclient.ui.theme.colorsForTheme
 
@@ -69,8 +71,11 @@ import com.wa.beastclient.ui.theme.colorsForTheme
 fun ThemeSelectorGrid(
     selectedTheme: WuppThemeMode,
     onSelectTheme: (WuppThemeMode) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    selectedAccent: WuppAccentColor = WuppAccentColor.DEFAULT,
+    onSelectAccent: ((WuppAccentColor) -> Unit)? = null
 ) {
+    val colors = LocalWaColors.current
     val rows = WuppThemeMode.entries.chunked(2)
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -91,6 +96,55 @@ fun ThemeSelectorGrid(
                 }
             }
         }
+        if (onSelectAccent != null) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "Accent Color · ${selectedAccent.label}",
+                    color = colors.textSecondary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val themeBase = colorsForTheme(selectedTheme, WuppAccentColor.DEFAULT)
+                    WuppAccentColor.entries.forEach { accent ->
+                        val isSelected = accent == selectedAccent
+                        val swatchColor = if (accent == WuppAccentColor.DEFAULT) {
+                            themeBase.brightGreen
+                        } else {
+                            Color(accent.brightArgb)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(swatchColor)
+                                .border(
+                                    width = if (isSelected) 2.5.dp else 1.dp,
+                                    color = if (isSelected) colors.textPrimary else colors.divider,
+                                    shape = CircleShape
+                                )
+                                .clickable { onSelectAccent(accent) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Rounded.CheckCircle,
+                                    contentDescription = accent.label,
+                                    tint = Color(0xFF0B141A),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -98,7 +152,9 @@ fun ThemeSelectorGrid(
 fun ThemePickerDialog(
     selectedTheme: WuppThemeMode,
     onSelectTheme: (WuppThemeMode) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    selectedAccent: WuppAccentColor = WuppAccentColor.DEFAULT,
+    onSelectAccent: ((WuppAccentColor) -> Unit)? = null
 ) {
     val colors = LocalWaColors.current
     AlertDialog(
@@ -118,8 +174,9 @@ fun ThemePickerDialog(
                 selectedTheme = selectedTheme,
                 onSelectTheme = { mode ->
                     onSelectTheme(mode)
-                    onDismiss()
-                }
+                },
+                selectedAccent = selectedAccent,
+                onSelectAccent = onSelectAccent
             )
         },
         confirmButton = {
@@ -381,6 +438,10 @@ fun WallpaperPickerDialog(
             onPositionChange?.invoke(ns, nox, noy)
         }
     }
+    val latestScale by rememberUpdatedState(activeScale)
+    val latestOffsetX by rememberUpdatedState(activeOffsetX)
+    val latestOffsetY by rememberUpdatedState(activeOffsetY)
+    val latestUpdatePosition by rememberUpdatedState(updatePosition)
 
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -460,14 +521,14 @@ fun WallpaperPickerDialog(
                         .onSizeChanged { previewSize = it }
                         .then(
                             if (activeUri.startsWith("file:")) {
-                                Modifier.pointerInput(activeUri, editThisChat, activeScale, activeOffsetX, activeOffsetY) {
+                                Modifier.pointerInput(activeUri, editThisChat) {
                                     detectTransformGestures { _, pan, zoom, _ ->
                                         val w = previewSize.width.coerceAtLeast(1).toFloat()
                                         val h = previewSize.height.coerceAtLeast(1).toFloat()
-                                        val nextScale = (activeScale * zoom).coerceIn(1f, 3f)
-                                        val nextX = (activeOffsetX + pan.x / w).coerceIn(-0.85f, 0.85f)
-                                        val nextY = (activeOffsetY + pan.y / h).coerceIn(-0.85f, 0.85f)
-                                        updatePosition(nextScale, nextX, nextY)
+                                        val nextScale = (latestScale * zoom).coerceIn(1f, 3f)
+                                        val nextX = (latestOffsetX + pan.x / w).coerceIn(-0.85f, 0.85f)
+                                        val nextY = (latestOffsetY + pan.y / h).coerceIn(-0.85f, 0.85f)
+                                        latestUpdatePosition(nextScale, nextX, nextY)
                                     }
                                 }
                             } else {

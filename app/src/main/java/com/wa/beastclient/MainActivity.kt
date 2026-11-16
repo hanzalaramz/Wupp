@@ -118,6 +118,7 @@ class MainActivity : FragmentActivity() {
 
             WhatsAppTheme(
                 themeMode = stealth.themeMode,
+                accentColor = stealth.accentColor,
                 useSystemFont = stealth.useSystemFont,
                 showSecondsInTimestamps = stealth.showSecondsInTimestamps,
                 chatFontScale = stealth.chatFontScale,

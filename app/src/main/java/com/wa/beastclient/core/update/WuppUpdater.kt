@@ -133,18 +133,21 @@ object WuppUpdater {
     fun init(context: Context) {
         if (initialized) return
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        _autoCheckEnabled.value = prefs.getBoolean(KEY_AUTO_CHECK, true)
+        if (!prefs.getBoolean(KEY_AUTO_CHECK, true)) {
+            prefs.edit().putBoolean(KEY_AUTO_CHECK, true).apply()
+        }
+        _autoCheckEnabled.value = true
         _includePreReleases.value = prefs.getBoolean(KEY_INCLUDE_PRE_RELEASES, false)
         initialized = true
     }
 
-    fun setAutoCheckEnabled(context: Context, enabled: Boolean) {
+    fun setAutoCheckEnabled(context: Context, @Suppress("UNUSED_PARAMETER") enabled: Boolean) {
         init(context)
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putBoolean(KEY_AUTO_CHECK, enabled)
+            .putBoolean(KEY_AUTO_CHECK, true)
             .apply()
-        _autoCheckEnabled.value = enabled
+        _autoCheckEnabled.value = true
     }
 
     fun setIncludePreReleases(context: Context, enabled: Boolean) {

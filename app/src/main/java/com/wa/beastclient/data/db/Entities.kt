@@ -159,6 +159,31 @@ data class MessageFtsEntity(
     val audioTranscript: String?
 )
 
+/**
+ * One row per (message, actor) so a participant switching or removing their reaction only
+ * affects their own entry. `actor` is [MessageReactionEntity.ME_ACTOR] for this account.
+ */
+@Entity(
+    tableName = "message_reactions",
+    primaryKeys = ["message_id", "actor"],
+    indices = [Index(value = ["message_id"])]
+)
+data class MessageReactionEntity(
+    @ColumnInfo(name = "message_id")
+    val messageId: String,
+    @ColumnInfo(name = "actor")
+    val actor: String,
+    @ColumnInfo(name = "emoji")
+    val emoji: String,
+    @ColumnInfo(name = "updated_at")
+    val updatedAt: Long
+) {
+    companion object {
+        const val ME_ACTOR = "me"
+        const val LEGACY_PREFIX = "legacy:"
+    }
+}
+
 @Entity(
     tableName = "message_edits",
     indices = [Index(value = ["message_id", "edited_at"])]

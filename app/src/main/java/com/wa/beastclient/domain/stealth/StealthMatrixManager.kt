@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import com.wa.beastclient.data.db.PrivacyRuleEntity
 import com.wa.beastclient.data.db.WaDao
 import com.wa.beastclient.ui.theme.LocaleHelper
+import com.wa.beastclient.ui.theme.WuppAccentColor
 import com.wa.beastclient.ui.theme.WuppThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +44,7 @@ data class GlobalStealthConfig(
     val viewOnceVaultEnabled: Boolean = true,
     val disappearingImmunity: Boolean = true,
     val themeMode: WuppThemeMode = WuppThemeMode.DARK,
+    val accentColor: WuppAccentColor = WuppAccentColor.DEFAULT,
     val useSystemFont: Boolean = false,
     val quickReactionEmojis: List<String> = StealthMatrixManager.DEFAULT_QUICK_REACTIONS,
     val classicWhatsAppLook: Boolean = false,
@@ -117,6 +119,7 @@ object StealthMatrixManager {
     private const val KEY_DISAPPEARING_IMMUNITY = "disappearing_immunity"
     private const val KEY_DARK_THEME = "dark_theme"
     private const val KEY_THEME_MODE = "app_theme_mode"
+    private const val KEY_ACCENT_COLOR = "app_accent_color"
     private const val KEY_CHAT_WALLPAPER_URI = "chat_wallpaper_uri"
     private const val KEY_CHAT_WALLPAPER_DIM = "chat_wallpaper_dim"
     private const val KEY_CHAT_WALLPAPER_DOODLE = "chat_wallpaper_doodle"
@@ -185,6 +188,7 @@ object StealthMatrixManager {
                     prefs.getString(KEY_THEME_MODE, null),
                     prefs.getBoolean(KEY_DARK_THEME, true)
                 ),
+                accentColor = WuppAccentColor.fromStorageKey(prefs.getString(KEY_ACCENT_COLOR, null)),
                 useSystemFont = prefs.getBoolean(KEY_USE_SYSTEM_FONT, false),
                 quickReactionEmojis = parseQuickReactions(prefs.getString(KEY_QUICK_REACTIONS, null)),
                 classicWhatsAppLook = prefs.getBoolean(KEY_CLASSIC_LOOK, false),
@@ -237,6 +241,7 @@ object StealthMatrixManager {
                 .putBoolean(KEY_VIEW_ONCE_VAULT, updated.viewOnceVaultEnabled)
                 .putBoolean(KEY_DISAPPEARING_IMMUNITY, updated.disappearingImmunity)
                 .putString(KEY_THEME_MODE, updated.themeMode.storageKey)
+                .putString(KEY_ACCENT_COLOR, updated.accentColor.storageKey)
                 .putBoolean(KEY_DARK_THEME, updated.themeMode != WuppThemeMode.LIGHT)
                 .putBoolean(KEY_USE_SYSTEM_FONT, updated.useSystemFont)
                 .putString(KEY_QUICK_REACTIONS, encodeQuickReactions(updated.quickReactionEmojis))

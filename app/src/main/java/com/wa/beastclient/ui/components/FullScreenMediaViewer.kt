@@ -9,8 +9,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,6 +27,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -48,16 +53,21 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -70,52 +80,105 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.wa.beastclient.data.db.MessageEntity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+/** Pages shown by the lightbox: the surrounding chat media when [target] is part of it. */
+internal fun resolveLightboxPages(target: MessageEntity, gallery: List<MessageEntity>): List<MessageEntity> =
+    if (gallery.any { it.id == target.id }) gallery else listOf(target)
+
+internal fun resolveLightboxStartIndex(pages: List<MessageEntity>, targetId: String): Int =
+    pages.indexOfFirst { it.id == targetId }.coerceAtLeast(0)
+
+/** Largest side kept in memory for full-screen photos so big camera images never OOM. */
+private const val LIGHTBOX_MAX_BITMAP_SIDE = 2400
+
+private fun decodeLightboxBitmap(file: File): ImageBitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    runCatching { BitmapFactory.decodeFile(file.absolutePath, bounds) }
+    var sample = 1
+    if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+        while (bounds.outWidth / sample > LIGHTBOX_MAX_BITMAP_SIDE ||
+            bounds.outHeight / sample > LIGHTBOX_MAX_BITMAP_SIDE
+        ) {
+            sample *= 2
+        }
+    }
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    return runCatching { BitmapFactory.decodeFile(file.absolutePath, opts)?.asImageBitmap() }.getOrNull()
+}
+
+/**
+ * Pinch-zoom + pan detector that only claims touches while zooming (two fingers) or while the
+ * image is already zoomed in, so one-finger swipes at 1x still reach the surrounding pager.
+ */
+private suspend fun PointerInputScope.detectLightboxZoomPan(
+    isZoomed: () -> Boolean,
+    onGesture: (zoom: Float, pan: Offset) -> Unit
+) {
+    awaitEachGesture {
+        awaitFirstDown(requireUnconsumed = false)
+        do {
+            val event = awaitPointerEvent()
+            val pressedCount = event.changes.count { it.pressed }
+            val canceled = event.changes.any { it.isConsumed }
+            if (!canceled && (pressedCount > 1 || isZoomed())) {
+                val zoom = event.calculateZoom()
+                val pan = event.calculatePan()
+                if (zoom != 1f || pan != Offset.Zero) {
+                    onGesture(zoom, pan)
+                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                }
+            }
+        } while (!canceled && event.changes.any { it.pressed })
+    }
+}
 
 @Composable
 fun FullScreenMediaViewer(
     msg: MessageEntity,
     senderDisplayName: String,
     onDismiss: () -> Unit,
-    onSaveToGallery: () -> Unit,
-    onReply: (() -> Unit)? = null,
-    onQuickReaction: ((String) -> Unit)? = null
+    onSaveToGallery: (MessageEntity) -> Unit,
+    onReply: ((MessageEntity) -> Unit)? = null,
+    onQuickReaction: ((MessageEntity, String) -> Unit)? = null,
+    gallery: List<MessageEntity> = emptyList(),
+    senderDisplayNameFor: (MessageEntity) -> String = { senderDisplayName }
 ) {
     val context = LocalContext.current
-    val mediaFile = remember(msg.localMediaPath) {
-        msg.localMediaPath?.takeIf { it.isNotBlank() }?.let { path ->
+    val pages = remember(msg.id, gallery) { resolveLightboxPages(msg, gallery) }
+    val pagerState = rememberPagerState(
+        initialPage = resolveLightboxStartIndex(pages, msg.id),
+        pageCount = { pages.size }
+    )
+    val current = pages.getOrElse(pagerState.currentPage) { msg }
+    val mediaFile = remember(current.id, current.localMediaPath) {
+        current.localMediaPath?.takeIf { it.isNotBlank() }?.let { path ->
             File(path).takeIf { it.exists() && it.length() > 0L }
-        }
-    }
-    val isVideo = msg.msgType.uppercase() == "VIDEO" || msg.mimeType.startsWith("video/", ignoreCase = true)
-    val isAudio = msg.msgType.uppercase() == "PTT" || msg.msgType.uppercase() == "AUDIO" ||
-        msg.mimeType.startsWith("audio/", ignoreCase = true)
-    val bitmap = remember(mediaFile, isVideo, isAudio) {
-        if (!isVideo && !isAudio && mediaFile != null) {
-            runCatching { BitmapFactory.decodeFile(mediaFile.absolutePath)?.asImageBitmap() }.getOrNull()
-        } else {
-            null
         }
     }
 
     var showChrome by remember { mutableStateOf(true) }
     var showOverflow by remember { mutableStateOf(false) }
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offsetX by remember { mutableFloatStateOf(0f) }
-    var offsetY by remember { mutableFloatStateOf(0f) }
 
-    val formattedTime = remember(msg.timestamp) {
-        if (msg.timestamp > 0L) {
-            SimpleDateFormat("MMMM d, h:mm a", Locale.getDefault()).format(Date(msg.timestamp))
+    val formattedTime = remember(current.timestamp) {
+        if (current.timestamp > 0L) {
+            SimpleDateFormat("MMMM d, h:mm a", Locale.getDefault()).format(Date(current.timestamp))
         } else {
             ""
         }
     }
-    val headerTitle = if (msg.isFromMe) "You" else senderDisplayName.ifBlank { msg.senderName.ifBlank { "Contact" } }
+    val headerTitle = if (current.isFromMe) {
+        "You"
+    } else {
+        senderDisplayNameFor(current).ifBlank { current.senderName.ifBlank { "Contact" } }
+    }
+    val positionLabel = if (pages.size > 1) "${pagerState.currentPage + 1} / ${pages.size}" else ""
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -129,93 +192,17 @@ fun FullScreenMediaViewer(
                 .fillMaxSize()
                 .background(Color.Black)
         ) {
-            if (isAudio && mediaFile != null) {
-                AudioLightboxStage(
-                    file = mediaFile,
-                    durationSec = msg.durationSec,
-                    onToggleChrome = { showChrome = !showChrome }
-                )
-            } else if (isVideo && mediaFile != null) {
-                VideoLightboxStage(
-                    file = mediaFile,
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize(),
+                key = { index -> pages[index].id }
+            ) { pageIndex ->
+                MediaLightboxPage(
+                    msg = pages[pageIndex],
+                    isActivePage = pagerState.settledPage == pageIndex,
                     showChrome = showChrome,
                     onToggleChrome = { showChrome = !showChrome }
                 )
-            } else if (bitmap != null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(msg.id) {
-                            detectTapGestures(
-                                onTap = { showChrome = !showChrome },
-                                onDoubleTap = {
-                                    if (scale > 1.2f) {
-                                        scale = 1f
-                                        offsetX = 0f
-                                        offsetY = 0f
-                                    } else {
-                                        scale = 2.4f
-                                    }
-                                }
-                            )
-                        }
-                        .pointerInput(msg.id) {
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                val nextScale = (scale * zoom).coerceIn(1f, 4f)
-                                scale = nextScale
-                                if (nextScale > 1.02f) {
-                                    val maxOffset = (nextScale - 1f) * 650f
-                                    offsetX = (offsetX + pan.x).coerceIn(-maxOffset, maxOffset)
-                                    offsetY = (offsetY + pan.y).coerceIn(-maxOffset, maxOffset)
-                                } else {
-                                    offsetX = 0f
-                                    offsetY = 0f
-                                }
-                            }
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Image(
-                        bitmap = bitmap,
-                        contentDescription = msg.body,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer(
-                                scaleX = scale,
-                                scaleY = scale,
-                                translationX = offsetX,
-                                translationY = offsetY
-                            )
-                    )
-                }
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clickable { showChrome = !showChrome },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.padding(24.dp)
-                    ) {
-                        Text(
-                            text = if (msg.localMediaPath.isNullOrBlank()) "Downloading media..." else "Unable to open media file",
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                        if (msg.body.isNotBlank()) {
-                            Text(
-                                text = msg.body,
-                                color = Color(0xFFB8C2C7),
-                                fontSize = 13.sp
-                            )
-                        }
-                    }
-                }
             }
 
             // Top bar overlay (matches original WhatsApp media lightbox)
@@ -259,9 +246,10 @@ fun FullScreenMediaViewer(
                                 fontSize = 16.5.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
                             )
-                            if (msg.isViewOnce) {
+                            if (current.isViewOnce) {
                                 Text(
                                     text = "View Once Vault",
                                     color = Color(0xFF25D366),
@@ -273,16 +261,19 @@ fun FullScreenMediaViewer(
                                 )
                             }
                         }
-                        if (formattedTime.isNotBlank()) {
+                        val subtitle = listOf(formattedTime, positionLabel)
+                            .filter { it.isNotBlank() }
+                            .joinToString("  Â·  ")
+                        if (subtitle.isNotBlank()) {
                             Text(
-                                text = formattedTime,
+                                text = subtitle,
                                 color = Color(0xFFD1D7DB),
                                 fontSize = 12.sp
                             )
                         }
                     }
                     if (mediaFile != null) {
-                        IconButton(onClick = onSaveToGallery) {
+                        IconButton(onClick = { onSaveToGallery(current) }) {
                             Icon(
                                 imageVector = Icons.Rounded.Download,
                                 contentDescription = "Save to Gallery",
@@ -293,7 +284,7 @@ fun FullScreenMediaViewer(
                     if (onReply != null) {
                         IconButton(
                             onClick = {
-                                onReply()
+                                onReply(current)
                                 onDismiss()
                             }
                         ) {
@@ -322,7 +313,7 @@ fun FullScreenMediaViewer(
                                     text = { Text("Save to gallery", color = Color.White) },
                                     onClick = {
                                         showOverflow = false
-                                        onSaveToGallery()
+                                        onSaveToGallery(current)
                                     }
                                 )
                             }
@@ -331,7 +322,7 @@ fun FullScreenMediaViewer(
                                     text = { Text("Reply", color = Color.White) },
                                     onClick = {
                                         showOverflow = false
-                                        onReply()
+                                        onReply(current)
                                         onDismiss()
                                     }
                                 )
@@ -360,9 +351,9 @@ fun FullScreenMediaViewer(
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    if (msg.body.isNotBlank()) {
+                    if (current.body.isNotBlank()) {
                         Text(
-                            text = msg.body,
+                            text = current.body,
                             color = Color.White,
                             fontSize = 14.5.sp,
                             lineHeight = 20.sp
@@ -381,7 +372,7 @@ fun FullScreenMediaViewer(
                                 .background(Color(0xFF202C33).copy(alpha = 0.92f))
                                 .clickable {
                                     if (onReply != null) {
-                                        onReply()
+                                        onReply(current)
                                         onDismiss()
                                     }
                                 }
@@ -394,7 +385,7 @@ fun FullScreenMediaViewer(
                                 fontSize = 15.sp
                             )
                         }
-                        listOf("❤️", "🙏", "👍", "😊").forEach { emoji ->
+                        listOf("â¤ï¸", "ðŸ™", "ðŸ‘", "ðŸ˜Š").forEach { emoji ->
                             Box(
                                 modifier = Modifier
                                     .size(40.dp)
@@ -402,8 +393,7 @@ fun FullScreenMediaViewer(
                                     .background(Color(0xFF202C33).copy(alpha = 0.92f))
                                     .clickable {
                                         if (onQuickReaction != null) {
-                                            onQuickReaction(emoji)
-                                        } else {
+                                            onQuickReaction(current, emoji)
                                             Toast.makeText(context, "Reacted $emoji", Toast.LENGTH_SHORT).show()
                                         }
                                     },
@@ -414,6 +404,167 @@ fun FullScreenMediaViewer(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+private class LightboxImageLoad(val bitmap: ImageBitmap?)
+
+@Composable
+private fun MediaLightboxPage(
+    msg: MessageEntity,
+    isActivePage: Boolean,
+    showChrome: Boolean,
+    onToggleChrome: () -> Unit
+) {
+    val mediaFile = remember(msg.id, msg.localMediaPath) {
+        msg.localMediaPath?.takeIf { it.isNotBlank() }?.let { path ->
+            File(path).takeIf { it.exists() && it.length() > 0L }
+        }
+    }
+    val isVideo = msg.msgType.uppercase() == "VIDEO" || msg.mimeType.startsWith("video/", ignoreCase = true)
+    val isAudio = msg.msgType.uppercase() == "PTT" || msg.msgType.uppercase() == "AUDIO" ||
+        msg.mimeType.startsWith("audio/", ignoreCase = true)
+
+    when {
+        isAudio && mediaFile != null -> {
+            if (isActivePage) {
+                AudioLightboxStage(
+                    file = mediaFile,
+                    durationSec = msg.durationSec,
+                    onToggleChrome = onToggleChrome
+                )
+            } else {
+                Box(modifier = Modifier.fillMaxSize().background(Color.Black))
+            }
+        }
+
+        isVideo && mediaFile != null -> {
+            // Only the settled page owns a player so neighbouring videos never start playing mid-swipe.
+            if (isActivePage) {
+                VideoLightboxStage(
+                    file = mediaFile,
+                    showChrome = showChrome,
+                    onToggleChrome = onToggleChrome
+                )
+            } else {
+                Box(modifier = Modifier.fillMaxSize().background(Color.Black))
+            }
+        }
+
+        mediaFile != null -> {
+            val load by produceState<LightboxImageLoad?>(initialValue = null, mediaFile) {
+                value = LightboxImageLoad(
+                    withContext(Dispatchers.IO) { decodeLightboxBitmap(mediaFile) }
+                )
+            }
+            val bitmap = load?.bitmap
+            when {
+                bitmap != null -> ZoomableLightboxImage(
+                    msgId = msg.id,
+                    bitmap = bitmap,
+                    contentDescription = msg.body,
+                    onToggleChrome = onToggleChrome
+                )
+
+                load == null -> Box(modifier = Modifier.fillMaxSize().background(Color.Black))
+                else -> LightboxMessagePlaceholder(msg = msg, onToggleChrome = onToggleChrome)
+            }
+        }
+
+        else -> LightboxMessagePlaceholder(msg = msg, onToggleChrome = onToggleChrome)
+    }
+}
+
+@Composable
+private fun ZoomableLightboxImage(
+    msgId: String,
+    bitmap: ImageBitmap,
+    contentDescription: String,
+    onToggleChrome: () -> Unit
+) {
+    var scale by remember(msgId) { mutableFloatStateOf(1f) }
+    var offsetX by remember(msgId) { mutableFloatStateOf(0f) }
+    var offsetY by remember(msgId) { mutableFloatStateOf(0f) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(msgId) {
+                detectTapGestures(
+                    onTap = { onToggleChrome() },
+                    onDoubleTap = {
+                        if (scale > 1.2f) {
+                            scale = 1f
+                            offsetX = 0f
+                            offsetY = 0f
+                        } else {
+                            scale = 2.4f
+                        }
+                    }
+                )
+            }
+            .pointerInput(msgId) {
+                detectLightboxZoomPan(isZoomed = { scale > 1.02f }) { zoom, pan ->
+                    val nextScale = (scale * zoom).coerceIn(1f, 4f)
+                    scale = nextScale
+                    if (nextScale > 1.02f) {
+                        val maxOffset = (nextScale - 1f) * 650f
+                        offsetX = (offsetX + pan.x).coerceIn(-maxOffset, maxOffset)
+                        offsetY = (offsetY + pan.y).coerceIn(-maxOffset, maxOffset)
+                    } else {
+                        offsetX = 0f
+                        offsetY = 0f
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = contentDescription,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer(
+                    scaleX = scale,
+                    scaleY = scale,
+                    translationX = offsetX,
+                    translationY = offsetY
+                )
+        )
+    }
+}
+
+@Composable
+private fun LightboxMessagePlaceholder(
+    msg: MessageEntity,
+    onToggleChrome: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clickable { onToggleChrome() },
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(24.dp)
+        ) {
+            Text(
+                text = if (msg.localMediaPath.isNullOrBlank()) "Downloading media..." else "Unable to open media file",
+                color = Color.White,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium
+            )
+            if (msg.body.isNotBlank()) {
+                Text(
+                    text = msg.body,
+                    color = Color(0xFFB8C2C7),
+                    fontSize = 13.sp
+                )
             }
         }
     }
@@ -616,7 +767,7 @@ private fun AudioLightboxStage(
                 )
             }
             Text(
-                text = "Voice message · View once",
+                text = "Voice message Â· View once",
                 color = Color.White,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Medium

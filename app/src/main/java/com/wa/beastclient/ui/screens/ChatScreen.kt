@@ -86,6 +86,7 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Notifications
@@ -885,6 +886,18 @@ fun ChatScreen(
                                 }
                             )
                             DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (chat?.isMuted == true) stringResource(R.string.chat_action_unmute)
+                                        else stringResource(R.string.chat_action_mute)
+                                    )
+                                },
+                                onClick = {
+                                    showOverflow = false
+                                    viewModel.muteChats(listOf(chatJid), chat?.isMuted != true)
+                                }
+                            )
+                            DropdownMenuItem(
                                 text = { Text(if (chat?.isFavorite == true) "Remove from Favorites" else "Add to Favorites") },
                                 onClick = {
                                     showOverflow = false
@@ -905,6 +918,12 @@ fun ChatScreen(
                 }
 
                 AnimatedVisibility(visible = showSearchInChat && actionMenuTarget == null) {
+                    var inChatMatchIndex by remember(inChatMatches) { mutableStateOf(0) }
+                    LaunchedEffect(inChatMatches, inChatMatchIndex) {
+                        inChatMatches.getOrNull(inChatMatchIndex)?.let { match ->
+                            jumpToQuotedMessage(match.id)
+                        }
+                    }
                     Column(modifier = Modifier.background(colors.elevatedBar).padding(horizontal = 12.dp, vertical = 6.dp)) {
                         OutlinedTextField(
                             value = inChatQuery,
@@ -912,19 +931,52 @@ fun ChatScreen(
                             placeholder = { Text("Search messages or voice transcripts...") },
                             singleLine = true,
                             trailingIcon = {
-                                IconButton(onClick = { showSearchInChat = false; inChatQuery = "" }) {
-                                    Icon(Icons.Rounded.Close, "Close")
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (inChatMatches.isNotEmpty()) {
+                                        IconButton(
+                                            enabled = inChatMatchIndex < inChatMatches.lastIndex,
+                                            onClick = {
+                                                if (inChatMatchIndex < inChatMatches.lastIndex) {
+                                                    inChatMatchIndex += 1
+                                                }
+                                            }
+                                        ) {
+                                            Icon(Icons.Rounded.KeyboardArrowUp, "Older match")
+                                        }
+                                        IconButton(
+                                            enabled = inChatMatchIndex > 0,
+                                            onClick = {
+                                                if (inChatMatchIndex > 0) {
+                                                    inChatMatchIndex -= 1
+                                                }
+                                            }
+                                        ) {
+                                            Icon(Icons.Rounded.KeyboardArrowDown, "Newer match")
+                                        }
+                                    }
+                                    IconButton(onClick = { showSearchInChat = false; inChatQuery = "" }) {
+                                        Icon(Icons.Rounded.Close, "Close")
+                                    }
                                 }
                             },
                             modifier = Modifier.fillMaxWidth()
                         )
                         if (inChatMatches.isNotEmpty()) {
+                            val currentMatch = inChatMatches.getOrElse(inChatMatchIndex) { inChatMatches.first() }
+                            val snippet = currentMatch.body.ifBlank { currentMatch.audioTranscript.orEmpty() }
                             Text(
-                                text = "${inChatMatches.size} matches: \"${inChatMatches.first().body.ifBlank { inChatMatches.first().audioTranscript.orEmpty() }}\"",
+                                text = "${inChatMatchIndex + 1} / ${inChatMatches.size} · \"$snippet\"",
                                 fontSize = 11.5.sp,
                                 color = colors.brightGreen,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        } else if (inChatQuery.trim().length >= 2) {
+                            Text(
+                                text = "No matches found",
+                                fontSize = 11.5.sp,
+                                color = colors.textSecondary,
                                 modifier = Modifier.padding(top = 4.dp)
                             )
                         }
@@ -1259,8 +1311,11 @@ fun ChatScreen(
                                     val activeReactions = stealthConfig.quickReactionEmojis.ifEmpty {
                                         StealthMatrixManager.DEFAULT_QUICK_REACTIONS
                                     }
+                                    val myReaction by remember(target.id) {
+                                        viewModel.observeMyReaction(target.id)
+                                    }.collectAsState(initial = null)
                                     activeReactions.forEach { emoji ->
-                                        val isCurrent = target.reactionSummary.contains(emoji)
+                                        val isCurrent = myReaction == emoji
                                         val emojiInteraction = remember(emoji) { MutableInteractionSource() }
                                         Box(
                                             modifier = Modifier
@@ -1643,6 +1698,7 @@ fun ChatScreen(
                                     cursorBrush = SolidColor(colors.brightGreen),
                                     maxLines = 6,
                                     keyboardOptions = KeyboardOptions(
+                                        capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
                                         imeAction = if (stealthConfig.enterIsSend) ImeAction.Send else ImeAction.Default
                                     ),
                                     keyboardActions = KeyboardActions(
@@ -2072,34 +2128,47 @@ fun ChatScreen(
 
     // Full-screen Media / View Once Lightbox
     mediaLightboxTarget?.let { target ->
-        val displaySender = if (target.isFromMe) {
-            "You"
-        } else {
-            chat?.name?.takeIf { it.isNotBlank() }
-                ?: target.senderName.ifBlank { target.senderJid.substringBefore("@") }
+        val galleryItems by remember(chatJid, target.isViewOnce) {
+            if (target.isViewOnce) kotlinx.coroutines.flow.flowOf(emptyList())
+            else viewModel.observeChatGalleryMedia(chatJid)
+        }.collectAsState(initial = emptyList())
+        val resolveSenderLabel: (MessageEntity) -> String = { item ->
+            if (item.isFromMe) {
+                "You"
+            } else if (chat?.isGroup == true) {
+                item.senderName.ifBlank { item.senderJid.substringBefore("@") }
+            } else {
+                chat?.name?.takeIf { it.isNotBlank() }
+                    ?: item.senderName.ifBlank { item.senderJid.substringBefore("@") }
+            }
         }
         FullScreenMediaViewer(
             msg = target,
-            senderDisplayName = displaySender,
+            senderDisplayName = resolveSenderLabel(target),
             onDismiss = { mediaLightboxTarget = null },
-            onSaveToGallery = {
+            onSaveToGallery = { item ->
                 val (ext, fallbackMime) = when {
-                    target.mimeType.contains("mp4", ignoreCase = true) || target.msgType == "VIDEO" ->
+                    item.mimeType.contains("mp4", ignoreCase = true) || item.msgType == "VIDEO" ->
                         "mp4" to "video/mp4"
-                    target.msgType == "PTT" || target.msgType == "AUDIO" || target.mimeType.startsWith("audio/", ignoreCase = true) ->
-                        (if (target.mimeType.contains("m4a", ignoreCase = true) || target.mimeType.contains("mp4", ignoreCase = true)) "m4a" else "ogg") to "audio/ogg"
+                    item.msgType == "PTT" || item.msgType == "AUDIO" || item.mimeType.startsWith("audio/", ignoreCase = true) ->
+                        (if (item.mimeType.contains("m4a", ignoreCase = true) || item.mimeType.contains("mp4", ignoreCase = true)) "m4a" else "ogg") to "audio/ogg"
                     else -> "png" to "image/png"
                 }
-                val mime = target.mimeType.ifBlank { fallbackMime }
+                val mime = item.mimeType.ifBlank { fallbackMime }
                 viewModel.exportMediaToGallery(
-                    target.localMediaPath,
-                    "WA_Vault_${target.id}.$ext",
+                    item.localMediaPath,
+                    "WA_Vault_${item.id}.$ext",
                     mime
                 )
             },
             onReply = if (isChannel) null else {
-                { replyTarget = target }
-            }
+                { item -> replyTarget = item }
+            },
+            onQuickReaction = if (isChannel) null else {
+                { item, emoji -> viewModel.sendReaction(chatJid, item, emoji) }
+            },
+            gallery = galleryItems,
+            senderDisplayNameFor = resolveSenderLabel
         )
     }
 
@@ -2120,11 +2189,11 @@ fun ChatScreen(
             initialCaption = draftValue.text.trim(),
             initialQualityMode = qualityMode,
             onDismiss = { pendingOutboundPreview = null },
-            onSend = { captionText, chosenQuality ->
+            onSend = { captionText, chosenQuality, isViewOnce ->
                 pendingOutboundPreview = null
                 qualityMode = chosenQuality
                 scrollToBottomPending = true
-                viewModel.sendStagedMedia(chatJid, staged, captionText, chosenQuality)
+                viewModel.sendStagedMedia(chatJid, staged, captionText, chosenQuality, isViewOnce)
                 draftValue = TextFieldValue("")
                 scope.launch { listState.animateScrollToItem(0) }
             }
@@ -2475,12 +2544,15 @@ private fun MessageBubbleRow(
                             )
                             .clip(RoundedCornerShape(10.dp))
                             .background(colors.quotedBg)
-                            .clickable {
-                                val targetId = msg.quotedId?.trim().orEmpty()
-                                if (targetId.isNotEmpty()) {
-                                    onClickQuoted(targetId)
-                                }
-                            }
+                            .combinedClickable(
+                                onClick = {
+                                    val targetId = msg.quotedId?.trim().orEmpty()
+                                    if (targetId.isNotEmpty()) {
+                                        onClickQuoted(targetId)
+                                    }
+                                },
+                                onLongClick = onLongPress
+                            )
                             .padding(horizontal = 8.dp, vertical = 6.dp)
                     ) {
                         Box(
@@ -2595,15 +2667,20 @@ private fun MessageBubbleRow(
                                     if (hasVaultFile) colors.pillActiveBg.copy(alpha = 0.55f)
                                     else Color.Transparent
                                 )
-                                .clickable {
-                                    if (!hasVaultFile) {
-                                        Toast.makeText(
-                                            context,
-                                            "View-Once media can only be opened in official WhatsApp",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                }
+                                .combinedClickable(
+                                    onClick = {
+                                        if (hasVaultFile) {
+                                            onOpenMedia()
+                                        } else {
+                                            Toast.makeText(
+                                                context,
+                                                "View-Once media can only be opened in official WhatsApp",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    },
+                                    onLongClick = onLongPress
+                                )
                                 .padding(horizontal = 4.dp, vertical = 3.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -2769,9 +2846,12 @@ private fun MessageBubbleRow(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(13.dp))
-                                .clickable {
-                                    if (localFile != null) onOpenMedia() else onRequestDownload()
-                                }
+                                .combinedClickable(
+                                    onClick = {
+                                        if (localFile != null) onOpenMedia() else onRequestDownload()
+                                    },
+                                    onLongClick = onLongPress
+                                )
                         ) {
                             if (localFile != null) {
                                 val loadedBmp = bmp

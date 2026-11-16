@@ -19,9 +19,10 @@ import java.io.File
         ProfileHistoryEntity::class,
         PrivacyRuleEntity::class,
         GroupReceiptEntity::class,
-        ContactEntity::class
+        ContactEntity::class,
+        MessageReactionEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 abstract class WaUiDatabase : RoomDatabase() {
@@ -64,6 +65,20 @@ abstract class WaUiDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `message_reactions` (`message_id` TEXT NOT NULL, " +
+                        "`actor` TEXT NOT NULL, `emoji` TEXT NOT NULL, `updated_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`message_id`, `actor`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_message_reactions_message_id` " +
+                        "ON `message_reactions` (`message_id`)"
+                )
+            }
+        }
+
         fun getInstance(context: Context): WaUiDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -71,7 +86,7 @@ abstract class WaUiDatabase : RoomDatabase() {
                     WaUiDatabase::class.java,
                     File(context.applicationContext.filesDir, "wa_ui.db").absolutePath
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
                     .addCallback(object : Callback() {
                         override fun onOpen(db: SupportSQLiteDatabase) {

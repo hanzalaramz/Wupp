@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.3.2-pre.3] - 2026-11-16
+
+### ✨ What's New
+- 🎨 **Custom Accent Colors (#33):** Pick custom accent swatches across all themes
+- 👁️ **Send View-Once Media (#52):** Toggle View-Once (`1`) before sending photos & videos
+- 🖼️ **Swipe Chat Gallery (#28):** Swipe through chat photos & videos in full-screen viewer
+- 🔎 **In-Chat Search Stepper (#29):** Jump between older & newer search matches in chat
+- 🔕 **Mute & Read Sync (#43, #45):** Two-way mute sync & unread reset when replying on phone
+- 🛠️ **Reactions & Media Fixes (#27, #31, #47, #51):** Reaction toggle/replace, media long-press, sentence caps & smooth wallpaper drag
+- 🔄 **Always-On Update Check:** Automatic GitHub update checks enabled by default
+
 ## [0.3.2-pre.2] - 2026-11-16
 
 ### ✨ What's New

@@ -227,6 +227,7 @@ func InitClient(filesDir string, callback NativeBridgeCallback) error {
 	cli.SetForceActiveDeliveryReceipts(false)
 	cli.EnableAutoReconnect = true
 	cli.AutoTrustIdentity = true
+	cli.EmitAppStateEventsOnFullSync = true
 
 	client = cli
 	cli.AddEventHandler(handleWhatsmeowEvent)
@@ -806,11 +807,13 @@ func SendMediaMessage(
 	}
 
 	var waMediaType whatsmeow.MediaType
-	modeLower := strings.ToLower(strings.TrimSpace(qualityMode))
+	rawMode := strings.ToLower(strings.TrimSpace(qualityMode))
+	isViewOnce := strings.Contains(rawMode, "viewonce") || strings.Contains(rawMode, "view_once")
+	modeLower := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(rawMode, ":viewonce"), "_viewonce"))
 	mimeLower := strings.ToLower(strings.TrimSpace(mimeType))
 
 	switch {
-	case modeLower == "original" && !strings.HasPrefix(mimeLower, "video/"):
+	case !isViewOnce && modeLower == "original" && !strings.HasPrefix(mimeLower, "video/"):
 		waMediaType = whatsmeow.MediaDocument
 	case isVoiceNote || strings.HasPrefix(mimeLower, "audio/"):
 		waMediaType = whatsmeow.MediaAudio
@@ -842,7 +845,15 @@ func SendMediaMessage(
 				FileEncSHA256: up.FileEncSHA256,
 				FileSHA256:    up.FileSHA256,
 				FileLength:    &up.FileLength,
+				ViewOnce:      proto.Bool(isViewOnce),
 			},
+		}
+		if isViewOnce {
+			msg = &waE2E.Message{
+				ViewOnceMessageV2: &waE2E.FutureProofMessage{
+					Message: msg,
+				},
+			}
 		}
 	case whatsmeow.MediaVideo:
 		sec := uint32(maxInt(durationSec, 0))
@@ -857,7 +868,15 @@ func SendMediaMessage(
 				FileEncSHA256: up.FileEncSHA256,
 				FileSHA256:    up.FileSHA256,
 				FileLength:    &up.FileLength,
+				ViewOnce:      proto.Bool(isViewOnce),
 			},
+		}
+		if isViewOnce {
+			msg = &waE2E.Message{
+				ViewOnceMessageV2: &waE2E.FutureProofMessage{
+					Message: msg,
+				},
+			}
 		}
 	case whatsmeow.MediaAudio:
 		sec := uint32(maxInt(durationSec, 1))
@@ -1498,6 +1517,59 @@ func avatarDownloadWorker() {
 	}
 }
 
+func emitStoredChatSettingsIfPresent(ctx context.Context, cli *whatsmeow.Client, rawJID types.JID) {
+	if cli == nil || cli.Store == nil || cli.Store.ChatSettings == nil || rawJID.IsEmpty() {
+		return
+	}
+	canon, alt := canonicalizeDMChatJID(ctx, cli, rawJID)
+	if canon.IsEmpty() {
+		canon = rawJID
+	}
+	settings, err := cli.Store.ChatSettings.GetChatSettings(ctx, rawJID)
+	if (err != nil || !settings.Found) && !alt.IsEmpty() {
+		settings, err = cli.Store.ChatSettings.GetChatSettings(ctx, alt)
+	}
+	if (err != nil || !settings.Found) && canon != rawJID {
+		settings, err = cli.Store.ChatSettings.GetChatSettings(ctx, canon)
+	}
+	if err != nil || !settings.Found {
+		return
+	}
+	now := time.Now()
+	muted := settings.MutedUntil.After(now)
+	var muteEndMs int64
+	if muted {
+		muteEndMs = settings.MutedUntil.UnixMilli()
+		if muteEndMs <= 0 {
+			muteEndMs = -1
+		}
+	}
+	emitJSON("CHAT_META_UPDATE", map[string]any{
+		"kind":    "MUTE",
+		"jid":     canon.String(),
+		"altJid":  alt.String(),
+		"muted":   muted,
+		"muteEnd": muteEndMs,
+	})
+	if settings.Pinned {
+		emitJSON("CHAT_META_UPDATE", map[string]any{
+			"kind":      "PIN",
+			"jid":       canon.String(),
+			"altJid":    alt.String(),
+			"pinned":    true,
+			"timestamp": now.UnixMilli(),
+		})
+	}
+	if settings.Archived {
+		emitJSON("CHAT_META_UPDATE", map[string]any{
+			"kind":     "ARCHIVE",
+			"jid":      canon.String(),
+			"altJid":   alt.String(),
+			"archived": true,
+		})
+	}
+}
+
 func SyncContactsAndAvatars(jidsCsv string) {
 	mu.Lock()
 	cli := client
@@ -1520,6 +1592,7 @@ func SyncContactsAndAvatars(jidsCsv string) {
 				continue
 			}
 			enqueueAvatarFetch(parsed)
+			emitStoredChatSettingsIfPresent(ctx, cli, parsed)
 			if parsed.Server != types.GroupServer && parsed.Server != types.NewsletterServer {
 				name, isCustom, alt := resolveBestContactName(ctx, cli, parsed)
 				if name != "" || !alt.IsEmpty() {
@@ -1623,6 +1696,7 @@ func SyncContactsAndAvatars(jidsCsv string) {
 				"onlyAdminsPost":    g.IsAnnounce && !isOwnGroupAdmin(cli, g),
 			})
 			enqueueAvatarFetch(g.JID)
+			emitStoredChatSettingsIfPresent(ctx, cli, g.JID)
 		}
 		if len(groups) > 0 {
 			emitJSON("GROUPS_SYNC_BATCH", map[string]any{
@@ -1668,6 +1742,7 @@ func SyncContactsAndAvatars(jidsCsv string) {
 					continue
 				}
 				enqueueAvatarFetch(cJid)
+				emitStoredChatSettingsIfPresent(ctx, cli, cJid)
 				batch = append(batch, map[string]any{
 					"jid":      cJid.String(),
 					"altJid":   alt.String(),
@@ -2500,9 +2575,18 @@ func handleWhatsmeowEvent(rawEvt any) {
 			muted = evt.Action.GetMuted()
 			muteEnd = evt.Action.GetMuteEndTimestamp()
 		}
+		mu.Lock()
+		mCli := client
+		mCtx := baseCtx
+		mu.Unlock()
+		canon, alt := canonicalizeDMChatJID(mCtx, mCli, evt.JID)
+		if canon.IsEmpty() {
+			canon = evt.JID
+		}
 		emitJSON("CHAT_META_UPDATE", map[string]any{
 			"kind":      "MUTE",
-			"jid":       evt.JID.String(),
+			"jid":       canon.String(),
+			"altJid":    alt.String(),
 			"muted":     muted,
 			"muteEnd":   muteEnd,
 			"timestamp": evt.Timestamp.UnixMilli(),
@@ -2513,9 +2597,18 @@ func handleWhatsmeowEvent(rawEvt any) {
 		if evt.Action != nil {
 			pinned = evt.Action.GetPinned()
 		}
+		mu.Lock()
+		pCli := client
+		pCtx := baseCtx
+		mu.Unlock()
+		canon, alt := canonicalizeDMChatJID(pCtx, pCli, evt.JID)
+		if canon.IsEmpty() {
+			canon = evt.JID
+		}
 		emitJSON("CHAT_META_UPDATE", map[string]any{
 			"kind":      "PIN",
-			"jid":       evt.JID.String(),
+			"jid":       canon.String(),
+			"altJid":    alt.String(),
 			"pinned":    pinned,
 			"timestamp": evt.Timestamp.UnixMilli(),
 		})
@@ -2525,9 +2618,18 @@ func handleWhatsmeowEvent(rawEvt any) {
 		if evt.Action != nil {
 			archived = evt.Action.GetArchived()
 		}
+		mu.Lock()
+		aCli := client
+		aCtx := baseCtx
+		mu.Unlock()
+		canon, alt := canonicalizeDMChatJID(aCtx, aCli, evt.JID)
+		if canon.IsEmpty() {
+			canon = evt.JID
+		}
 		emitJSON("CHAT_META_UPDATE", map[string]any{
 			"kind":      "ARCHIVE",
-			"jid":       evt.JID.String(),
+			"jid":       canon.String(),
+			"altJid":    alt.String(),
 			"archived":  archived,
 			"timestamp": evt.Timestamp.UnixMilli(),
 		})
@@ -2537,9 +2639,18 @@ func handleWhatsmeowEvent(rawEvt any) {
 		if evt.Action != nil {
 			read = evt.Action.GetRead()
 		}
+		mu.Lock()
+		rCli := client
+		rCtx := baseCtx
+		mu.Unlock()
+		canon, alt := canonicalizeDMChatJID(rCtx, rCli, evt.JID)
+		if canon.IsEmpty() {
+			canon = evt.JID
+		}
 		emitJSON("CHAT_META_UPDATE", map[string]any{
 			"kind":      "MARK_READ",
-			"jid":       evt.JID.String(),
+			"jid":       canon.String(),
+			"altJid":    alt.String(),
 			"read":      read,
 			"timestamp": evt.Timestamp.UnixMilli(),
 		})
@@ -4558,7 +4669,7 @@ func FetchNewsletterMessages(channelJid string) error {
 	return nil
 }
 
-// ToggleNewsletterMute mutes or unmutes a subscribed WhatsApp Channel.
+// ToggleNewsletterMute mutes or unmutes a subscribed WhatsApp Channel or regular chat/group via AppState.
 func ToggleNewsletterMute(channelJid string, muted bool) error {
 	mu.Lock()
 	cli := client
@@ -4567,19 +4678,45 @@ func ToggleNewsletterMute(channelJid string, muted bool) error {
 		return errors.New("client not connected")
 	}
 	parsed, err := types.ParseJID(strings.TrimSpace(channelJid))
-	if err != nil || parsed.Server != types.NewsletterServer {
-		return fmt.Errorf("invalid newsletter jid: %s", channelJid)
+	if err != nil || parsed.IsEmpty() {
+		return fmt.Errorf("invalid jid: %s", channelJid)
 	}
 	ctx, cancel := context.WithTimeout(baseCtx, 15*time.Second)
 	defer cancel()
-	if err := cli.NewsletterToggleMute(ctx, parsed, muted); err != nil {
-		return err
+	if parsed.Server == types.NewsletterServer {
+		if err := cli.NewsletterToggleMute(ctx, parsed, muted); err != nil {
+			return err
+		}
+		emitJSON("CHAT_META_UPDATE", map[string]any{
+			"kind":    "MUTE",
+			"jid":     parsed.String(),
+			"muted":   muted,
+			"muteEnd": int64(0),
+		})
+		return nil
+	}
+	canon, alt := canonicalizeDMChatJID(ctx, cli, parsed)
+	if canon.IsEmpty() {
+		canon = parsed
+	}
+	muteDur := 365 * 24 * time.Hour
+	appErr := cli.SendAppState(ctx, appstate.BuildMute(canon, muted, muteDur))
+	if !alt.IsEmpty() && alt != canon {
+		_ = cli.SendAppState(ctx, appstate.BuildMute(alt, muted, muteDur))
+	}
+	if appErr != nil {
+		return appErr
+	}
+	var muteEndMs int64
+	if muted {
+		muteEndMs = time.Now().Add(muteDur).UnixMilli()
 	}
 	emitJSON("CHAT_META_UPDATE", map[string]any{
 		"kind":    "MUTE",
-		"jid":     parsed.String(),
+		"jid":     canon.String(),
+		"altJid":  alt.String(),
 		"muted":   muted,
-		"muteEnd": int64(0),
+		"muteEnd": muteEndMs,
 	})
 	return nil
 }
