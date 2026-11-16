@@ -183,6 +183,8 @@ dependencies {
     implementation("com.airbnb.android:lottie-compose:6.4.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("com.google.zxing:core:3.5.3")
+    implementation("io.github.kyant0:backdrop:2.0.1")
+    implementation("io.github.kyant0:shapes:1.2.1")
 
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.13.0")
 

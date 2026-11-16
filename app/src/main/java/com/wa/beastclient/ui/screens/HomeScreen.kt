@@ -217,6 +217,7 @@ import com.wa.beastclient.ui.components.ReactionEmojiCustomizerDialog
 import com.wa.beastclient.ui.components.ThemePickerDialog
 import com.wa.beastclient.ui.components.ThemeSelectorGrid
 import com.wa.beastclient.ui.components.WallpaperPickerDialog
+import com.wa.beastclient.ui.components.WuppGlassContainer
 import com.wa.beastclient.ui.components.WuppGlassNavBar
 import com.wa.beastclient.ui.components.describeChatWallpaper
 import com.wa.beastclient.ui.components.expressivePressScale
@@ -225,7 +226,6 @@ import com.wa.beastclient.ui.components.formatMessageClock
 import com.wa.beastclient.ui.components.launchDeviceAuthPrompt
 import com.wa.beastclient.ui.components.rememberWuppBackdropState
 import com.wa.beastclient.ui.components.wuppBackdropSource
-import com.wa.beastclient.ui.components.wuppGlassSurface
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
 import com.wa.beastclient.ui.theme.LocalWuppShowSeconds
@@ -1423,60 +1423,64 @@ private fun ChatsTabContent(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = bottomPadding)
     ) {
-        // Inline search bar (frosted glass or flat classic WhatsApp look)
+        // Inline search bar (Kyant0 Liquid Glass or flat classic WhatsApp look)
         item(key = "inline_search_bar") {
             val isClassicUi = com.wa.beastclient.ui.theme.LocalWuppClassicUi.current
-            Row(
+            WuppGlassContainer(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 6.dp)
-                    .height(48.dp)
-                    .wuppGlassSurface(
-                        colors = colors,
-                        shape = RoundedCornerShape(24.dp),
-                        elevation = 6.dp,
-                        alpha = if (colors.isDark) 0.78f else 0.92f,
-                        classicMode = isClassicUi
-                    )
-                    .padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .height(48.dp),
+                colors = colors,
+                shape = CircleShape,
+                elevation = 6.dp,
+                backdropState = null,
+                classicMode = isClassicUi,
+                contentAlignment = Alignment.CenterStart
             ) {
-                Icon(
-                    painter = painterResource(R.drawable.vec_ic_search),
-                    contentDescription = "Search",
-                    tint = colors.textSecondary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                BasicTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchChange,
-                    singleLine = true,
-                    textStyle = TextStyle(color = colors.textPrimary, fontSize = 15.5.sp),
-                    cursorBrush = SolidColor(colors.brightGreen),
-                    decorationBox = { innerTextField ->
-                        if (searchQuery.isEmpty()) {
-                            Text(
-                                text = stringResource(R.string.home_search_placeholder),
-                                color = colors.textSecondary,
-                                fontSize = 15.5.sp
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.vec_ic_search),
+                        contentDescription = "Search",
+                        tint = colors.textSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = onSearchChange,
+                        singleLine = true,
+                        textStyle = TextStyle(color = colors.textPrimary, fontSize = 15.5.sp),
+                        cursorBrush = SolidColor(colors.brightGreen),
+                        decorationBox = { innerTextField ->
+                            if (searchQuery.isEmpty()) {
+                                Text(
+                                    text = stringResource(R.string.home_search_placeholder),
+                                    color = colors.textSecondary,
+                                    fontSize = 15.5.sp
+                                )
+                            }
+                            innerTextField()
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(
+                            onClick = { onSearchChange("") },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "Clear search",
+                                tint = colors.textSecondary,
+                                modifier = Modifier.size(18.dp)
                             )
                         }
-                        innerTextField()
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-                if (searchQuery.isNotEmpty()) {
-                    IconButton(
-                        onClick = { onSearchChange("") },
-                        modifier = Modifier.size(28.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Close,
-                            contentDescription = "Clear search",
-                            tint = colors.textSecondary,
-                            modifier = Modifier.size(18.dp)
-                        )
                     }
                 }
             }

@@ -1194,10 +1194,15 @@ fun ChatScreen(
                                     targetScale = 0.92f
                                 )
                             ) {
-                                Surface(
+                                WuppGlassContainer(
                                     shape = RoundedCornerShape(24.dp),
-                                    color = if (colors.isDark) Color(0xFF233138) else Color.White,
-                                    shadowElevation = 10.dp,
+                                    colors = colors,
+                                    elevation = 12.dp,
+                                    backdropState = wallpaperBackdropState,
+                                    blurRadius = 10.dp,
+                                    refractionHeight = 12.dp,
+                                    refractionAmount = 20.dp,
+                                    classicMode = stealthConfig.classicWhatsAppLook,
                                     modifier = Modifier.padding(bottom = 8.dp)
                                 ) {
                                     Column(
@@ -1235,10 +1240,16 @@ fun ChatScreen(
                                     }
                                 }
                             }
-                            Surface(
+                            WuppGlassContainer(
                                 shape = RoundedCornerShape(28.dp),
-                                color = if (colors.isDark) Color(0xFF233138) else Color.White,
-                                shadowElevation = 10.dp
+                                colors = colors,
+                                elevation = 12.dp,
+                                backdropState = wallpaperBackdropState,
+                                blurRadius = 8.dp,
+                                refractionHeight = 12.dp,
+                                refractionAmount = 22.dp,
+                                chromaticAberration = true,
+                                classicMode = stealthConfig.classicWhatsAppLook
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -1298,24 +1309,29 @@ fun ChatScreen(
                 }
 
                 if (showScrollToBottom && actionMenuTarget == null) {
-                    Surface(
-                        onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                    WuppGlassContainer(
                         shape = CircleShape,
-                        color = colors.elevatedBar,
-                        shadowElevation = 6.dp,
+                        colors = colors,
+                        elevation = 10.dp,
+                        backdropState = wallpaperBackdropState,
+                        blurRadius = 8.dp,
+                        refractionHeight = 10.dp,
+                        refractionAmount = 18.dp,
+                        classicMode = stealthConfig.classicWhatsAppLook,
+                        contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
                             .padding(end = 12.dp, bottom = 12.dp)
-                            .size(38.dp)
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .clickable { scope.launch { listState.animateScrollToItem(0) } }
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Rounded.KeyboardArrowDown,
-                                contentDescription = "Scroll to latest message",
-                                tint = colors.textSecondary,
-                                modifier = Modifier.size(24.dp)
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Rounded.KeyboardArrowDown,
+                            contentDescription = "Scroll to latest message",
+                            tint = colors.textPrimary,
+                            modifier = Modifier.size(24.dp)
+                        )
                     }
                 }
                 }
@@ -1346,17 +1362,18 @@ fun ChatScreen(
                     enter = fadeIn(trayMotion.fastEffectsSpec()) + slideInVertically(trayMotion.fastSpatialSpec()) { it / 4 },
                     exit = fadeOut(trayMotion.fastEffectsSpec()) + slideOutVertically(trayMotion.fastSpatialSpec()) { it / 4 }
                 ) {
-                    Surface(
+                    WuppGlassContainer(
                         shape = RoundedCornerShape(24.dp),
-                        color = colors.elevatedBar,
+                        colors = colors,
+                        elevation = 12.dp,
+                        backdropState = wallpaperBackdropState,
+                        blurRadius = 10.dp,
+                        refractionHeight = 12.dp,
+                        refractionAmount = 22.dp,
+                        classicMode = stealthConfig.classicWhatsAppLook,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 10.dp, vertical = 4.dp)
-                            .border(
-                                width = 1.dp,
-                                color = if (colors.isDark) Color.White.copy(alpha = 0.08f) else colors.divider,
-                                shape = RoundedCornerShape(24.dp)
-                            )
                     ) {
                         Column(
                             modifier = Modifier.padding(14.dp),

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.3.2-pre.1] - 2026-11-16
+
+### ✨ What's New
+- 🫧 **Kyant0 Liquid Glass:** Optical lens refraction, vibrancy & specular rim across glass UI
+- 🧭 **Scrubbable Nav Capsule:** Spring-animated optical lens pill with horizontal scrub gesture
+- 💬 **Refractive Chat Overlays:** Liquid Glass composer, reply banner, reactions, tray & scroll button
+- 🧹 **Legacy Glass Removed:** Replaced all custom frosted glass helpers while preserving Classic mode
+
 ## [0.3.1] - 2026-11-16
 
 ### ✨ What's New
