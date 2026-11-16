@@ -1,6 +1,9 @@
 package com.wa.beastclient.ui
 
 import com.wa.beastclient.data.db.ChatEntity
+import com.wa.beastclient.ui.screens.resolveHomeTabOrder
+import com.wa.beastclient.ui.screens.resolvePagerIndexForTab
+import com.wa.beastclient.ui.screens.resolveTabIdForPagerIndex
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -38,5 +41,22 @@ class HomeTabFilterTest {
 
         val groupsUnread = filterHomeThreads(sampleList, HomeFilterChip.UNREAD, query = "dev", hideLocked = false, groupFilter = true)
         assertEquals(listOf(grp1), groupsUnread)
+    }
+
+    @Test
+    fun homeTabPagerMapping_handlesUnifiedAndSeparatedLayouts() {
+        val unified = resolveHomeTabOrder(separateGroupsAndChats = false)
+        assertEquals(listOf(0, 1, 2, 3), unified)
+        assertEquals(1, resolvePagerIndexForTab(unified, 1))
+        assertEquals(0, resolvePagerIndexForTab(unified, 4))
+        assertEquals(2, resolveTabIdForPagerIndex(unified, 2))
+        assertEquals(0, resolveTabIdForPagerIndex(unified, 99))
+
+        val separated = resolveHomeTabOrder(separateGroupsAndChats = true)
+        assertEquals(listOf(0, 4, 1, 2, 3), separated)
+        assertEquals(1, resolvePagerIndexForTab(separated, 4))
+        assertEquals(2, resolvePagerIndexForTab(separated, 1))
+        assertEquals(4, resolveTabIdForPagerIndex(separated, 1))
+        assertEquals(3, resolveTabIdForPagerIndex(separated, 4))
     }
 }

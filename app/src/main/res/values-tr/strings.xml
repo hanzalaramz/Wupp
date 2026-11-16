@@ -46,6 +46,14 @@
     <string name="chat_action_archive">Yerel olarak arşivle</string>
     <string name="chat_action_unarchive">Arşivden çıkar</string>
     <string name="chat_action_delete_local">Yerel kopyayı sil</string>
+    <string name="chat_peek_open">Aç</string>
+    <string name="chat_peek_mark_read">Okundu olarak işaretle</string>
+    <string name="chat_peek_mark_unread">Okunmadı olarak işaretle</string>
+    <string name="chat_peek_add_favorite">Favorilere ekle</string>
+    <string name="chat_peek_remove_favorite">Favorilerden çıkar</string>
+    <string name="chat_peek_select">Seç</string>
+    <string name="chat_peek_delete">Sil</string>
+    <string name="chat_peek_group_badge">Grup</string>
     <string name="chat_input_placeholder">Mesaj</string>
     <string name="chat_announce_only_hint">Yalnızca yöneticiler mesaj gönderebilir</string>
     <string name="chat_no_messages">Bu sohbette henüz senkronize mesaj yok</string>

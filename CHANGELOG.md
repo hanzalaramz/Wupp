@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.3.2-pre.2] - 2026-11-16
+
+### ✨ What's New
+- 💬 **Chat Peek Popup (#49):** Long-press a chat for a live preview & Liquid Glass actions
+- 👉 **Swipe Navigation (#48):** Swipe horizontally between Chats, Groups, Updates, Communities & Settings
+- 🫧 **Blurred Peek Backdrop:** Smooth iOS-style background blur & spring animation while peeking
+
 ## [0.3.2-pre.1] - 2026-11-16
 
 ### ✨ What's New

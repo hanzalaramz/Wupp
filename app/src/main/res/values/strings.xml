@@ -45,6 +45,14 @@
     <string name="chat_action_archive">Archive locally</string>
     <string name="chat_action_unarchive">Unarchive chat</string>
     <string name="chat_action_delete_local">Delete local copy</string>
+    <string name="chat_peek_open">Open</string>
+    <string name="chat_peek_mark_read">Mark as read</string>
+    <string name="chat_peek_mark_unread">Mark as unread</string>
+    <string name="chat_peek_add_favorite">Add to Favorites</string>
+    <string name="chat_peek_remove_favorite">Remove from Favorites</string>
+    <string name="chat_peek_select">Select</string>
+    <string name="chat_peek_delete">Delete</string>
+    <string name="chat_peek_group_badge">Group</string>
     <string name="chat_input_placeholder">Message</string>
     <string name="chat_announce_only_hint">Only admins can send messages</string>
     <string name="chat_no_messages">No messages synced in this chat yet</string>

@@ -3,6 +3,10 @@ package com.wa.beastclient.ui.screens
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -43,6 +47,10 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -211,6 +219,7 @@ import com.wa.beastclient.ui.components.partitionOwnAndContactStatuses
 import com.wa.beastclient.ui.components.GitHubFeedbackDialog
 import com.wa.beastclient.ui.components.GitHubFeedbackType
 import com.wa.beastclient.ui.MainViewModel
+import com.wa.beastclient.ui.components.ChatPeekPopupOverlay
 import com.wa.beastclient.ui.components.DeliveryTickIcon
 import com.wa.beastclient.ui.components.QuickContactDialog
 import com.wa.beastclient.ui.components.ReactionEmojiCustomizerDialog
@@ -238,7 +247,19 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+
+/** Returns the bottom-bar tab IDs in swipeable left-to-right order. */
+internal fun resolveHomeTabOrder(separateGroupsAndChats: Boolean): List<Int> =
+    if (separateGroupsAndChats) listOf(0, 4, 1, 2, 3) else listOf(0, 1, 2, 3)
+
+internal fun resolvePagerIndexForTab(tabOrder: List<Int>, tabId: Int): Int =
+    tabOrder.indexOf(tabId).let { if (it >= 0) it else 0 }
+
+internal fun resolveTabIdForPagerIndex(tabOrder: List<Int>, pageIndex: Int): Int =
+    tabOrder.getOrElse(pageIndex) { tabOrder.firstOrNull() ?: 0 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -328,6 +349,15 @@ fun HomeScreen(
     var selectedChatJids by remember { mutableStateOf(setOf<String>()) }
     var selectionOverflowExpanded by remember { mutableStateOf(false) }
     var pendingDeleteJids by remember { mutableStateOf<List<String>>(emptyList()) }
+    var peekChatTarget by remember { mutableStateOf<ChatEntity?>(null) }
+    val peekChat = remember(peekChatTarget, allChats) {
+        peekChatTarget?.let { target -> allChats.firstOrNull { it.jid == target.jid } ?: target }
+    }
+    var lastPeekChat by remember { mutableStateOf<ChatEntity?>(null) }
+    LaunchedEffect(peekChat) {
+        if (peekChat != null) lastPeekChat = peekChat
+    }
+    val haptics = LocalHapticFeedback.current
 
     val hostActivity = remember(context) { context.findFragmentActivity() }
     val lockedDeviceAuthLauncher = rememberLauncherForActivityResult(
@@ -379,6 +409,9 @@ fun HomeScreen(
     }
 
     LaunchedEffect(currentTab) {
+        if (peekChatTarget != null) {
+            peekChatTarget = null
+        }
         if (selectedChatJids.isNotEmpty()) {
             selectedChatJids = emptySet()
             selectionOverflowExpanded = false
@@ -388,14 +421,29 @@ fun HomeScreen(
         }
     }
 
+    BackHandler(enabled = peekChat != null) {
+        peekChatTarget = null
+    }
+
     BackHandler(enabled = selectedChatJids.isNotEmpty()) {
         selectedChatJids = emptySet()
         selectionOverflowExpanded = false
     }
 
     val backdropState = rememberWuppBackdropState()
+    val peekBackgroundBlur by animateDpAsState(
+        targetValue = if (peekChat != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !stealth.classicWhatsAppLook) {
+            14.dp
+        } else {
+            0.dp
+        },
+        animationSpec = tween(durationMillis = 180),
+        label = "home_peek_blur"
+    )
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
+        modifier = if (peekBackgroundBlur > 0.dp) Modifier.blur(peekBackgroundBlur) else Modifier,
         containerColor = colors.appSurface,
         topBar = {
             val motionScheme = MaterialTheme.motionScheme
@@ -833,7 +881,6 @@ fun HomeScreen(
         }
     ) { innerPadding ->
         val contentBottomPad = innerPadding.calculateBottomPadding() + 14.dp
-        val motionScheme = MaterialTheme.motionScheme
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -842,47 +889,67 @@ fun HomeScreen(
                 .background(colors.appSurface)
         ) {
             val tabOrder = remember(stealth.separateGroupsAndChats) {
-                if (stealth.separateGroupsAndChats) listOf(0, 4, 1, 2, 3) else listOf(0, 1, 2, 3)
+                resolveHomeTabOrder(stealth.separateGroupsAndChats)
             }
-            AnimatedContent(
-                targetState = currentTab,
-                transitionSpec = {
-                    val forward = tabOrder.indexOf(targetState) >= tabOrder.indexOf(initialState)
-                    (slideInHorizontally(
-                        animationSpec = motionScheme.defaultSpatialSpec()
-                    ) { width -> if (forward) width / 5 else -width / 5 } + fadeIn(
-                        animationSpec = motionScheme.fastEffectsSpec()
-                    )) togetherWith (slideOutHorizontally(
-                        animationSpec = motionScheme.defaultSpatialSpec()
-                    ) { width -> if (forward) -width / 6 else width / 6 } + fadeOut(
-                        animationSpec = motionScheme.fastEffectsSpec()
-                    ))
-                },
-                label = "home_tab_transition"
-            ) { tabIndex ->
-                val toggleSelection: (ChatEntity) -> Unit = { chat ->
-                    selectedChatJids = if (chat.jid in selectedChatJids) {
-                        selectedChatJids - chat.jid
-                    } else {
-                        selectedChatJids + chat.jid
+            val pagerState = rememberPagerState(
+                initialPage = resolvePagerIndexForTab(tabOrder, currentTab),
+                pageCount = { tabOrder.size }
+            )
+            val latestTabOrder by rememberUpdatedState(tabOrder)
+            val latestCurrentTab by rememberUpdatedState(currentTab)
+            val latestOnSelectTab by rememberUpdatedState(onSelectTab)
+
+            LaunchedEffect(pagerState) {
+                snapshotFlow { pagerState.settledPage }
+                    .distinctUntilChanged()
+                    .drop(1)
+                    .collect { settled ->
+                        val resolvedTab = resolveTabIdForPagerIndex(latestTabOrder, settled)
+                        if (resolvedTab != latestCurrentTab) {
+                            latestOnSelectTab(resolvedTab)
+                        }
                     }
+            }
+
+            LaunchedEffect(currentTab, tabOrder) {
+                val targetPage = resolvePagerIndexForTab(tabOrder, currentTab)
+                if (pagerState.currentPage != targetPage && pagerState.targetPage != targetPage) {
+                    pagerState.animateScrollToPage(targetPage)
                 }
-                val handleAvatarClick: (ChatEntity) -> Unit = { chat ->
-                    if (selectedChatJids.isNotEmpty()) toggleSelection(chat) else quickContactTarget = chat
+            }
+
+            val toggleSelection: (ChatEntity) -> Unit = { chat ->
+                selectedChatJids = if (chat.jid in selectedChatJids) {
+                    selectedChatJids - chat.jid
+                } else {
+                    selectedChatJids + chat.jid
                 }
-                val handleChatClick: (ChatEntity) -> Unit = { chat ->
-                    if (selectedChatJids.isNotEmpty()) toggleSelection(chat) else onOpenChat(chat.jid)
+            }
+            val handleAvatarClick: (ChatEntity) -> Unit = { chat ->
+                if (selectedChatJids.isNotEmpty()) toggleSelection(chat) else quickContactTarget = chat
+            }
+            val handleChatClick: (ChatEntity) -> Unit = { chat ->
+                if (selectedChatJids.isNotEmpty()) toggleSelection(chat) else onOpenChat(chat.jid)
+            }
+            val revealIfLockedFilter: (HomeFilterChip) -> Unit = { chip ->
+                if (chip == HomeFilterChip.LOCKED &&
+                    appLockConfig.hideLockedChatsBehindLock &&
+                    !lockedChatsRevealed
+                ) {
+                    requestRevealLockedChats()
                 }
-                val revealIfLockedFilter: (HomeFilterChip) -> Unit = { chip ->
-                    if (chip == HomeFilterChip.LOCKED &&
-                        appLockConfig.hideLockedChatsBehindLock &&
-                        !lockedChatsRevealed
-                    ) {
-                        requestRevealLockedChats()
-                    }
-                }
-                when (tabIndex) {
+            }
+
+            HorizontalPager(
+                state = pagerState,
+                beyondViewportPageCount = 1,
+                userScrollEnabled = selectedChatJids.isEmpty() && peekChat == null,
+                key = { pageIndex -> resolveTabIdForPagerIndex(tabOrder, pageIndex) },
+                modifier = Modifier.fillMaxSize()
+            ) { pageIndex ->
+                when (resolveTabIdForPagerIndex(tabOrder, pageIndex)) {
                     0, 4 -> {
+                        val tabIndex = resolveTabIdForPagerIndex(tabOrder, pageIndex)
                         val isGroupsTab = tabIndex == 4 && stealth.separateGroupsAndChats
                         val tabGroupFilterMode: Boolean? = when {
                             isGroupsTab -> true
@@ -921,7 +988,14 @@ fun HomeScreen(
                             onSeedShowcase = { viewModel.seedShowcaseData() },
                             onAvatarClick = handleAvatarClick,
                             onChatClick = handleChatClick,
-                            onChatLongClick = toggleSelection
+                            onChatLongClick = { chat ->
+                                if (selectedChatJids.isNotEmpty()) {
+                                    toggleSelection(chat)
+                                } else {
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    peekChatTarget = chat
+                                }
+                            }
                         )
                     }
 
@@ -957,6 +1031,41 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    AnimatedVisibility(
+        visible = peekChat != null,
+        enter = fadeIn(animationSpec = tween(durationMillis = 180)),
+        exit = fadeOut(animationSpec = tween(durationMillis = 140))
+    ) {
+        lastPeekChat?.let { activePeek ->
+            val recentPeekMessages by remember(activePeek.jid) {
+                viewModel.observeRecentMessages(activePeek.jid, limit = 20)
+            }.collectAsState(initial = emptyList())
+            ChatPeekPopupOverlay(
+                chat = activePeek,
+                recentMessagesDescending = recentPeekMessages,
+                showSeconds = showSeconds,
+                backdropState = backdropState,
+                classicMode = stealth.classicWhatsAppLook,
+                onDismiss = { peekChatTarget = null },
+                onOpenChat = {
+                    val jid = activePeek.jid
+                    peekChatTarget = null
+                    onOpenChat(jid)
+                },
+                onToggleUnread = {
+                    viewModel.setChatsUnreadLocal(listOf(activePeek.jid), activePeek.unreadCount == 0)
+                },
+                onTogglePin = { viewModel.togglePinChat(activePeek) },
+                onToggleMute = { viewModel.muteChats(listOf(activePeek.jid), !activePeek.isMuted) },
+                onToggleFavorite = { viewModel.toggleFavoriteChat(activePeek) },
+                onToggleArchive = { viewModel.archiveChats(listOf(activePeek.jid), !activePeek.isArchived) },
+                onSelectChat = { selectedChatJids = setOf(activePeek.jid) },
+                onDeleteChat = { pendingDeleteJids = listOf(activePeek.jid) }
+            )
+        }
+    }
     }
 
     quickContactChat?.let { target ->

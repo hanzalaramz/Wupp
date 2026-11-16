@@ -301,6 +301,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun observeChat(chatJid: String): Flow<ChatEntity?> = dao.observeChat(chatJid)
 
+    fun observeRecentMessages(chatJid: String, limit: Int = 20): Flow<List<MessageEntity>> =
+        dao.observeRecentMessages(chatJid, limit)
+
     fun observeContact(jid: String): Flow<ContactEntity?> = dao.observeContact(jid)
 
     fun observeEffectivePrivacy(chatJid: String): Flow<EffectiveChatPrivacy> =
