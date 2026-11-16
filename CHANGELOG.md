@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-16
+
+### ✨ Features
+- 🫧 **Kyant0 Liquid Glass:** Optical lens refraction, vibrancy & specular rim across UI
+- 🧭 **Scrubbable Nav Capsule:** Spring-animated glass pill with horizontal scrub gesture
+- 💬 **Chat Peek Popup (#49):** Long-press chats for a blurred live preview & quick actions
+- 👉 **Swipe Navigation (#48):** Swipe horizontally across home bottom-bar categories
+- 🎨 **Custom Accent Colors (#33):** Pick custom accent swatches across all themes
+- 👁️ **Send View-Once Media (#52):** Toggle View-Once (`1`) before sending photos & videos
+- 🖼️ **Swipe Chat Gallery (#28):** Swipe between chat photos & videos in full-screen viewer
+- 🔎 **In-Chat Search Stepper (#29):** Jump between older & newer search matches in chat
+- 🔕 **Two-Way Mute Sync (#45):** Sync mute changes with WhatsApp & stored chat settings
+- 🔄 **Always-On Update Check:** Automatic GitHub update checks enabled by default
+
+### 🛠️ Fixes
+- 🖼️ **Media Viewer Crash:** Fixed `IndexOutOfBoundsException` when opening photos/videos
+- 😀 **Reactions (#27):** Per-user toggle/replace so reactions can be deselected cleanly
+- 📸 **Media Long-Press (#51):** Long-pressing photos, videos & quotes opens action menu
+- 🔢 **Unread Sync (#43):** Clear unread count when replying from primary WhatsApp
+- 🔡 **Sentence Caps (#47):** Enabled sentence capitalization by default in chat composer
+- 🖌️ **Wallpaper Drag (#31):** Smooth drag & pinch-to-zoom without gesture resets
+- 🧹 **Legacy Glass Removed:** Replaced old frosted helpers while preserving Classic mode
+
 ## [0.3.2-pre.4] - 2026-11-16
 
 ### 🛠️ Bug Fixes
