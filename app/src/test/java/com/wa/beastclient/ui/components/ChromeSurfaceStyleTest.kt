@@ -57,6 +57,8 @@ class ChromeSurfaceStyleTest {
         val singlePage = resolveLightboxPages(standalone, listOf(m1, m2, m3))
         assertEquals(listOf("vo"), singlePage.map { it.id })
         assertEquals(0, resolveLightboxStartIndex(singlePage, "vo"))
+        assertEquals("vo", resolveLightboxPageKey(singlePage, 0))
+        assertEquals("page_1", resolveLightboxPageKey(singlePage, 1))
     }
 }
 

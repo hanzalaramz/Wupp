@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.2-pre.4] - 2026-11-16
+
+### 🛠️ Bug Fixes
+- 🖼️ **Media Viewer Crash Fix:** Fixed `IndexOutOfBoundsException` when opening photos or videos and synced initial gallery page
+
 ## [0.3.2-pre.3] - 2026-11-16
 
 ### ✨ What's New

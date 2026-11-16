@@ -95,6 +95,9 @@ internal fun resolveLightboxPages(target: MessageEntity, gallery: List<MessageEn
 internal fun resolveLightboxStartIndex(pages: List<MessageEntity>, targetId: String): Int =
     pages.indexOfFirst { it.id == targetId }.coerceAtLeast(0)
 
+internal fun resolveLightboxPageKey(pages: List<MessageEntity>, index: Int): String =
+    pages.getOrNull(index)?.id ?: "page_$index"
+
 /** Largest side kept in memory for full-screen photos so big camera images never OOM. */
 private const val LIGHTBOX_MAX_BITMAP_SIDE = 2400
 
@@ -156,6 +159,16 @@ fun FullScreenMediaViewer(
         initialPage = resolveLightboxStartIndex(pages, msg.id),
         pageCount = { pages.size }
     )
+    var syncedInitialForGallery by remember(msg.id) { mutableStateOf(false) }
+    LaunchedEffect(msg.id, pages) {
+        if (!syncedInitialForGallery && gallery.any { it.id == msg.id }) {
+            val targetIdx = resolveLightboxStartIndex(pages, msg.id)
+            if (pagerState.currentPage != targetIdx) {
+                pagerState.scrollToPage(targetIdx)
+            }
+            syncedInitialForGallery = true
+        }
+    }
     val current = pages.getOrElse(pagerState.currentPage) { msg }
     val mediaFile = remember(current.id, current.localMediaPath) {
         current.localMediaPath?.takeIf { it.isNotBlank() }?.let { path ->
@@ -195,10 +208,11 @@ fun FullScreenMediaViewer(
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
-                key = { index -> pages[index].id }
+                key = { index -> resolveLightboxPageKey(pages, index) }
             ) { pageIndex ->
+                val pageMsg = pages.getOrElse(pageIndex) { msg }
                 MediaLightboxPage(
-                    msg = pages[pageIndex],
+                    msg = pageMsg,
                     isActivePage = pagerState.settledPage == pageIndex,
                     showChrome = showChrome,
                     onToggleChrome = { showChrome = !showChrome }
