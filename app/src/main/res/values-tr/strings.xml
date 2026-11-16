@@ -82,7 +82,7 @@
     <string name="applock_overlay_pin_hint">Wupp PIN kodunuzu girin. Kilitliyken arka plan senkronizasyonu aktif kalır.</string>
     <string name="applock_unlock_button">Cihaz Kilidi ile Aç</string>
     <string name="applock_config_title">Uygulama Kilidi ve Gizlilik</string>
-    <string name="applock_config_subtitle">Sıfır WhatsApp ban riski ile yalnızca cihaz içi koruma. Gerçek zamanlı senkronizasyon arka planda açık kalır.</string>
+    <string name="applock_config_subtitle">Yalnızca cihaz içi koruma. Gerçek zamanlı senkronizasyon arka planda açık kalır.</string>
     <string name="applock_mode_label">Kilit Yöntemi</string>
     <string name="applock_mode_off">Kapalı</string>
     <string name="applock_mode_device">Cihaz Kilidi (Biyometrik / Ekran Kilidi)</string>
@@ -113,8 +113,8 @@
     <string name="settings_section_security">GÜVENLİK VE KİLİT</string>
     <string name="settings_applock_row_title">Uygulama Kilidi ve Kilitli Sohbetler</string>
     <string name="settings_applock_row_subtitle_off">Kapalı · Cihaz Kilidi veya Özel PIN ayarlamak için dokun</string>
-    <string name="settings_applock_row_subtitle_device">Cihaz Kilidi aktif · Sıfır hesap riski</string>
-    <string name="settings_applock_row_subtitle_pin">Özel PIN aktif · Sıfır hesap riski</string>
+    <string name="settings_applock_row_subtitle_device">Cihaz Kilidi aktif · Yerel koruma</string>
+    <string name="settings_applock_row_subtitle_pin">Özel PIN aktif · Yerel koruma</string>
     <string name="settings_lock_now_title">Wupp\'ı Şimdi Kilitle</string>
     <string name="settings_lock_now_subtitle">Kilit ekranını hemen göster</string>
 
@@ -128,7 +128,7 @@
     <string name="settings_reactions_subtitle">Sohbetlerde görünen 7 hızlı tepki emojisini özelleştirin</string>
     <string name="settings_language_title">Uygulama Dili</string>
 
-    <string name="settings_section_looks">GÖRÜNÜM AYARLARI (RİSKSİZ)</string>
+    <string name="settings_section_looks">GÖRÜNÜM AYARLARI</string>
     <string name="settings_look_vertical_status_title">Dikey Durum Düzeni</string>
     <string name="settings_look_vertical_status_subtitle">Güncellemeler sekmesinde durumları yatay kartlar yerine dikey liste halinde gösterir</string>
     <string name="settings_look_always_bio_title">Önbellekteki Hakkında\'yı Her Zaman Göster</string>
@@ -173,7 +173,7 @@
     <string name="status_composer_placeholder">Bir durum yazın…</string>
     <string name="status_composer_share_wa">WhatsApp\'ta Paylaş</string>
     <string name="status_composer_pick_media">Fotoğraf veya video seç</string>
-    <string name="status_composer_zero_risk_note">Durumum\'a eklemek için resmi WhatsApp\'ı açar — %0 hesap riski.</string>
+    <string name="status_composer_zero_risk_note">Durumum\'a eklemek için resmi WhatsApp\'ı açar.</string>
     <string name="status_composer_no_wa_fallback">WhatsApp doğrudan açılamadı; paylaşım menüsünden seçin.</string>
 
     <!-- Message Delete & Anti-Delete Device Removal (#37) -->

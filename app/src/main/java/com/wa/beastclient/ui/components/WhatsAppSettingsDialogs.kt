@@ -376,7 +376,7 @@ fun WhatsAppAccountPrivacyDialog(
                         )
                         Text(
                             text = if (state.syncSupported) {
-                                "Synced directly with your WhatsApp account (Very Low Risk)."
+                                "Synced directly with your WhatsApp account."
                             } else {
                                 "Server privacy controls activate once whatsbridge.aar is rebuilt."
                             },

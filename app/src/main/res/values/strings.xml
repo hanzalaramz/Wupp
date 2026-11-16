@@ -81,7 +81,7 @@
     <string name="applock_overlay_pin_hint">Enter your Wupp PIN. Background sync stays active while locked.</string>
     <string name="applock_unlock_button">Unlock with Device Lock</string>
     <string name="applock_config_title">App Lock &amp; Privacy</string>
-    <string name="applock_config_subtitle">Local-only protection with zero WhatsApp flag risk. Realtime sync stays connected in the background.</string>
+    <string name="applock_config_subtitle">Local on-device protection. Realtime sync stays connected in the background.</string>
     <string name="applock_mode_label">Lock Method</string>
     <string name="applock_mode_off">Off</string>
     <string name="applock_mode_device">Device Lock (Biometric / Screen Lock)</string>
@@ -112,8 +112,8 @@
     <string name="settings_section_security">SECURITY &amp; LOCK</string>
     <string name="settings_applock_row_title">App Lock &amp; Locked Chats</string>
     <string name="settings_applock_row_subtitle_off">Disabled · Tap to set Device Lock or Custom PIN</string>
-    <string name="settings_applock_row_subtitle_device">Device Lock active · Zero flag risk</string>
-    <string name="settings_applock_row_subtitle_pin">Custom PIN active · Zero flag risk</string>
+    <string name="settings_applock_row_subtitle_device">Device Lock active · Local protection</string>
+    <string name="settings_applock_row_subtitle_pin">Custom PIN active · Local protection</string>
     <string name="settings_lock_now_title">Lock Wupp Now</string>
     <string name="settings_lock_now_subtitle">Immediately show lock screen</string>
 
@@ -127,7 +127,7 @@
     <string name="settings_reactions_subtitle">Customize the 7 fast-react emojis shown in chats</string>
     <string name="settings_language_title">App Language</string>
 
-    <string name="settings_section_looks">CUSTOMIZE LOOKS (ZERO RISK)</string>
+    <string name="settings_section_looks">CUSTOMIZE LOOKS</string>
     <string name="settings_look_vertical_status_title">Vertical Status Layout</string>
     <string name="settings_look_vertical_status_subtitle">Display Updates status list vertically instead of horizontal cards</string>
     <string name="settings_look_always_bio_title">Always Show Cached Bio</string>
@@ -172,7 +172,7 @@
     <string name="status_composer_placeholder">Type a status…</string>
     <string name="status_composer_share_wa">Post in WhatsApp</string>
     <string name="status_composer_pick_media">Choose photo or video</string>
-    <string name="status_composer_zero_risk_note">Opens official WhatsApp to post to My Status — 0% companion flag risk.</string>
+    <string name="status_composer_zero_risk_note">Opens official WhatsApp to post cleanly to My Status.</string>
     <string name="status_composer_no_wa_fallback">WhatsApp could not be opened directly; choose it from the share sheet.</string>
 
     <!-- Message Delete & Anti-Delete Device Removal (#37) -->
