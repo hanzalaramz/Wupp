@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-16
+
+### ✨ What's New
+- 😄 **Emoji Picker Dock (#26):** In-app emoji search & keyboard toggle
+- 📄 **PDF & Docs (#42, #38):** Page preview cards & native PDF viewer
+- 🎬 **Outbound Video (#40):** Video sending, preview dialog & HD mode
+- ⭕ **Status Fixes (#39):** Swipe down to close, My Status & composer
+- 🗂️ **Groups & Channels (#41):** Separate Groups tab & Hide Channels toggle
+- 🗑️ **Anti-Delete Removal (#37):** Confirm Delete for me & device wipe
+- 💬 **Quote Jump (#34):** Tap a quoted reply to scroll to the original
+- ⚙️ **Ported Settings (#36):** Account privacy, profile, blocklist, alerts & cache
+- 🎨 **Classic Theme (#30):** Flat WhatsApp look across bars & chat box
+
 ## [0.3.1-pre.1] - 2026-11-16
 
 ✨ Outbound video & pre-send preview, native PDF/document viewer, in-app emoji dock, WhatsApp Settings ports, and major status, quote-jump, and delete fixes.
