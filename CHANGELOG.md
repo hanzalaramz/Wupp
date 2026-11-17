@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### ✨ Features
+- 🧭 **Fluid Nav Animation (#67):** Liquid stretch-and-settle jelly physics for floating bottom navigation pill
+
 ## [0.3.3-pre.1] - 2026-11-17
 
 ### 🛠️ Fixes & Features

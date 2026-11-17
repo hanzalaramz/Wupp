@@ -231,6 +231,22 @@ private data class GlassNavTab(
     val badgeCount: Int = 0
 )
 
+internal fun computeLiquidNavSpan(left: Float, right: Float): Float {
+    return (right - left).coerceIn(0.85f, 2.5f)
+}
+
+internal fun computeLiquidNavSquash(span: Float): Float {
+    val stretchFraction = (span - 1f).coerceIn(0f, 0.7f)
+    return 1f - (stretchFraction * 0.16f)
+}
+
+internal fun computeLiquidNavBounds(tabWidth: Dp, left: Float, right: Float, maxWidth: Dp): Pair<Dp, Dp> {
+    val indicatorOffset = (tabWidth * left).coerceAtLeast(0.dp)
+    val span = computeLiquidNavSpan(left, right)
+    val indicatorWidth = (tabWidth * span).coerceAtMost(maxWidth - indicatorOffset)
+    return Pair(indicatorOffset, indicatorWidth)
+}
+
 /**
  * Floating Liquid Glass bottom navigation pill inspired by Kyant0's LiquidBottomTabs:
  * - Outer refractive Capsule bar over live scrolled content
@@ -378,7 +394,9 @@ fun WuppGlassNavBar(
 
     var isScrubbing by remember { mutableStateOf(false) }
     var scrubFraction by remember { mutableFloatStateOf(activePosition.toFloat()) }
-    val animatedIndex = remember { Animatable(activePosition.toFloat()) }
+    val leftEdge = remember { Animatable(activePosition.toFloat()) }
+    val rightEdge = remember { Animatable((activePosition + 1).toFloat()) }
+
     val pressProgress by animateFloatAsState(
         targetValue = if (isScrubbing) 1f else 0f,
         animationSpec = spring(dampingRatio = 0.72f, stiffness = 500f),
@@ -390,13 +408,60 @@ fun WuppGlassNavBar(
         label = "liquid_nav_lens_scale"
     )
 
+    // Liquid stretch-and-settle animation (#67):
+    // When moving forward, the leading right edge springs ahead quickly while the trailing left edge follows with a softer spring.
+    // When moving backward, the leading left edge springs ahead first while the trailing right edge follows.
+    // This creates an organic jelly stretch in transit that cleanly contracts and settles back at the destination.
     LaunchedEffect(activePosition, isScrubbing) {
         if (!isScrubbing) {
             scrubFraction = activePosition.toFloat()
-            animatedIndex.animateTo(
-                targetValue = activePosition.toFloat(),
-                animationSpec = spring(dampingRatio = 0.74f, stiffness = 420f)
-            )
+            val targetLeft = activePosition.toFloat()
+            val targetRight = (activePosition + 1).toFloat()
+            val currentLeft = leftEdge.value
+
+            if (targetLeft > currentLeft + 0.001f) {
+                // Moving forward: right edge leads with brisk spring, left edge follows with softer spring
+                launch {
+                    rightEdge.animateTo(
+                        targetValue = targetRight,
+                        animationSpec = spring(dampingRatio = 0.72f, stiffness = 440f)
+                    )
+                }
+                launch {
+                    leftEdge.animateTo(
+                        targetValue = targetLeft,
+                        animationSpec = spring(dampingRatio = 0.78f, stiffness = 300f)
+                    )
+                }
+            } else if (targetLeft < currentLeft - 0.001f) {
+                // Moving backward: left edge leads with brisk spring, right edge follows with softer spring
+                launch {
+                    leftEdge.animateTo(
+                        targetValue = targetLeft,
+                        animationSpec = spring(dampingRatio = 0.72f, stiffness = 440f)
+                    )
+                }
+                launch {
+                    rightEdge.animateTo(
+                        targetValue = targetRight,
+                        animationSpec = spring(dampingRatio = 0.78f, stiffness = 300f)
+                    )
+                }
+            } else {
+                // Settle / rest at exact target
+                launch {
+                    leftEdge.animateTo(
+                        targetValue = targetLeft,
+                        animationSpec = spring(dampingRatio = 0.75f, stiffness = 400f)
+                    )
+                }
+                launch {
+                    rightEdge.animateTo(
+                        targetValue = targetRight,
+                        animationSpec = spring(dampingRatio = 0.75f, stiffness = 400f)
+                    )
+                }
+            }
         }
     }
 
@@ -405,7 +470,7 @@ fun WuppGlassNavBar(
             if (!isScrubbing) 0f
             else {
                 val maxIdx = (tabs.size - 1).coerceAtLeast(1).toFloat()
-                val delta = ((animatedIndex.value - activePosition.toFloat()) / maxIdx).coerceIn(-1f, 1f)
+                val delta = ((leftEdge.value - activePosition.toFloat()) / maxIdx).coerceIn(-1f, 1f)
                 with(density) { 4.dp.toPx() * delta.sign * EaseOut.transform(abs(delta)) }
             }
         }
@@ -464,7 +529,7 @@ fun WuppGlassNavBar(
                     detectHorizontalDragGestures(
                         onDragStart = {
                             isScrubbing = true
-                            scrubFraction = animatedIndex.value
+                            scrubFraction = leftEdge.value
                         },
                         onHorizontalDrag = { _, dragAmount ->
                             val stepWidth = (size.width.toFloat() - 8.dp.toPx()) / tabs.size.toFloat()
@@ -472,7 +537,10 @@ fun WuppGlassNavBar(
                                 val signedDelta = if (isLtr) dragAmount else -dragAmount
                                 scrubFraction = (scrubFraction + signedDelta / stepWidth)
                                     .coerceIn(0f, (tabs.size - 1).toFloat())
-                                scope.launch { animatedIndex.snapTo(scrubFraction) }
+                                scope.launch {
+                                    leftEdge.snapTo(scrubFraction)
+                                    rightEdge.snapTo(scrubFraction + 1f)
+                                }
                             }
                         },
                         onDragEnd = {
@@ -488,11 +556,17 @@ fun WuppGlassNavBar(
                 .padding(4.dp)
         ) {
             val tabWidth = maxWidth / tabs.size
-            val indicatorOffset by animateDpAsState(
-                targetValue = tabWidth * animatedIndex.value,
-                animationSpec = spring(dampingRatio = 0.78f, stiffness = 700f),
-                label = "liquid_nav_indicator_offset"
+            val currentLeft = leftEdge.value
+            val currentRight = rightEdge.value
+            val (indicatorOffset, indicatorWidth) = computeLiquidNavBounds(
+                tabWidth = tabWidth,
+                left = currentLeft,
+                right = currentRight,
+                maxWidth = maxWidth
             )
+            val span = computeLiquidNavSpan(currentLeft, currentRight)
+            val verticalSquash = computeLiquidNavSquash(span)
+
             val lensBackdrop = rememberCombinedBackdrop(outerBackdrop, tabsBackdrop)
             val pillSurfaceTint = if (colors.isDark) {
                 Color.White.copy(alpha = (0.14f - 0.08f * pressProgress).coerceAtLeast(0.05f))
@@ -607,11 +681,11 @@ fun WuppGlassNavBar(
             Box(
                 modifier = Modifier
                     .offset(x = indicatorOffset)
-                    .width(tabWidth)
+                    .width(indicatorWidth)
                     .fillMaxHeight()
                     .graphicsLayer {
                         scaleX = lensScale
-                        scaleY = lensScale
+                        scaleY = lensScale * verticalSquash
                     }
                     .drawBackdrop(
                         backdrop = lensBackdrop,
