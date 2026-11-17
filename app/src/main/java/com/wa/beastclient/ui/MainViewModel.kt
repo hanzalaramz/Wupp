@@ -138,6 +138,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        viewModelScope.launch(Dispatchers.IO) {
+            purgeExpiredStatuses()
+        }
     }
 
     val heartbeatStatus: StateFlow<PrimaryHeartbeatStatus> = stealthConfig
@@ -268,7 +271,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val statuses: StateFlow<List<StatusEntity>> = dao.observeStatuses()
+        .map { list ->
+            val cutoff = System.currentTimeMillis() - 86_400_000L
+            list.filter { it.timestamp >= cutoff }
+        }
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    suspend fun purgeExpiredStatuses() {
+        runCatching {
+            val cutoff = System.currentTimeMillis() - 86_400_000L
+            val expired = dao.getExpiredStatuses(cutoff)
+            if (expired.isNotEmpty()) {
+                expired.forEach { old ->
+                    old.localMediaPath?.let { path ->
+                        val f = File(path)
+                        if (f.exists() && f.absolutePath.contains("status")) {
+                            f.delete()
+                        }
+                    }
+                }
+                dao.purgeExpiredStatuses(cutoff)
+            }
+        }
+    }
 
     val viewOnceVault: StateFlow<List<MessageEntity>> = dao.observeViewOnceVault()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())

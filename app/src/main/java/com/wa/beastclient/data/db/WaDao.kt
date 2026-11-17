@@ -655,6 +655,15 @@ interface WaDao {
     @Query("SELECT * FROM statuses ORDER BY timestamp DESC")
     fun observeStatuses(): Flow<List<StatusEntity>>
 
+    @Query("SELECT * FROM statuses WHERE timestamp >= :sinceTimestamp ORDER BY timestamp DESC")
+    fun observeActiveStatuses(sinceTimestamp: Long): Flow<List<StatusEntity>>
+
+    @Query("SELECT * FROM statuses WHERE timestamp < :cutoffTimestamp")
+    suspend fun getExpiredStatuses(cutoffTimestamp: Long): List<StatusEntity>
+
+    @Query("DELETE FROM statuses WHERE timestamp < :cutoffTimestamp")
+    suspend fun purgeExpiredStatuses(cutoffTimestamp: Long): Int
+
     @Query("SELECT * FROM statuses WHERE id = :statusId LIMIT 1")
     suspend fun getStatusById(statusId: String): StatusEntity?
 

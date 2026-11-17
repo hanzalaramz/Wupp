@@ -49,6 +49,46 @@ class StatusUtilsTest {
     }
 
     @Test
+    fun partitionOwnAndContactStatuses_filtersOutExpiredStatusesWhenRequested() {
+        val ownJid = "6281234567890@s.whatsapp.net"
+        val now = 1_700_000_000_000L
+        val recentOwn = StatusEntity(
+            id = "s_recent_own",
+            senderJid = "6281234567890:15@s.whatsapp.net",
+            senderName = "Me",
+            timestamp = now - 3_600_000L // 1 hour ago (active)
+        )
+        val expiredOwn = StatusEntity(
+            id = "s_expired_own",
+            senderJid = "6281234567890@s.whatsapp.net",
+            senderName = "Me",
+            timestamp = now - 90_000_000L // 25 hours ago (expired)
+        )
+        val recentFriend = StatusEntity(
+            id = "s_recent_friend",
+            senderJid = "6289876543210@s.whatsapp.net",
+            senderName = "Alice",
+            timestamp = now - 10_000_000L // ~2.7 hours ago (active)
+        )
+        val expiredFriend = StatusEntity(
+            id = "s_expired_friend",
+            senderJid = "6289876543210@s.whatsapp.net",
+            senderName = "Alice",
+            timestamp = now - 100_000_000L // 27.7 hours ago (expired)
+        )
+
+        val (own, contacts) = partitionOwnAndContactStatuses(
+            statuses = listOf(recentOwn, expiredOwn, recentFriend, expiredFriend),
+            ownJid = ownJid,
+            filterExpired = true,
+            now = now
+        )
+
+        assertEquals(listOf("s_recent_own"), own.map { it.id })
+        assertEquals(listOf("s_recent_friend"), contacts.map { it.id })
+    }
+
+    @Test
     fun isStatusMediaType_separatesMediaFromTextStatus() {
         assertTrue(isStatusMediaType("VIDEO", "video/mp4"))
         assertTrue(isStatusMediaType("IMAGE", ""))

@@ -1208,7 +1208,7 @@ fun HomeScreen(
         val myStatusLabel = stringResource(R.string.status_my_status)
         val statusGroups = remember(statuses, allChats, bridgeStatus.ownJid, myStatusLabel, st.id) {
             val (chatsByJid, chatsByUser) = buildStatusChatLookup(allChats)
-            val (ownStatuses, contactStatuses) = partitionOwnAndContactStatuses(statuses, bridgeStatus.ownJid)
+            val (ownStatuses, contactStatuses) = partitionOwnAndContactStatuses(statuses, bridgeStatus.ownJid, filterExpired = true)
             val viewedOwn = isOwnStatusSender(st.senderJid, bridgeStatus.ownJid)
 
             fun toStatusGroup(senderJid: String, items: List<StatusEntity>, isOwn: Boolean): StatusGroup {
@@ -2292,7 +2292,7 @@ private fun UpdatesStatusTab(
     val colors = LocalWaColors.current
     val (chatsByJid, chatsByUser) = remember(allChats) { buildStatusChatLookup(allChats) }
     val (ownStatuses, contactStatuses) = remember(statuses, ownJid) {
-        partitionOwnAndContactStatuses(statuses, ownJid)
+        partitionOwnAndContactStatuses(statuses, ownJid, filterExpired = true)
     }
     val latestOwnStatus = remember(ownStatuses) { ownStatuses.maxByOrNull { it.timestamp } }
     val ownAvatarPath = remember(ownJid, chatsByJid, chatsByUser) {

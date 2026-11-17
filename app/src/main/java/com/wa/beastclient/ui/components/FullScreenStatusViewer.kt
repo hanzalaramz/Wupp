@@ -130,17 +130,24 @@ internal fun isStatusMediaType(msgType: String, mimeType: String): Boolean {
         mimeType.startsWith("audio/", ignoreCase = true)
 }
 
+const val STATUS_EXPIRATION_WINDOW_MILLIS: Long = 86_400_000L // 24 hours
+
 internal fun partitionOwnAndContactStatuses(
     statuses: List<StatusEntity>,
-    ownJid: String
+    ownJid: String,
+    filterExpired: Boolean = false,
+    now: Long = System.currentTimeMillis()
 ): Pair<List<StatusEntity>, List<StatusEntity>> {
+    val cutoff = if (filterExpired) now - STATUS_EXPIRATION_WINDOW_MILLIS else 0L
     val own = ArrayList<StatusEntity>()
     val others = ArrayList<StatusEntity>()
     statuses.forEach { st ->
-        if (isOwnStatusSender(st.senderJid, ownJid)) {
-            own.add(st)
-        } else {
-            others.add(st)
+        if (!filterExpired || st.timestamp >= cutoff) {
+            if (isOwnStatusSender(st.senderJid, ownJid)) {
+                own.add(st)
+            } else {
+                others.add(st)
+            }
         }
     }
     return own to others

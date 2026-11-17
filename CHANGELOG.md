@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 🛠️ Fixes
+- ⌛ **24-Hour Status Expiration (#65):** Filter expired status updates (`timestamp < System.currentTimeMillis() - 86400000L`) from the Updates feed, story viewer, and ViewModel state flow. Automatically sweep and purge expired status database records and their orphaned media cache files on service launch and status updates.
+
 ## [0.3.3-pre.5] - 2026-11-17
 
 ### ✨ Features

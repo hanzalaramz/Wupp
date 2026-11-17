@@ -213,6 +213,20 @@ class WaRealtimeService : Service() {
                 dao.deleteShowcaseChats()
                 dao.deleteShowcaseMessages()
                 dao.deleteShowcaseStatuses()
+                // Issue #65: Auto-purge expired statuses (>24h) and remove stale cached files
+                val statusCutoff = System.currentTimeMillis() - 86_400_000L
+                val expiredStatuses = dao.getExpiredStatuses(statusCutoff)
+                expiredStatuses.forEach { old ->
+                    old.localMediaPath?.let { path ->
+                        runCatching {
+                            val f = File(path)
+                            if (f.exists() && f.absolutePath.contains("status")) {
+                                f.delete()
+                            }
+                        }
+                    }
+                }
+                dao.purgeExpiredStatuses(statusCutoff)
                 dao.deleteEmptyUnknownMessages()
                 dao.deleteOrphanReactions()
                 dao.normalizeViewOncePreviews()
@@ -1008,6 +1022,22 @@ class WaRealtimeService : Service() {
             timestamp = json.optLong("timestamp", System.currentTimeMillis())
         )
         dao.upsertStatus(status)
+        // Issue #65: Periodically sweep expired statuses (>24h) so old stories never linger
+        val sweepCutoff = System.currentTimeMillis() - 86_400_000L
+        val expiredList = dao.getExpiredStatuses(sweepCutoff)
+        if (expiredList.isNotEmpty()) {
+            expiredList.forEach { old ->
+                old.localMediaPath?.let { path ->
+                    runCatching {
+                        val f = File(path)
+                        if (f.exists() && f.absolutePath.contains("status")) {
+                            f.delete()
+                        }
+                    }
+                }
+            }
+            dao.purgeExpiredStatuses(sweepCutoff)
+        }
         if (senderJid.isNotBlank() && dao.getChat(senderJid)?.avatarPath.isNullOrBlank()) {
             requestSingleAvatarIfNeeded(senderJid)
         }
