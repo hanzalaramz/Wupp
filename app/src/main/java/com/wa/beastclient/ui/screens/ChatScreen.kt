@@ -270,6 +270,14 @@ fun ChatScreen(
         StealthMatrixManager.hasChatWallpaperOverride(chatJid, cfg = stealthConfig)
     }
     val canSendOutbound by remember(chatJid) { viewModel.canInitiateOutbound(chatJid) }.collectAsState(initial = true)
+    var pendingGhostGuardAction by remember(chatJid) { mutableStateOf<(() -> Unit)?>(null) }
+    val runWithOutboundGuard: (() -> Unit) -> Unit = { action ->
+        if (stealthConfig.ghostPresence && stealthConfig.ghostOutboundGuardPrompt) {
+            pendingGhostGuardAction = action
+        } else {
+            action()
+        }
+    }
     val isRecordingVoice by viewModel.isRecordingVoice.collectAsState()
     val downloadingMediaIds by viewModel.downloadingMediaIds.collectAsState()
     val failedMediaIds by viewModel.failedMediaIds.collectAsState()
@@ -529,10 +537,12 @@ fun ChatScreen(
                 pendingOutboundPreview = viewModel.stageMediaForPreview(uri, mime)
             }
         } else {
-            scrollToBottomPending = true
-            viewModel.sendPickedMedia(chatJid, uri, mime, draftValue.text.trim(), qualityMode)
-            draftValue = TextFieldValue("")
-            scope.launch { listState.animateScrollToItem(0) }
+            runWithOutboundGuard {
+                scrollToBottomPending = true
+                viewModel.sendPickedMedia(chatJid, uri, mime, draftValue.text.trim(), qualityMode)
+                draftValue = TextFieldValue("")
+                scope.launch { listState.animateScrollToItem(0) }
+            }
         }
     }
 
@@ -556,7 +566,9 @@ fun ChatScreen(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            viewModel.sendStickerFromUri(chatJid, uri)
+            runWithOutboundGuard {
+                viewModel.sendStickerFromUri(chatJid, uri)
+            }
         }
     }
 
@@ -1356,7 +1368,9 @@ fun ChatScreen(
                                                                 interactionSource = extraInteraction,
                                                                 indication = null
                                                             ) {
-                                                                viewModel.sendReaction(chatJid, target, emoji)
+                                                                runWithOutboundGuard {
+                                                                    viewModel.sendReaction(chatJid, target, emoji)
+                                                                }
                                                                 actionMenuTarget = null
                                                                 showMoreReactionEmojis = false
                                                             }
@@ -1403,7 +1417,9 @@ fun ChatScreen(
                                                     interactionSource = emojiInteraction,
                                                     indication = null
                                                 ) {
-                                                    viewModel.sendReaction(chatJid, target, emoji)
+                                                    runWithOutboundGuard {
+                                                        viewModel.sendReaction(chatJid, target, emoji)
+                                                    }
                                                     actionMenuTarget = null
                                                     showMoreReactionEmojis = false
                                                 },
@@ -1753,12 +1769,14 @@ fun ChatScreen(
                                 }
                                 val sendCurrentDraft: () -> Unit = {
                                     if (canSendOutbound && draftValue.text.isNotBlank()) {
-                                        scrollToBottomPending = true
-                                        viewModel.sendText(chatJid, draftValue.text, replyTarget, ghostMentionEveryone)
-                                        draftValue = TextFieldValue("")
-                                        replyTarget = null
-                                        ghostMentionEveryone = false
-                                        scope.launch { listState.animateScrollToItem(0) }
+                                        runWithOutboundGuard {
+                                            scrollToBottomPending = true
+                                            viewModel.sendText(chatJid, draftValue.text, replyTarget, ghostMentionEveryone)
+                                            draftValue = TextFieldValue("")
+                                            replyTarget = null
+                                            ghostMentionEveryone = false
+                                            scope.launch { listState.animateScrollToItem(0) }
+                                        }
                                     }
                                 }
                                 BasicTextField(
@@ -1860,12 +1878,14 @@ fun ChatScreen(
                                         scope.launch { listState.animateScrollToItem(0) }
                                     }
                                     draftValue.text.isNotBlank() -> {
-                                        scrollToBottomPending = true
-                                        viewModel.sendText(chatJid, draftValue.text, replyTarget, ghostMentionEveryone)
-                                        draftValue = TextFieldValue("")
-                                        replyTarget = null
-                                        ghostMentionEveryone = false
-                                        scope.launch { listState.animateScrollToItem(0) }
+                                        runWithOutboundGuard {
+                                            scrollToBottomPending = true
+                                            viewModel.sendText(chatJid, draftValue.text, replyTarget, ghostMentionEveryone)
+                                            draftValue = TextFieldValue("")
+                                            replyTarget = null
+                                            ghostMentionEveryone = false
+                                            scope.launch { listState.animateScrollToItem(0) }
+                                        }
                                     }
                                     else -> {
                                         val hasMic = ContextCompat.checkSelfPermission(
@@ -1873,7 +1893,9 @@ fun ChatScreen(
                                             Manifest.permission.RECORD_AUDIO
                                         ) == PackageManager.PERMISSION_GRANTED
                                         if (hasMic) {
-                                            viewModel.toggleVoiceRecording(chatJid, true)
+                                            runWithOutboundGuard {
+                                                viewModel.toggleVoiceRecording(chatJid, true)
+                                            }
                                         } else {
                                             micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                         }
@@ -1965,12 +1987,16 @@ fun ChatScreen(
                                     if (!path.isNullOrBlank()) {
                                         val file = File(path)
                                         if (file.exists() && file.length() > 0L) {
-                                            viewModel.sendSticker(chatJid, file)
+                                            runWithOutboundGuard {
+                                                viewModel.sendSticker(chatJid, file)
+                                            }
                                         }
                                     }
                                 },
                                 onSendBuiltinSticker = { builtinSticker ->
-                                    viewModel.sendSticker(chatJid, builtinSticker.file)
+                                    runWithOutboundGuard {
+                                        viewModel.sendSticker(chatJid, builtinSticker.file)
+                                    }
                                 },
                                 onToggleFavorite = { stickerMsg ->
                                     viewModel.toggleFavoriteSticker(stickerMsg)
@@ -2276,7 +2302,11 @@ fun ChatScreen(
                 { item -> replyTarget = item }
             },
             onQuickReaction = if (isChannel) null else {
-                { item, emoji -> viewModel.sendReaction(chatJid, item, emoji) }
+                { item, emoji ->
+                    runWithOutboundGuard {
+                        viewModel.sendReaction(chatJid, item, emoji)
+                    }
+                }
             },
             gallery = galleryItems,
             senderDisplayNameFor = resolveSenderLabel
@@ -2303,15 +2333,51 @@ fun ChatScreen(
             onSend = { finalFile, captionText, chosenQuality, isViewOnce ->
                 pendingOutboundPreview = null
                 qualityMode = chosenQuality
-                scrollToBottomPending = true
-                val targetStaged = if (finalFile != staged.file) {
-                    staged.copy(file = finalFile, fileSize = finalFile.length())
-                } else {
-                    staged
+                runWithOutboundGuard {
+                    scrollToBottomPending = true
+                    val targetStaged = if (finalFile != staged.file) {
+                        staged.copy(file = finalFile, fileSize = finalFile.length())
+                    } else {
+                        staged
+                    }
+                    viewModel.sendStagedMedia(chatJid, targetStaged, captionText, chosenQuality, isViewOnce)
+                    draftValue = TextFieldValue("")
+                    scope.launch { listState.animateScrollToItem(0) }
                 }
-                viewModel.sendStagedMedia(chatJid, targetStaged, captionText, chosenQuality, isViewOnce)
-                draftValue = TextFieldValue("")
-                scope.launch { listState.animateScrollToItem(0) }
+            }
+        )
+    }
+
+    pendingGhostGuardAction?.let { pendingAction ->
+        AlertDialog(
+            onDismissRequest = { pendingGhostGuardAction = null },
+            containerColor = colors.elevatedBar,
+            titleContentColor = colors.textPrimary,
+            textContentColor = colors.textSecondary,
+            title = { Text("Unfreeze Last Seen?", fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    "Ghost Mode (Frozen Last Seen) is active. Sending will temporarily unfreeze your last seen timestamp so WhatsApp accepts the action, and then safely re-freeze it after 1.5 seconds.",
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val act = pendingGhostGuardAction
+                        pendingGhostGuardAction = null
+                        act?.invoke()
+                    }
+                ) {
+                    Text("Unfreeze & Send", color = colors.brightGreen, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { pendingGhostGuardAction = null }
+                ) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
             }
         )
     }
@@ -2588,17 +2654,13 @@ private fun MessageBubbleRow(
                     onClick = {
                         when {
                             msg.isEdited -> onClickEditBadge()
-                            msg.isViewOnce || msg.msgType == "VIEW_ONCE_STRIPPED" -> {
-                                if (hasVaultFile) {
-                                    onOpenMedia()
-                                } else {
+                            msg.isViewOnce || msg.msgType == "VIEW_ONCE_STRIPPED" || msg.viewOnceState == "STRIPPED" -> {
                                 Toast.makeText(
                                     context,
-                                    "Open this View Once message in WhatsApp on your phone",
+                                    "For added privacy, you can only open this view once message on your phone",
                                     Toast.LENGTH_SHORT
                                 ).show()
                             }
-                        }
                         isDocCard -> if (hasVaultFile) onOpenDocument() else onRequestDownload()
                         !msg.localMediaPath.isNullOrBlank() && msg.msgType != "PTT" && msg.msgType != "AUDIO" -> onOpenMedia()
                         msg.msgType == "IMAGE" || msg.msgType == "VIDEO" -> onRequestDownload()
@@ -2737,7 +2799,7 @@ private fun MessageBubbleRow(
 
                 when {
                     // Already opened / stripped View-Once (original WhatsApp style)
-                    (msg.viewOnceState == "STRIPPED" && !hasVaultFile) || msg.msgType == "VIEW_ONCE_STRIPPED" -> {
+                    msg.viewOnceState == "STRIPPED" || msg.msgType == "VIEW_ONCE_STRIPPED" -> {
                         val voSubType = when (msg.msgType.uppercase()) {
                             "VIDEO" -> " · Video"
                             "PTT", "AUDIO" -> " · Voice message"
@@ -2765,7 +2827,7 @@ private fun MessageBubbleRow(
                                     fontWeight = FontWeight.Medium
                                 )
                                 Text(
-                                    text = "Open in original WhatsApp",
+                                    text = "Opened on phone",
                                     color = colors.textSecondary.copy(alpha = 0.85f),
                                     fontSize = 11.sp
                                 )
@@ -2792,26 +2854,18 @@ private fun MessageBubbleRow(
                             else -> "Photo"
                         }
                         val tintColor = if (effectiveOutgoing) colors.textPrimary else colors.brightGreen
-                        val subLabel = if (hasVaultFile) {
-                            if (msg.durationSec > 0) "${formatVideoDuration(msg.durationSec)} · Vaulted" else "Vaulted"
-                        } else {
-                            if (msg.durationSec > 0) "${formatVideoDuration(msg.durationSec)} · Tap to download" else "Tap to download"
-                        }
+                        val subLabel = if (msg.durationSec > 0) "${formatVideoDuration(msg.durationSec)} · Open on phone" else "Open on phone"
                         Row(
                             modifier = Modifier
                                 .widthIn(min = 175.dp)
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(
-                                    if (hasVaultFile) colors.pillActiveBg.copy(alpha = 0.55f)
-                                    else Color.Transparent
-                                )
                                 .combinedClickable(
                                     onClick = {
-                                        if (hasVaultFile) {
-                                            onOpenMedia()
-                                        } else {
-                                            onRequestDownload()
-                                        }
+                                        Toast.makeText(
+                                            context,
+                                            "For added privacy, you can only open this view once message on your phone",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
                                     },
                                     onLongClick = onLongPress
                                 )
@@ -2828,7 +2882,7 @@ private fun MessageBubbleRow(
                             Column {
                                 Text(
                                     text = voLabel,
-                                    color = if (hasVaultFile) colors.textPrimary else tintColor,
+                                    color = tintColor,
                                     fontWeight = FontWeight.Medium,
                                     fontSize = 14.5.sp
                                 )

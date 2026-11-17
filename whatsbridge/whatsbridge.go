@@ -661,6 +661,42 @@ func SetGhostPresence(enabled bool) {
 	}
 }
 
+// unfreezePresenceForActivity unfreezes presence (sends PresenceAvailable) immediately before
+// an outbound activity (message, media, reaction, status) when Ghost Mode is active, preventing
+// server-side heuristics from detecting outbound traffic from an offline client.
+func unfreezePresenceForActivity() {
+	if !ghostPresence.Load() {
+		return
+	}
+	mu.Lock()
+	cli := client
+	ctx := baseCtx
+	mu.Unlock()
+	if cli != nil && cli.IsConnected() && cli.IsLoggedIn() {
+		_ = cli.SendPresence(ctx, types.PresenceAvailable)
+	}
+}
+
+// scheduleRefreezePresence automatically re-freezes presence back to PresenceUnavailable
+// after a natural 1.5-second settle window following an outbound action.
+func scheduleRefreezePresence() {
+	if !ghostPresence.Load() {
+		return
+	}
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		if ghostPresence.Load() {
+			mu.Lock()
+			curCli := client
+			curCtx := baseCtx
+			mu.Unlock()
+			if curCli != nil && curCli.IsConnected() && curCli.IsLoggedIn() {
+				_ = curCli.SendPresence(curCtx, types.PresenceUnavailable)
+			}
+		}
+	}()
+}
+
 func SendTextMessage(
 	chatJid string,
 	text string,
@@ -670,6 +706,8 @@ func SendTextMessage(
 	mentionsCsv string,
 	ghostTyping bool,
 ) (string, error) {
+	unfreezePresenceForActivity()
+	defer scheduleRefreezePresence()
 	mu.Lock()
 	cli := client
 	ctx := baseCtx
@@ -744,6 +782,8 @@ func SendTextMessage(
 }
 
 func EditMessage(chatJid string, messageId string, newText string) error {
+	unfreezePresenceForActivity()
+	defer scheduleRefreezePresence()
 	mu.Lock()
 	cli := client
 	ctx := baseCtx
@@ -764,6 +804,8 @@ func EditMessage(chatJid string, messageId string, newText string) error {
 }
 
 func RevokeMessage(chatJid string, messageId string) error {
+	unfreezePresenceForActivity()
+	defer scheduleRefreezePresence()
 	mu.Lock()
 	cli := client
 	ctx := baseCtx
@@ -789,6 +831,8 @@ func SendMediaMessage(
 	durationSec int,
 	waveformCsv string,
 ) (string, error) {
+	unfreezePresenceForActivity()
+	defer scheduleRefreezePresence()
 	mu.Lock()
 	cli := client
 	ctx := baseCtx
@@ -4032,12 +4076,8 @@ func SetAutoDownloadPolicy(allowPhoto, allowAudio, allowVideo, allowDoc bool) {
 }
 
 func shouldAutoDownloadMedia(job *mediaJob) bool {
-	if job == nil || job.MessageID == "" {
+	if job == nil || job.MessageID == "" || job.IsViewOnce {
 		return false
-	}
-	// Eagerly auto-download View-Once media before it expires on WhatsApp CDN
-	if job.IsViewOnce {
-		return job.FileLength <= maxManualMediaBytes
 	}
 	switch job.MediaType {
 	case "IMAGE", "STICKER":
@@ -5116,6 +5156,8 @@ func FetchGroupLockState(groupJid string) error {
 
 // SendReaction sends or removes (empty emoji) a reaction on a target message.
 func SendReaction(chatJid, targetMessageId, senderJid string, fromMe bool, emoji string) error {
+	unfreezePresenceForActivity()
+	defer scheduleRefreezePresence()
 	mu.Lock()
 	cli := client
 	mu.Unlock()
@@ -5157,6 +5199,8 @@ func SendStatusReply(
 	text string,
 	ghostTyping bool,
 ) (string, error) {
+	unfreezePresenceForActivity()
+	defer scheduleRefreezePresence()
 	mu.Lock()
 	cli := client
 	ctx := baseCtx
@@ -5226,6 +5270,8 @@ func SendStatusReaction(
 	statusMessageId string,
 	emoji string,
 ) error {
+	unfreezePresenceForActivity()
+	defer scheduleRefreezePresence()
 	mu.Lock()
 	cli := client
 	ctx := baseCtx
@@ -5508,6 +5554,8 @@ func PinChatMessage(
 	durationSec int64,
 	isUnpin bool,
 ) error {
+	unfreezePresenceForActivity()
+	defer scheduleRefreezePresence()
 	mu.Lock()
 	cli := client
 	mu.Unlock()

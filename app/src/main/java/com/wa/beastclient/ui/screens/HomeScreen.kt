@@ -3480,13 +3480,25 @@ private fun ToolsVaultTab(
                 ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.VisibilityOff,
                     title = "Ghost Mode (Freeze Last Seen)",
-                    subtitle = "Hide online status and freeze your last seen timestamp",
+                    subtitle = "Hide online status and freeze last seen (auto-unfreezes safely when sending)",
                     checked = stealth.ghostPresence,
                     position = ExpressiveSegmentPosition.TOP,
                     onCheckedChange = {
                         viewModel.updateGlobalStealth { c -> c.copy(ghostPresence = it) }
                     }
                 )
+                if (stealth.ghostPresence) {
+                    ExpressiveSegmentedSwitchRow(
+                        icon = Icons.Rounded.Shield,
+                        title = "Outbound Activity Confirmation",
+                        subtitle = "Prompt before unfreezing last seen when sending messages, media, or reactions",
+                        checked = stealth.ghostOutboundGuardPrompt,
+                        position = ExpressiveSegmentPosition.MIDDLE,
+                        onCheckedChange = {
+                            viewModel.updateGlobalStealth { c -> c.copy(ghostOutboundGuardPrompt = it) }
+                        }
+                    )
+                }
                 ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.CheckCircle,
                     title = "Hide Read Receipts",

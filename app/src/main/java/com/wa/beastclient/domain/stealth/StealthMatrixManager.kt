@@ -37,11 +37,11 @@ data class ChatWallpaperOverride(
 
 data class GlobalStealthConfig(
     val ghostPresence: Boolean = true,
+    val ghostOutboundGuardPrompt: Boolean = false,
     val hideReadReceipts: Boolean = false,
     val hidePlayedReceipts: Boolean = true,
     val hideTypingRecording: Boolean = true,
     val antiDeleteEnabled: Boolean = true,
-    val viewOnceVaultEnabled: Boolean = true,
     val disappearingImmunity: Boolean = true,
     val themeMode: WuppThemeMode = WuppThemeMode.DARK,
     val accentColor: WuppAccentColor = WuppAccentColor.DEFAULT,
@@ -115,7 +115,7 @@ object StealthMatrixManager {
     private const val KEY_HIDE_PLAYED = "hide_played_receipts"
     private const val KEY_HIDE_TYPING = "hide_typing_recording"
     private const val KEY_ANTI_DELETE = "anti_delete_enabled"
-    private const val KEY_VIEW_ONCE_VAULT = "view_once_vault_enabled"
+    private const val KEY_GHOST_GUARD_PROMPT = "ghost_outbound_guard_prompt"
     private const val KEY_DISAPPEARING_IMMUNITY = "disappearing_immunity"
     private const val KEY_DARK_THEME = "dark_theme"
     private const val KEY_THEME_MODE = "app_theme_mode"
@@ -182,7 +182,7 @@ object StealthMatrixManager {
                 hidePlayedReceipts = prefs.getBoolean(KEY_HIDE_PLAYED, true),
                 hideTypingRecording = prefs.getBoolean(KEY_HIDE_TYPING, true),
                 antiDeleteEnabled = prefs.getBoolean(KEY_ANTI_DELETE, true),
-                viewOnceVaultEnabled = prefs.getBoolean(KEY_VIEW_ONCE_VAULT, true),
+                ghostOutboundGuardPrompt = prefs.getBoolean(KEY_GHOST_GUARD_PROMPT, false),
                 disappearingImmunity = prefs.getBoolean(KEY_DISAPPEARING_IMMUNITY, true),
                 themeMode = WuppThemeMode.fromStorageKey(
                     prefs.getString(KEY_THEME_MODE, null),
@@ -238,7 +238,7 @@ object StealthMatrixManager {
                 .putBoolean(KEY_HIDE_PLAYED, updated.hidePlayedReceipts)
                 .putBoolean(KEY_HIDE_TYPING, updated.hideTypingRecording)
                 .putBoolean(KEY_ANTI_DELETE, updated.antiDeleteEnabled)
-                .putBoolean(KEY_VIEW_ONCE_VAULT, updated.viewOnceVaultEnabled)
+                .putBoolean(KEY_GHOST_GUARD_PROMPT, updated.ghostOutboundGuardPrompt)
                 .putBoolean(KEY_DISAPPEARING_IMMUNITY, updated.disappearingImmunity)
                 .putString(KEY_THEME_MODE, updated.themeMode.storageKey)
                 .putString(KEY_ACCENT_COLOR, updated.accentColor.storageKey)

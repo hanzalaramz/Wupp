@@ -1942,7 +1942,7 @@ class WaRealtimeService : Service() {
 
         fun requestMediaDownload(context: Context, msg: MessageEntity, userInitiated: Boolean = true) {
             if (msg.id.isBlank()) return
-            if (msg.msgType == "VIEW_ONCE_STRIPPED" && !userInitiated) return
+            if (msg.isViewOnce || msg.msgType == "VIEW_ONCE_STRIPPED") return
             if (_downloadingMediaIds.value.contains(msg.id)) return
             if (!userInitiated && _failedMediaIds.value.containsKey(msg.id)) return
             if (!userInitiated && !StealthMatrixManager.isAutoDownloadAllowed(context, msg.msgType, msg.mimeType)) return

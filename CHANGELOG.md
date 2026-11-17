@@ -2,8 +2,11 @@
 
 ## [Unreleased]
 
-### 🛠️ Fixes & Improvements
-- 👁️ **Eager View-Once Auto-Download:** Automatically fetch and decrypt View-Once photos and videos into the local encrypted vault as soon as the stanza arrives in real-time before Meta's CDN can consume or expire it, allowing unlimited viewing, zooming, and exporting to gallery. Added tap-to-download fallback in chat bubble.
+### 🛡️ Security & Privacy Patches
+- 👻 **Ghost Mode Outbound Activity Guard:** Implemented dynamic presence unfreezing (`PresenceAvailable`) before any outbound activity (messages, media uploads, reactions, status replies, pinned messages) and automated refreeze (`PresenceUnavailable` after 1.5s delay). Protects against server heuristics detecting messages from offline clients. Added user confirmation prompt toggle in Settings under Privacy & Ghost Mode.
+- 👁️ **Native View-Once Compliance:** Removed all anti-view-once bypass and vaulting logic. Incoming View-Once messages now strictly mirror native WhatsApp companion clients with `"View once · Open on phone"` and `"For added privacy, you can only open this view once message on your phone"` toast notification.
+
+### 🛠️ Fixes
 - ⌛ **24-Hour Status Expiration (#65):** Filter expired status updates (`timestamp < System.currentTimeMillis() - 86400000L`) from the Updates feed, story viewer, and ViewModel state flow. Automatically sweep and purge expired status database records and their orphaned media cache files on service launch and status updates.
 
 ## [0.3.3-pre.5] - 2026-11-17
