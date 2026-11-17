@@ -19,7 +19,7 @@
   <a href="https://github.com/hanzalaramz/Wupp/releases"><b>Download latest APK from Releases</b></a>
 </p>
 
-Use your existing WhatsApp account, chats, groups, status updates, and channels in a native Jetpack Compose client, built with **anti-ban rate-limit protection**, per-feature privacy switches, and built-in GitHub updates.
+Use your existing WhatsApp account, chats, groups, status updates, and channels in a native Jetpack Compose client, built with **connection and rate-limit safeguards**, per-feature privacy switches, and built-in GitHub updates.
 
 > [!IMPORTANT]
 > **Install alongside official WhatsApp — do not replace it.**
@@ -33,21 +33,21 @@ Use your existing WhatsApp account, chats, groups, status updates, and channels 
 - **Hide Read, Played & Typing:** Read chats without sending blue ticks, play voice notes without played receipts, and hide typing or recording indicators.
 - **Per-Chat Ghost Overrides:** Override read, played, and typing switches individually for any single chat or group.
 
-### **Anti-Ban & Account Safety**
+### **Connection & Rate-Limit Safeguards**
 
 - **Chrome Web Identity:** Connects as **Chrome (Mac OS)** and caches WhatsApp Web version lookups locally.
 - **No `429` Sync Storms:** Global contact, group, and channel syncs run under a **90-second cooldown**, dead channels are skipped, and media/avatars load through **3 jittered workers** (`70-160ms` spacing) with miss caching.
-- **Error 463 Outbound Guard:** Blocks sending a first companion message to an unknown number with **zero prior local chat history**, guarding against one of WhatsApp's biggest companion triggers.
+- **Error 463 Outbound Guard:** Blocks sending a first companion message to an unknown number with **zero prior local chat history**, guarding against companion sync issues.
 - **Safe Defaults:** Keeps normal read ticks on unless you enable **Ghost Read**, and tracks Meta's **14-day primary phone heartbeat** in Settings.
 
-[![View Full Anti-Ban Explanation](https://img.shields.io/badge/View_Full_Anti--Ban_Explanation-0969DA?style=for-the-badge)](ANTIBAN.md)
+[![View Full Architecture](https://img.shields.io/badge/View_Full_Architecture-0969DA?style=for-the-badge)](ARCHITECTURE.md)
 
-### **Mod Features & Local Vault**
+### **Persistent Offline Chat History & Local Media Vault**
 
-- **Anti-Delete Messages & Statuses:** Keeps text, media, and statuses on your phone even after someone deletes them for everyone.
-- **View-Once & Status Saver:** View and **save View-Once photos/videos and contact statuses directly to your gallery**.
-- **Disappearing Immunity & Edit History:** Keeps disappearing messages from vanishing locally, and lets you tap **Edited** messages to inspect their previous text.
-- **Silent `@everyone` Mentions:** Tag everyone in a group cleanly using **Ghost Mention** without cluttering the message.
+- **Persistent Message Archive:** Keeps text, media, and statuses stored locally in your SQLite database even if purged remotely.
+- **Media Preservation:** View and save incoming photos, videos, and contact status updates directly to your local gallery vault.
+- **Edit & Revision History:** Preserves local history and lets you tap edited messages to inspect their previous revisions.
+- **Group Mentions:** Tag everyone in a group cleanly using Ghost Mention without cluttering the message thread.
 
 ### **Native Client & In-App Updates**
 
