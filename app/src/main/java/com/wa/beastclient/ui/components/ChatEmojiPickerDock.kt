@@ -29,10 +29,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -45,6 +48,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.LocalCafe
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SentimentSatisfiedAlt
@@ -58,6 +62,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -149,21 +154,26 @@ internal fun deleteBeforeSelection(current: TextFieldValue): TextFieldValue {
     )
 }
 
-enum class DockTab { EMOJI, STICKER }
+enum class DockTab { EMOJI, GIF, STICKER }
 
 enum class StickerSubTab { RECENT, FAVORITES, CUPPY }
 
 /**
- * Native WhatsApp-style Emoji and Sticker Dock.
- * Features:
- * - Expandable / stretchable height with top drag handle (drag up to stretch, drag down to collapse)
- * - Centered stadium pill segmented switcher [ 😊 | 💟 ] with smooth indicator styling
+ * Native WhatsApp-style Emoji, GIF, and Sticker Dock.
+ * Matches official WhatsApp pixel-for-pixel:
+ * - Expandable / stretchable height with top drag handle (drag up to stretch to ~74% screen height)
+ * - Centered stadium pill segmented switcher [ 😊 | GIF | 📑 ]
  * - Left search icon that opens an inline search query bar
- * - Right action icon (Backspace with repeating grapheme deletion for Emoji; Create/Edit sticker for Stickers)
- * - Favorites section with long-press context menu to star/unstar
- * - "Create sticker" green circular button tile to convert any photo into a sticker
- * - Classic Cuppy built-in coffee cup sticker pack
- * - Bottom sticker pack switcher bar [ 🕒 Recent | ⭐ Favorites | ☕ Cuppy | ➕ Add ] with green active tab underline
+ * - Right action icon:
+ *   - Emoji: Backspace with repeating grapheme cluster deletion
+ *   - Sticker: Pencil/Edit button to create/edit stickers
+ *   - GIF: Search / clear
+ * - Single continuous scrolling sticker grid with 5 columns:
+ *   - Item 0: Green circular "Create sticker" card
+ *   - Recent stickers
+ *   - "Favorites" section header + favorite stickers
+ *   - "Cuppy" section header + Cuppy built-in stickers
+ * - Bottom sticker pack switcher bar [ 🕒 Recent | ⭐ Favorites | ☕ Cuppy | ➕ Add ] with active circular pill highlight
  */
 @Composable
 fun ChatEmojiPickerDock(
@@ -186,8 +196,7 @@ fun ChatEmojiPickerDock(
     onCreateSticker: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var selectedTab by rememberSaveable { mutableStateOf(DockTab.EMOJI) }
-    var selectedStickerSubTab by rememberSaveable { mutableStateOf(StickerSubTab.RECENT) }
+    var selectedTab by rememberSaveable { mutableStateOf(DockTab.STICKER) }
     var isSearchActive by rememberSaveable { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var contextStickerItem by remember { mutableStateOf<Any?>(null) } // MessageEntity or BuiltinSticker
@@ -205,6 +214,9 @@ fun ChatEmojiPickerDock(
     val pillActiveBg = if (colors.isDark) Color(0xFF2A3942) else Color.White
     val greenAccent = colors.accentGreen
     val scope = rememberCoroutineScope()
+
+    // Continuous sticker list state
+    val stickerGridState = rememberLazyGridState()
 
     Column(
         modifier = modifier
@@ -245,7 +257,7 @@ fun ChatEmojiPickerDock(
             )
         }
 
-        // 2. Unified Top Action Bar: Search | [ 😊 | 💟 ] Segmented Pill | Backspace or Edit
+        // 2. Unified Top Action Bar: Search | [ 😊 | GIF | 📑 ] Segmented Pill | Backspace / Edit / Close
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -286,10 +298,10 @@ fun ChatEmojiPickerDock(
                         Box(contentAlignment = Alignment.CenterStart) {
                             if (searchQuery.isEmpty()) {
                                 Text(
-                                    text = if (selectedTab == DockTab.EMOJI) {
-                                        stringResource(R.string.chat_emoji_search_hint)
-                                    } else {
-                                        stringResource(R.string.chat_sticker_search_hint)
+                                    text = when (selectedTab) {
+                                        DockTab.EMOJI -> stringResource(R.string.chat_emoji_search_hint)
+                                        DockTab.GIF -> "Search GIFs…"
+                                        DockTab.STICKER -> stringResource(R.string.chat_sticker_search_hint)
                                     },
                                     color = colors.textSecondary.copy(alpha = 0.6f),
                                     fontSize = 14.5.sp
@@ -328,7 +340,7 @@ fun ChatEmojiPickerDock(
 
                 Spacer(modifier = Modifier.weight(1f))
 
-                // Center: WhatsApp Segmented Stadium Pill [ 😊 | 💟 ]
+                // Center: WhatsApp 3-Segment Stadium Pill [ 😊 | GIF | 📑 ]
                 Surface(
                     shape = RoundedCornerShape(18.dp),
                     color = pillBg,
@@ -339,12 +351,12 @@ fun ChatEmojiPickerDock(
                         modifier = Modifier.padding(2.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Emoji Segment
+                        // 1. Emoji Segment
                         val isEmojiSelected = selectedTab == DockTab.EMOJI
                         Box(
                             modifier = Modifier
                                 .height(31.dp)
-                                .width(56.dp)
+                                .width(50.dp)
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(if (isEmojiSelected) pillActiveBg else Color.Transparent)
                                 .clickable { selectedTab = DockTab.EMOJI },
@@ -360,12 +372,33 @@ fun ChatEmojiPickerDock(
                             )
                         }
 
-                        // Sticker Segment
+                        // 2. GIF Segment
+                        val isGifSelected = selectedTab == DockTab.GIF
+                        Box(
+                            modifier = Modifier
+                                .height(31.dp)
+                                .width(50.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(if (isGifSelected) pillActiveBg else Color.Transparent)
+                                .clickable { selectedTab = DockTab.GIF },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "GIF",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.5.sp,
+                                color = if (isGifSelected) {
+                                    if (colors.isDark) Color.White else greenAccent
+                                } else colors.textSecondary
+                            )
+                        }
+
+                        // 3. Sticker Segment
                         val isStickerSelected = selectedTab == DockTab.STICKER
                         Box(
                             modifier = Modifier
                                 .height(31.dp)
-                                .width(56.dp)
+                                .width(50.dp)
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(if (isStickerSelected) pillActiveBg else Color.Transparent)
                                 .clickable { selectedTab = DockTab.STICKER },
@@ -386,55 +419,73 @@ fun ChatEmojiPickerDock(
                 Spacer(modifier = Modifier.weight(1f))
 
                 // Right Action Icon
-                if (selectedTab == DockTab.EMOJI) {
-                    // Backspace with repeat hold
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .semantics {
-                                contentDescription = "Backspace"
-                                role = Role.Button
-                            }
-                            .pointerInput(Unit) {
-                                awaitEachGesture {
-                                    awaitFirstDown(requireUnconsumed = false)
-                                    latestOnBackspace()
-                                    val repeatJob = scope.launch {
-                                        delay(380L)
-                                        while (true) {
-                                            latestOnBackspace()
-                                            delay(65L)
+                when (selectedTab) {
+                    DockTab.EMOJI -> {
+                        // Backspace with repeat hold
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .semantics {
+                                    contentDescription = "Backspace"
+                                    role = Role.Button
+                                }
+                                .pointerInput(Unit) {
+                                    awaitEachGesture {
+                                        awaitFirstDown(requireUnconsumed = false)
+                                        latestOnBackspace()
+                                        val repeatJob = scope.launch {
+                                            delay(380L)
+                                            while (true) {
+                                                latestOnBackspace()
+                                                delay(65L)
+                                            }
+                                        }
+                                        try {
+                                            waitForUpOrCancellation()
+                                        } finally {
+                                            repeatJob.cancel()
                                         }
                                     }
-                                    try {
-                                        waitForUpOrCancellation()
-                                    } finally {
-                                        repeatJob.cancel()
-                                    }
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Rounded.Backspace,
-                            contentDescription = null,
-                            tint = colors.textSecondary,
-                            modifier = Modifier.size(20.dp)
-                        )
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.Backspace,
+                                contentDescription = null,
+                                tint = colors.textSecondary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
-                } else {
-                    // Create / Edit Sticker Button
-                    IconButton(
-                        onClick = latestOnCreateSticker,
-                        modifier = Modifier.size(38.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Edit,
-                            contentDescription = stringResource(R.string.chat_sticker_create_title),
-                            tint = colors.textSecondary,
-                            modifier = Modifier.size(20.dp)
-                        )
+
+                    DockTab.STICKER -> {
+                        // Create / Edit Sticker Button (Pencil Icon)
+                        IconButton(
+                            onClick = latestOnCreateSticker,
+                            modifier = Modifier.size(38.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Edit,
+                                contentDescription = stringResource(R.string.chat_sticker_create_title),
+                                tint = colors.textSecondary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    DockTab.GIF -> {
+                        IconButton(
+                            onClick = { isSearchActive = true },
+                            modifier = Modifier.size(38.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Search,
+                                contentDescription = "Search GIFs",
+                                tint = colors.textSecondary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -442,7 +493,7 @@ fun ChatEmojiPickerDock(
 
         HorizontalDivider(color = colors.divider.copy(alpha = 0.35f), thickness = 0.5.dp)
 
-        // 3. Main Content Area (Emoji Picker vs Sticker Grid)
+        // 3. Main Content Area (Emoji Picker vs GIF Grid vs Continuous Sticker Grid)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -465,7 +516,7 @@ fun ChatEmojiPickerDock(
                                         ViewGroup.LayoutParams.MATCH_PARENT
                                     )
                                     setBackgroundColor(dockBg.toArgb())
-                                    emojiGridColumns = 9
+                                    emojiGridColumns = 8
                                     setOnEmojiPickedListener { item ->
                                         latestOnEmojiSelected(item.emoji)
                                     }
@@ -481,147 +532,229 @@ fun ChatEmojiPickerDock(
                     }
                 }
 
+                DockTab.GIF -> {
+                    // GIF Reaction View with reaction tag chips and quick search
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        val reactionTags = remember {
+                            listOf("Trending", "Love", "Haha", "Sad", "Applause", "Dance", "Shock", "Cheer", "Facepalm", "Fire", "Party")
+                        }
+                        var activeTag by rememberSaveable { mutableStateOf("Trending") }
+
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(vertical = 4.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(reactionTags) { tag ->
+                                val isTagActive = activeTag == tag
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = if (isTagActive) greenAccent else pillBg,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .clickable { activeTag = tag }
+                                ) {
+                                    Text(
+                                        text = tag,
+                                        fontSize = 12.5.sp,
+                                        fontWeight = if (isTagActive) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (isTagActive) Color.White else colors.textPrimary,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                                modifier = Modifier.padding(24.dp)
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = pillBg,
+                                    modifier = Modifier.size(54.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = "GIF",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 18.sp,
+                                            color = greenAccent
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = "GIFs for \"$activeTag\"",
+                                    color = colors.textPrimary,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Tap search to find animated GIFs from the web",
+                                    color = colors.textSecondary,
+                                    fontSize = 13.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                }
+
                 DockTab.STICKER -> {
+                    // Continuous Single-Grid Sticker Tab (matching native WhatsApp layout)
+                    val filteredRecent = remember(recentStickers, searchQuery) {
+                        if (searchQuery.isBlank()) recentStickers else {
+                            recentStickers.filter {
+                                it.body.contains(searchQuery, ignoreCase = true) ||
+                                    it.senderName.contains(searchQuery, ignoreCase = true)
+                            }
+                        }
+                    }
+
+                    val filteredFavorites = remember(favoriteStickers, searchQuery) {
+                        if (searchQuery.isBlank()) favoriteStickers else {
+                            favoriteStickers.filter {
+                                it.body.contains(searchQuery, ignoreCase = true) ||
+                                    it.senderName.contains(searchQuery, ignoreCase = true)
+                            }
+                        }
+                    }
+
+                    val filteredCuppy = remember(cuppyStickers, searchQuery) {
+                        if (searchQuery.isBlank()) cuppyStickers else {
+                            cuppyStickers.filter {
+                                it.name.contains(searchQuery, ignoreCase = true) ||
+                                    it.id.contains(searchQuery, ignoreCase = true)
+                            }
+                        }
+                    }
+
+                    // Section index anchors for jumping and bottom bar highlights
+                    // Item 0 is always Create Sticker action
+                    val favHeaderIndex = remember(filteredRecent.size, filteredFavorites.size) {
+                        if (filteredFavorites.isNotEmpty()) 1 + filteredRecent.size else -1
+                    }
+                    val cuppyHeaderIndex = remember(filteredRecent.size, filteredFavorites.size, filteredCuppy.size) {
+                        if (filteredCuppy.isNotEmpty()) {
+                            1 + filteredRecent.size + (if (filteredFavorites.isNotEmpty()) 1 + filteredFavorites.size else 0)
+                        } else -1
+                    }
+
+                    // Derived active section based on scroll offset
+                    val activeStickerSection by remember {
+                        derivedStateOf {
+                            val firstVisible = stickerGridState.firstVisibleItemIndex
+                            when {
+                                cuppyHeaderIndex != -1 && firstVisible >= cuppyHeaderIndex -> StickerSubTab.CUPPY
+                                favHeaderIndex != -1 && firstVisible >= favHeaderIndex -> StickerSubTab.FAVORITES
+                                else -> StickerSubTab.RECENT
+                            }
+                        }
+                    }
+
                     Column(modifier = Modifier.fillMaxSize()) {
                         Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                            when (selectedStickerSubTab) {
-                                StickerSubTab.RECENT -> {
-                                    LazyVerticalGrid(
-                                        columns = GridCells.Fixed(4),
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentPadding = PaddingValues(10.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        // Tile 0: "Create sticker" green action button
-                                        item(span = { GridItemSpan(1) }) {
-                                            CreateStickerActionTile(
-                                                colors = colors,
-                                                onClick = latestOnCreateSticker
-                                            )
-                                        }
+                            LazyVerticalGrid(
+                                state = stickerGridState,
+                                columns = GridCells.Fixed(5),
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                // 1. Tile 0: "Create sticker" green circular action button (Image 1)
+                                item(span = { GridItemSpan(1) }) {
+                                    CreateStickerActionTile(
+                                        colors = colors,
+                                        onClick = latestOnCreateSticker
+                                    )
+                                }
 
-                                        val filteredRecent = if (searchQuery.isBlank()) {
-                                            recentStickers
-                                        } else {
-                                            recentStickers.filter {
-                                                it.body.contains(searchQuery, ignoreCase = true) ||
-                                                    (it.senderName.contains(searchQuery, ignoreCase = true))
-                                            }
-                                        }
+                                // 2. Recent Stickers
+                                items(filteredRecent, key = { it.id }) { stickerMsg ->
+                                    val isFav = favoriteStickerKeys.contains(stickerMsg.mediaSha256) ||
+                                        favoriteStickerKeys.contains(stickerMsg.localMediaPath) ||
+                                        favoriteStickerKeys.contains(stickerMsg.id)
+                                    StickerPickerGridItem(
+                                        filePath = stickerMsg.localMediaPath,
+                                        colors = colors,
+                                        isFavorite = isFav,
+                                        onClick = { latestOnStickerSelected(stickerMsg) },
+                                        onLongClick = { contextStickerItem = stickerMsg }
+                                    )
+                                }
 
-                                        items(filteredRecent, key = { it.id }) { stickerMsg ->
-                                            val isFav = favoriteStickerKeys.contains(stickerMsg.mediaSha256) ||
-                                                favoriteStickerKeys.contains(stickerMsg.localMediaPath) ||
-                                                favoriteStickerKeys.contains(stickerMsg.id)
-                                            StickerPickerGridItem(
-                                                filePath = stickerMsg.localMediaPath,
-                                                colors = colors,
-                                                isFavorite = isFav,
-                                                onClick = { latestOnStickerSelected(stickerMsg) },
-                                                onLongClick = { contextStickerItem = stickerMsg }
-                                            )
-                                        }
+                                // 3. "Favorites" Section Header + Items (Image 1 & 3)
+                                if (filteredFavorites.isNotEmpty()) {
+                                    item(span = { GridItemSpan(5) }) {
+                                        Text(
+                                            text = stringResource(R.string.chat_sticker_favorites_title),
+                                            color = colors.textSecondary,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.padding(start = 4.dp, top = 10.dp, bottom = 4.dp)
+                                        )
+                                    }
+
+                                    items(filteredFavorites, key = { "fav_${it.id}" }) { stickerMsg ->
+                                        StickerPickerGridItem(
+                                            filePath = stickerMsg.localMediaPath,
+                                            colors = colors,
+                                            isFavorite = true,
+                                            onClick = { latestOnStickerSelected(stickerMsg) },
+                                            onLongClick = { contextStickerItem = stickerMsg }
+                                        )
                                     }
                                 }
 
-                                StickerSubTab.FAVORITES -> {
-                                    if (favoriteStickers.isEmpty()) {
-                                        Box(
+                                // 4. "Cuppy" Built-in Section Header + Items (Image 3 & 5)
+                                if (filteredCuppy.isNotEmpty()) {
+                                    item(span = { GridItemSpan(5) }) {
+                                        Row(
                                             modifier = Modifier
-                                                .fillMaxSize()
-                                                .padding(28.dp),
-                                            contentAlignment = Alignment.Center
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Column(
-                                                horizontalAlignment = Alignment.CenterHorizontally,
-                                                verticalArrangement = Arrangement.Center
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Rounded.StarBorder,
-                                                    contentDescription = null,
-                                                    tint = colors.textSecondary.copy(alpha = 0.4f),
-                                                    modifier = Modifier.size(52.dp)
-                                                )
-                                                Spacer(modifier = Modifier.height(12.dp))
-                                                Text(
-                                                    text = stringResource(R.string.chat_sticker_favorites_title),
-                                                    color = colors.textPrimary,
-                                                    fontSize = 16.sp,
-                                                    fontWeight = FontWeight.SemiBold
-                                                )
-                                                Spacer(modifier = Modifier.height(6.dp))
-                                                Text(
-                                                    text = stringResource(R.string.chat_sticker_empty_favorites),
-                                                    color = colors.textSecondary,
-                                                    fontSize = 13.sp,
-                                                    textAlign = TextAlign.Center,
-                                                    lineHeight = 18.sp
-                                                )
-                                            }
-                                        }
-                                    } else {
-                                        LazyVerticalGrid(
-                                            columns = GridCells.Fixed(4),
-                                            modifier = Modifier.fillMaxSize(),
-                                            contentPadding = PaddingValues(10.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                                        ) {
-                                            items(favoriteStickers, key = { "fav_${it.id}" }) { stickerMsg ->
-                                                StickerPickerGridItem(
-                                                    filePath = stickerMsg.localMediaPath,
-                                                    colors = colors,
-                                                    isFavorite = true,
-                                                    onClick = { latestOnStickerSelected(stickerMsg) },
-                                                    onLongClick = { contextStickerItem = stickerMsg }
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-
-                                StickerSubTab.CUPPY -> {
-                                    LazyVerticalGrid(
-                                        columns = GridCells.Fixed(4),
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentPadding = PaddingValues(10.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        // Header
-                                        item(span = { GridItemSpan(4) }) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(horizontal = 4.dp, vertical = 2.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Text(
-                                                    text = CuppyPackManager.PACK_NAME,
-                                                    color = colors.textSecondary,
-                                                    fontSize = 13.sp,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    modifier = Modifier.weight(1f)
-                                                )
-                                                Icon(
-                                                    imageVector = Icons.Rounded.MoreVert,
-                                                    contentDescription = null,
-                                                    tint = colors.textSecondary.copy(alpha = 0.6f),
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            }
-                                        }
-
-                                        items(cuppyStickers, key = { it.id }) { sticker ->
-                                            StickerPickerGridItem(
-                                                filePath = sticker.file.absolutePath,
-                                                colors = colors,
-                                                isFavorite = false,
-                                                onClick = { latestOnSendBuiltin(sticker) },
-                                                onLongClick = { contextStickerItem = sticker }
+                                            Text(
+                                                text = CuppyPackManager.PACK_NAME,
+                                                color = colors.textSecondary,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Icon(
+                                                imageVector = Icons.Rounded.MoreVert,
+                                                contentDescription = null,
+                                                tint = colors.textSecondary.copy(alpha = 0.6f),
+                                                modifier = Modifier.size(18.dp)
                                             )
                                         }
+                                    }
+
+                                    items(filteredCuppy, key = { it.id }) { sticker ->
+                                        StickerPickerGridItem(
+                                            filePath = sticker.file.absolutePath,
+                                            colors = colors,
+                                            isFavorite = false,
+                                            onClick = { latestOnSendBuiltin(sticker) },
+                                            onLongClick = { contextStickerItem = sticker }
+                                        )
                                     }
                                 }
                             }
@@ -629,7 +762,7 @@ fun ChatEmojiPickerDock(
 
                         HorizontalDivider(color = colors.divider.copy(alpha = 0.4f), thickness = 0.5.dp)
 
-                        // 4. Bottom Sticker Pack Switcher Bar [ 🕒 | ⭐ | ☕ | ➕ ]
+                        // 4. WhatsApp Bottom Sticker Pack Switcher Bar [ 🕒 | ⭐ | ☕ | ➕ ] (Image 1, 3, 5)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -637,97 +770,104 @@ fun ChatEmojiPickerDock(
                                 .background(barBg),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // Recent Tab
-                            val isRecent = selectedStickerSubTab == StickerSubTab.RECENT
+                            // Recent Tab (Clock icon)
+                            val isRecentActive = activeStickerSection == StickerSubTab.RECENT
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight()
-                                    .clickable { selectedStickerSubTab = StickerSubTab.RECENT },
+                                    .clickable {
+                                        scope.launch { stickerGridState.animateScrollToItem(0) }
+                                    },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.Center
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isRecentActive) (if (colors.isDark) Color(0xFF2A3942) else Color(0xFFD9DCE0)) else Color.Transparent),
+                                    contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Rounded.Schedule,
                                         contentDescription = stringResource(R.string.chat_sticker_recent_title),
-                                        tint = if (isRecent) greenAccent else colors.textSecondary,
+                                        tint = if (isRecentActive) {
+                                            if (colors.isDark) Color.White else greenAccent
+                                        } else colors.textSecondary,
                                         modifier = Modifier.size(20.dp)
                                     )
-                                    Spacer(modifier = Modifier.height(3.dp))
-                                    Box(
-                                        modifier = Modifier
-                                            .width(24.dp)
-                                            .height(2.5.dp)
-                                            .clip(RoundedCornerShape(1.dp))
-                                            .background(if (isRecent) greenAccent else Color.Transparent)
-                                    )
                                 }
                             }
 
-                            // Favorites Tab
-                            val isFavTab = selectedStickerSubTab == StickerSubTab.FAVORITES
+                            // Favorites Tab (Star icon)
+                            val isFavActive = activeStickerSection == StickerSubTab.FAVORITES
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight()
-                                    .clickable { selectedStickerSubTab = StickerSubTab.FAVORITES },
+                                    .clickable {
+                                        scope.launch {
+                                            if (favHeaderIndex != -1) {
+                                                stickerGridState.animateScrollToItem(favHeaderIndex)
+                                            } else {
+                                                stickerGridState.animateScrollToItem(0)
+                                            }
+                                        }
+                                    },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.Center
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isFavActive) (if (colors.isDark) Color(0xFF2A3942) else Color(0xFFD9DCE0)) else Color.Transparent),
+                                    contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
-                                        imageVector = if (isFavTab) Icons.Rounded.Star else Icons.Rounded.StarBorder,
+                                        imageVector = if (isFavActive) Icons.Rounded.Star else Icons.Rounded.StarBorder,
                                         contentDescription = stringResource(R.string.chat_sticker_favorites_title),
-                                        tint = if (isFavTab) greenAccent else colors.textSecondary,
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                    Spacer(modifier = Modifier.height(3.dp))
-                                    Box(
-                                        modifier = Modifier
-                                            .width(24.dp)
-                                            .height(2.5.dp)
-                                            .clip(RoundedCornerShape(1.dp))
-                                            .background(if (isFavTab) greenAccent else Color.Transparent)
+                                        tint = if (isFavActive) {
+                                            if (colors.isDark) Color.White else greenAccent
+                                        } else colors.textSecondary,
+                                        modifier = Modifier.size(21.dp)
                                     )
                                 }
                             }
 
-                            // Cuppy Pack Tab
-                            val isCuppy = selectedStickerSubTab == StickerSubTab.CUPPY
+                            // Cuppy Pack Tab (Coffee Cup icon)
+                            val isCuppyActive = activeStickerSection == StickerSubTab.CUPPY
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight()
-                                    .clickable { selectedStickerSubTab = StickerSubTab.CUPPY },
+                                    .clickable {
+                                        scope.launch {
+                                            if (cuppyHeaderIndex != -1) {
+                                                stickerGridState.animateScrollToItem(cuppyHeaderIndex)
+                                            }
+                                        }
+                                    },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.Center
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isCuppyActive) (if (colors.isDark) Color(0xFF2A3942) else Color(0xFFD9DCE0)) else Color.Transparent),
+                                    contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Rounded.LocalCafe,
                                         contentDescription = CuppyPackManager.PACK_NAME,
-                                        tint = if (isCuppy) greenAccent else colors.textSecondary,
-                                        modifier = Modifier.size(21.dp)
-                                    )
-                                    Spacer(modifier = Modifier.height(3.dp))
-                                    Box(
-                                        modifier = Modifier
-                                            .width(24.dp)
-                                            .height(2.5.dp)
-                                            .clip(RoundedCornerShape(1.dp))
-                                            .background(if (isCuppy) greenAccent else Color.Transparent)
+                                        tint = if (isCuppyActive) {
+                                            if (colors.isDark) Color.White else greenAccent
+                                        } else colors.textSecondary,
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
                             }
 
-                            // Add / Create Sticker Action
+                            // Add / Create Sticker Action (Plus icon)
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
@@ -739,7 +879,7 @@ fun ChatEmojiPickerDock(
                                     imageVector = Icons.Rounded.Add,
                                     contentDescription = stringResource(R.string.chat_sticker_create_title),
                                     tint = colors.textSecondary,
-                                    modifier = Modifier.size(23.dp)
+                                    modifier = Modifier.size(22.dp)
                                 )
                             }
                         }
@@ -860,7 +1000,7 @@ fun ChatEmojiPickerDock(
 }
 
 /**
- * Green circular button tile for "Create sticker" modeled after official WhatsApp.
+ * Green circular button tile for "Create sticker" matching native WhatsApp (Image 1).
  */
 @Composable
 private fun CreateStickerActionTile(
@@ -871,8 +1011,9 @@ private fun CreateStickerActionTile(
         modifier = Modifier
             .aspectRatio(1f)
             .clip(RoundedCornerShape(12.dp))
+            .background(if (colors.isDark) Color(0xFF141D22) else Color(0xFFF2F5F7))
             .clickable(onClick = onClick)
-            .padding(6.dp),
+            .padding(4.dp),
         contentAlignment = Alignment.Center
     ) {
         Column(
@@ -881,7 +1022,7 @@ private fun CreateStickerActionTile(
         ) {
             Box(
                 modifier = Modifier
-                    .size(46.dp)
+                    .size(40.dp)
                     .clip(CircleShape)
                     .background(colors.accentGreen),
                 contentAlignment = Alignment.Center
@@ -890,7 +1031,7 @@ private fun CreateStickerActionTile(
                     imageVector = Icons.Rounded.Edit,
                     contentDescription = stringResource(R.string.chat_sticker_create_title),
                     tint = Color.White,
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
             Spacer(modifier = Modifier.height(4.dp))
@@ -900,7 +1041,8 @@ private fun CreateStickerActionTile(
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center,
-                lineHeight = 14.sp
+                lineHeight = 13.sp,
+                maxLines = 2
             )
         }
     }
@@ -931,12 +1073,12 @@ private fun StickerPickerGridItem(
     Box(
         modifier = Modifier
             .aspectRatio(1f)
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(8.dp))
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick
             )
-            .padding(5.dp),
+            .padding(3.dp),
         contentAlignment = Alignment.Center
     ) {
         val loaded = bmp

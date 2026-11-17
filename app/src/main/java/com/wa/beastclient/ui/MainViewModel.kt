@@ -1028,7 +1028,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun startVoiceRecording(hasRecordPermission: Boolean) {
         SoundPoolManager.playPttStart()
-        val target = File(EagerMediaVault.mediaDir(appContext), "ptt_rec_${System.currentTimeMillis()}.m4a")
+        val isOpusSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        val ext = if (isOpusSupported) "ogg" else "m4a"
+        val target = File(EagerMediaVault.mediaDir(appContext), "ptt_rec_${System.currentTimeMillis()}.$ext")
         activeRecordingFile = target
         recordingStartMs = System.currentTimeMillis()
         _isRecordingVoice.value = true
@@ -1043,10 +1045,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 rec.apply {
                     setAudioSource(MediaRecorder.AudioSource.MIC)
-                    setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                    setAudioEncodingBitRate(64000)
-                    setAudioSamplingRate(16000)
+                    if (isOpusSupported) {
+                        setOutputFormat(MediaRecorder.OutputFormat.OGG)
+                        setAudioEncoder(MediaRecorder.AudioEncoder.OPUS)
+                        setAudioSamplingRate(16000)
+                        setAudioEncodingBitRate(32000)
+                    } else {
+                        setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                        setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                        setAudioSamplingRate(16000)
+                        setAudioEncodingBitRate(64000)
+                    }
                     setOutputFile(target.absolutePath)
                     prepare()
                     start()
@@ -1090,14 +1099,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     EagerMediaVault.generateSpeechCadenceWav(wav, durationSec = elapsedSec.coerceAtLeast(3))
                 }
             }
-            val mime = if (audioFile.extension == "wav") "audio/wav" else "audio/mp4"
+            val mime = when (audioFile.extension.lowercase()) {
+                "ogg" -> "audio/ogg; codecs=opus"
+                "wav" -> "audio/wav"
+                else -> "audio/mp4"
+            }
             WaRealtimeService.sendMediaMessage(
                 context = appContext,
                 chatJid = chatJid,
                 sourceFile = audioFile,
                 mimeType = mime,
                 caption = "",
-                qualityMode = OutboundQualityMode.ORIGINAL,
+                qualityMode = OutboundQualityMode.STANDARD,
                 isVoiceNote = true,
                 durationSec = elapsedSec.coerceAtLeast(2)
             ).onFailure { err ->

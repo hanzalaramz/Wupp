@@ -814,11 +814,13 @@ func SendMediaMessage(
 	isSticker := modeLower == "sticker" || strings.Contains(rawMode, "sticker")
 
 	switch {
+	case isVoiceNote:
+		waMediaType = whatsmeow.MediaAudio
 	case isSticker:
 		waMediaType = whatsmeow.MediaImage
 	case !isViewOnce && modeLower == "original" && !strings.HasPrefix(mimeLower, "video/"):
 		waMediaType = whatsmeow.MediaDocument
-	case isVoiceNote || strings.HasPrefix(mimeLower, "audio/"):
+	case strings.HasPrefix(mimeLower, "audio/"):
 		waMediaType = whatsmeow.MediaAudio
 	case strings.HasPrefix(mimeLower, "video/"):
 		waMediaType = whatsmeow.MediaVideo
@@ -897,9 +899,13 @@ func SendMediaMessage(
 	case whatsmeow.MediaAudio:
 		sec := uint32(maxInt(durationSec, 1))
 		wf := parseWaveformCsv(waveformCsv)
+		audioMime := mimeType
+		if isVoiceNote {
+			audioMime = "audio/ogg; codecs=opus"
+		}
 		msg = &waE2E.Message{
 			AudioMessage: &waE2E.AudioMessage{
-				Mimetype:      proto.String(mimeType),
+				Mimetype:      proto.String(audioMime),
 				Seconds:       &sec,
 				PTT:           proto.Bool(isVoiceNote),
 				Waveform:      wf,
@@ -4520,23 +4526,31 @@ func compute40BarWaveform(data []byte) string {
 }
 
 func parseWaveformCsv(csv string) []byte {
-	if strings.TrimSpace(csv) == "" {
-		return nil
-	}
-	parts := strings.Split(csv, ",")
-	out := make([]byte, 0, len(parts))
-	for _, p := range parts {
-		if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
-			if n < 0 {
-				n = 0
+	clean := strings.TrimSpace(csv)
+	if clean != "" {
+		parts := strings.Split(clean, ",")
+		out := make([]byte, 0, len(parts))
+		for _, p := range parts {
+			if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
+				if n < 0 {
+					n = 0
+				}
+				if n > 100 {
+					n = 100
+				}
+				out = append(out, byte(n))
 			}
-			if n > 100 {
-				n = 100
-			}
-			out = append(out, byte(n))
+		}
+		if len(out) > 0 {
+			return out
 		}
 	}
-	return out
+	// Fallback to a clean 64-bar speech waveform so WhatsApp renders the native waveform bubble
+	def := make([]byte, 64)
+	for i := range def {
+		def[i] = byte(15 + ((i*7)%35) + ((i%4)*8))
+	}
+	return def
 }
 
 func extensionForMime(mime, mediaType string) string {
