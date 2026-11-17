@@ -692,6 +692,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun observePinnedMessages(chatJid: String): Flow<List<MessageEntity>> =
+        dao.observePinnedMessages(chatJid)
+
+    fun pinMessage(chatJid: String, target: MessageEntity, durationSec: Long) {
+        viewModelScope.launch {
+            WaRealtimeService.pinInChatMessage(
+                context = appContext,
+                chatJid = chatJid,
+                targetMsgId = target.id,
+                fromMe = target.isFromMe,
+                senderJid = target.senderJid,
+                durationSec = durationSec,
+                isUnpin = false
+            ).onFailure { err ->
+                showToast("Pin saved locally (${err.message ?: "offline"})")
+            }
+        }
+    }
+
+    fun unpinMessage(chatJid: String, target: MessageEntity) {
+        viewModelScope.launch {
+            WaRealtimeService.pinInChatMessage(
+                context = appContext,
+                chatJid = chatJid,
+                targetMsgId = target.id,
+                fromMe = target.isFromMe,
+                senderJid = target.senderJid,
+                durationSec = 0L,
+                isUnpin = true
+            ).onFailure { err ->
+                showToast("Unpin saved locally (${err.message ?: "offline"})")
+            }
+        }
+    }
+
     fun pairWithPhoneNumber(phone: String, onResult: (String) -> Unit) {
         viewModelScope.launch {
             val digits = phone.filter { it.isDigit() }

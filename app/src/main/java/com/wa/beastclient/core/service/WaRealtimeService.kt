@@ -118,6 +118,7 @@ class WaRealtimeService : Service() {
     private var watchdogConsecutiveFailures: Int = 0
     private val typingExpiryJobs = ConcurrentHashMap<String, Job>()
     private val pendingReactions = ConcurrentHashMap<String, MutableList<JSONObject>>()
+    private val pendingPins = ConcurrentHashMap<String, JSONObject>()
     private val chatAliasToCanonical = ConcurrentHashMap<String, String>()
 
     private suspend fun canonicalizeAndMergeAlias(rawJid: String, rawAltJid: String): String {
@@ -187,6 +188,11 @@ class WaRealtimeService : Service() {
         for (rx in queued) {
             handleReaction(rx)
         }
+    }
+
+    private suspend fun drainPendingPins(messageId: String) {
+        val queued = pendingPins.remove(messageId) ?: return
+        handleMessagePinInChat(queued)
     }
 
     override fun onCreate() {
@@ -567,6 +573,7 @@ class WaRealtimeService : Service() {
             "MESSAGE_REVOKE" -> handleMessageRevoke(json)
             "MESSAGE_EDIT" -> handleMessageEdit(json)
             "MESSAGE_REACTION" -> handleReaction(json)
+            "MESSAGE_PIN_IN_CHAT" -> handleMessagePinInChat(json)
             "VIEW_ONCE_STRIPPED" -> handleViewOnceStripped(json)
             "VIEW_ONCE_EXPIRED" -> handleViewOnceExpired(json)
             "UNDECRYPTABLE_STUB" -> handleUndecryptableStub(json)
@@ -738,9 +745,19 @@ class WaRealtimeService : Service() {
                     handleReaction(rxObj)
                 }
             }
+            val pinsArr = json.optJSONArray("pins")
+            if (pinsArr != null) {
+                for (i in 0 until pinsArr.length()) {
+                    val pinObj = pinsArr.optJSONObject(i) ?: continue
+                    handleMessagePinInChat(pinObj)
+                }
+            }
             for (entity in msgList) {
                 if (pendingReactions.containsKey(entity.id)) {
                     drainPendingReactions(entity.id)
+                }
+                if (pendingPins.containsKey(entity.id)) {
+                    drainPendingPins(entity.id)
                 }
             }
         } finally {
@@ -809,6 +826,7 @@ class WaRealtimeService : Service() {
             )
         }
         drainPendingReactions(msg.id)
+        drainPendingPins(msg.id)
         if (dao.getChat(msg.chatJid)?.avatarPath.isNullOrBlank()) {
             requestSingleAvatarIfNeeded(msg.chatJid)
         }
@@ -1076,6 +1094,30 @@ class WaRealtimeService : Service() {
                 )
             }
         }
+    }
+
+    private suspend fun handleMessagePinInChat(json: JSONObject) {
+        val targetId = json.optString("targetMessageId")
+        if (targetId.isBlank()) return
+        val isUnpin = json.optBoolean("isUnpin", false)
+        val durationSec = json.optLong("durationSec", 0L)
+        val ts = json.optLong("timestamp", System.currentTimeMillis())
+        val pinnedUntil = if (!isUnpin && durationSec > 0) ts + (durationSec * 1000L) else 0L
+
+        val existing = dao.getMessage(targetId)
+        if (existing == null) {
+            if (pendingPins.size > 500) {
+                pendingPins.clear()
+            }
+            pendingPins[targetId] = json
+            return
+        }
+        dao.updateMessagePinnedStatus(
+            messageId = targetId,
+            isPinned = !isUnpin,
+            pinnedAt = ts,
+            pinnedUntil = pinnedUntil
+        )
     }
 
     private suspend fun handleViewOnceStripped(json: JSONObject) {
@@ -2460,6 +2502,44 @@ class WaRealtimeService : Service() {
                             String::class.java
                         )
                         .invoke(null, chatJid, targetMsg.id, targetMsg.senderJid, targetMsg.isFromMe, finalEmoji)
+                }
+                Unit
+            }
+        }
+
+        suspend fun pinInChatMessage(
+            context: Context,
+            chatJid: String,
+            targetMsgId: String,
+            fromMe: Boolean,
+            senderJid: String,
+            durationSec: Long,
+            isUnpin: Boolean
+        ): Result<Unit> = withContext(Dispatchers.IO) {
+            runCatching {
+                val dao = WaUiDatabase.getInstance(context).waDao()
+                val now = System.currentTimeMillis()
+                val pinnedUntil = if (!isUnpin && durationSec > 0) now + (durationSec * 1000L) else 0L
+                dao.updateMessagePinnedStatus(
+                    messageId = targetMsgId,
+                    isPinned = !isUnpin,
+                    pinnedAt = now,
+                    pinnedUntil = pinnedUntil
+                )
+                if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+                    runCatching {
+                        Whatsbridge::class.java
+                            .getMethod(
+                                "pinChatMessage",
+                                String::class.java,
+                                String::class.java,
+                                Boolean::class.javaPrimitiveType,
+                                String::class.java,
+                                Long::class.javaPrimitiveType,
+                                Boolean::class.javaPrimitiveType
+                            )
+                            .invoke(null, chatJid, targetMsgId, fromMe, senderJid, durationSec, isUnpin)
+                    }
                 }
                 Unit
             }

@@ -40,6 +40,14 @@
     <!-- Chat Actions -->
     <string name="chat_action_pin">Pin chat</string>
     <string name="chat_action_unpin">Unpin chat</string>
+    <string name="pin_message">Pin</string>
+    <string name="unpin_message">Unpin</string>
+    <string name="pin_message_title">Pin message</string>
+    <string name="pin_message_subtitle">Choose how long your pin lasts</string>
+    <string name="pin_duration_24h">24 hours</string>
+    <string name="pin_duration_7d">7 days</string>
+    <string name="pin_duration_30d">30 days</string>
+    <string name="pinned_message_banner_label">Pinned message</string>
     <string name="chat_action_mute">Mute notifications</string>
     <string name="chat_action_unmute">Unmute notifications</string>
     <string name="chat_action_archive">Archive locally</string>

@@ -22,7 +22,7 @@ import java.io.File
         ContactEntity::class,
         MessageReactionEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 abstract class WaUiDatabase : RoomDatabase() {
@@ -79,6 +79,18 @@ abstract class WaUiDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE messages ADD COLUMN pinned_until INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE messages ADD COLUMN pinned_at INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_messages_chat_jid_is_pinned` " +
+                        "ON `messages` (`chat_jid`, `is_pinned`)"
+                )
+            }
+        }
+
         fun getInstance(context: Context): WaUiDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -86,7 +98,7 @@ abstract class WaUiDatabase : RoomDatabase() {
                     WaUiDatabase::class.java,
                     File(context.applicationContext.filesDir, "wa_ui.db").absolutePath
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
                     .addCallback(object : Callback() {
                         override fun onOpen(db: SupportSQLiteDatabase) {

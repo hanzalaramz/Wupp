@@ -83,7 +83,8 @@ data class ChatEntity(
     tableName = "messages",
     indices = [
         Index(value = ["chat_jid", "timestamp"]),
-        Index(value = ["is_view_once", "timestamp"])
+        Index(value = ["is_view_once", "timestamp"]),
+        Index(value = ["chat_jid", "is_pinned"])
     ]
 )
 data class MessageEntity(
@@ -147,7 +148,13 @@ data class MessageEntity(
     @ColumnInfo(name = "mentions_csv")
     val mentionsCsv: String = "",
     @ColumnInfo(name = "reaction_summary")
-    val reactionSummary: String = ""
+    val reactionSummary: String = "",
+    @ColumnInfo(name = "is_pinned", defaultValue = "0")
+    val isPinned: Boolean = false,
+    @ColumnInfo(name = "pinned_until", defaultValue = "0")
+    val pinnedUntil: Long = 0L,
+    @ColumnInfo(name = "pinned_at", defaultValue = "0")
+    val pinnedAt: Long = 0L
 )
 
 @Fts4(contentEntity = MessageEntity::class)

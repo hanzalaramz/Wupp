@@ -17,10 +17,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
@@ -92,6 +94,7 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.SentimentSatisfiedAlt
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Stop
@@ -193,6 +196,8 @@ import com.wa.beastclient.ui.components.InAppPdfViewerDialog
 import com.wa.beastclient.ui.components.InlineTimestampMessage
 import com.wa.beastclient.ui.components.MessageMetaCluster
 import com.wa.beastclient.ui.components.OutboundMediaPreviewDialog
+import com.wa.beastclient.ui.components.PinDurationDialog
+import com.wa.beastclient.ui.components.PinnedMessageBanner
 import com.wa.beastclient.ui.components.ProfilePhotoLightbox
 import com.wa.beastclient.ui.components.StagedOutboundMedia
 import com.wa.beastclient.ui.components.SwipeToReplyBox
@@ -251,6 +256,8 @@ fun ChatScreen(
 
     val chat by remember(chatJid) { viewModel.observeChat(chatJid) }.collectAsState(initial = null)
     val contact by remember(chatJid) { viewModel.observeContact(chatJid) }.collectAsState(initial = null)
+    val pinnedMessages by remember(chatJid) { viewModel.observePinnedMessages(chatJid) }.collectAsState(initial = emptyList())
+    var pinDurationDialogTarget by remember(chatJid) { mutableStateOf<MessageEntity?>(null) }
     val isChannel = chatJid.endsWith("@newsletter")
     val isGroupAnnounceLocked by remember(chatJid) { viewModel.isGroupAnnounceLocked(chatJid) }.collectAsState(initial = false)
     val effectivePrivacy by remember(chatJid) { viewModel.observeEffectivePrivacy(chatJid) }.collectAsState(initial = null)
@@ -726,6 +733,33 @@ fun ChatScreen(
                                             }
                                         )
                                     }
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                if (selectedMsg.isPinned) stringResource(R.string.unpin_message)
+                                                else stringResource(R.string.pin_message)
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Rounded.PushPin,
+                                                contentDescription = null,
+                                                tint = if (selectedMsg.isPinned) colors.accentGreen else colors.textPrimary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        },
+                                        onClick = {
+                                            showSelectionOverflow = false
+                                            val target = selectedMsg
+                                            actionMenuTarget = null
+                                            showMoreReactionEmojis = false
+                                            if (target.isPinned) {
+                                                viewModel.unpinMessage(chatJid, target)
+                                            } else {
+                                                pinDurationDialogTarget = target
+                                            }
+                                        }
+                                    )
                                 }
                             }
                         }
@@ -982,6 +1016,23 @@ fun ChatScreen(
                             )
                         }
                     }
+                }
+
+                AnimatedVisibility(
+                    visible = pinnedMessages.isNotEmpty() && actionMenuTarget == null,
+                    enter = fadeIn(topMotion.fastEffectsSpec()) + expandVertically(topMotion.fastSpatialSpec()),
+                    exit = fadeOut(topMotion.fastEffectsSpec()) + shrinkVertically(topMotion.fastSpatialSpec())
+                ) {
+                    PinnedMessageBanner(
+                        pinnedMessages = pinnedMessages,
+                        colors = colors,
+                        onMessageClick = { targetMsg ->
+                            jumpToQuotedMessage(targetMsg.id)
+                        },
+                        onUnpinClick = { targetMsg ->
+                            viewModel.unpinMessage(chatJid, targetMsg)
+                        }
+                    )
                 }
             }
         }
@@ -2289,6 +2340,17 @@ fun ChatScreen(
             }
         )
     }
+
+    pinDurationDialogTarget?.let { target ->
+        PinDurationDialog(
+            onDismiss = { pinDurationDialogTarget = null },
+            onConfirm = { durationSec ->
+                viewModel.pinMessage(chatJid, target, durationSec)
+                pinDurationDialogTarget = null
+            },
+            colors = colors
+        )
+    }
 }
 
 internal fun findLoadedQuotedItemIndex(
@@ -2647,7 +2709,8 @@ private fun MessageBubbleRow(
                                 isEdited = false,
                                 isEphemeral = msg.isEphemeral,
                                 isFromMe = msg.isFromMe,
-                                deliveryStatus = msg.deliveryStatus
+                                deliveryStatus = msg.deliveryStatus,
+                                isPinned = msg.isPinned
                             )
                         }
                     }
@@ -2718,7 +2781,8 @@ private fun MessageBubbleRow(
                                 isEdited = msg.isEdited,
                                 isEphemeral = msg.isEphemeral,
                                 isFromMe = msg.isFromMe,
-                                deliveryStatus = msg.deliveryStatus
+                                deliveryStatus = msg.deliveryStatus,
+                                isPinned = msg.isPinned
                             )
                         }
                     }
@@ -2999,7 +3063,8 @@ private fun MessageBubbleRow(
                                         isEphemeral = msg.isEphemeral,
                                         isFromMe = msg.isFromMe,
                                         deliveryStatus = msg.deliveryStatus,
-                                        tintOverride = Color.White
+                                        tintOverride = Color.White,
+                                        isPinned = msg.isPinned
                                     )
                                 }
                             }
@@ -3045,7 +3110,8 @@ private fun MessageBubbleRow(
                                 isEdited = msg.isEdited,
                                 isEphemeral = msg.isEphemeral,
                                 isFromMe = msg.isFromMe,
-                                deliveryStatus = msg.deliveryStatus
+                                deliveryStatus = msg.deliveryStatus,
+                                isPinned = msg.isPinned
                             )
                         }
                     }

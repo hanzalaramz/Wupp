@@ -3066,6 +3066,35 @@ func processIncomingMessage(evt *events.Message) {
 		return
 	}
 
+	// Pin in chat message
+	if pinMsg := inner.GetPinInChatMessage(); pinMsg != nil {
+		isUnpin := pinMsg.GetType() == waE2E.PinInChatMessage_UNPIN_FOR_ALL
+		var durSec uint32
+		if ctxInfo := raw.GetMessageContextInfo(); ctxInfo != nil {
+			durSec = ctxInfo.GetMessageAddOnDurationInSecs()
+		}
+		if durSec == 0 {
+			if ctxInfo := inner.GetMessageContextInfo(); ctxInfo != nil {
+				durSec = ctxInfo.GetMessageAddOnDurationInSecs()
+			}
+		}
+		ts := pinMsg.GetSenderTimestampMS()
+		if ts == 0 {
+			ts = evt.Info.Timestamp.UnixMilli()
+		}
+		emitJSON("MESSAGE_PIN_IN_CHAT", map[string]any{
+			"chatJid":         evtChatStr,
+			"altChatJid":      altEvtChat.String(),
+			"targetMessageId": pinMsg.GetKey().GetID(),
+			"senderJid":       evtSenderStr,
+			"isFromMe":        evt.Info.IsFromMe,
+			"isUnpin":         isUnpin,
+			"durationSec":     durSec,
+			"timestamp":       ts,
+		})
+		return
+	}
+
 	// Handle direct Edit wrapper if ProtocolMessage was nested inside EditedMessage
 	if isEdit && inner.GetProtocolMessage() == nil {
 		body, _, _, _, _, _ := extractMessageContent(inner)
@@ -3167,12 +3196,13 @@ func processHistorySync(evt *events.HistorySync) {
 	chatBatchIdx := make(map[string]int)
 	var msgBatch []map[string]any
 	var rxBatch []map[string]any
+	var pinBatch []map[string]any
 	var priorityMediaJobs []*mediaJob
 	var standardMediaJobs []*mediaJob
 	convJIDs := make(map[string]bool)
 
 	flush := func(done bool) {
-		if len(chatBatch) == 0 && len(msgBatch) == 0 && len(rxBatch) == 0 && !done {
+		if len(chatBatch) == 0 && len(msgBatch) == 0 && len(rxBatch) == 0 && len(pinBatch) == 0 && !done {
 			return
 		}
 		emitJSON("HISTORY_SYNC_BATCH", map[string]any{
@@ -3181,6 +3211,7 @@ func processHistorySync(evt *events.HistorySync) {
 			"chats":     chatBatch,
 			"messages":  msgBatch,
 			"reactions": rxBatch,
+			"pins":      pinBatch,
 			"pushnames": pushnames,
 			"isFinal":   done,
 		})
@@ -3189,6 +3220,7 @@ func processHistorySync(evt *events.HistorySync) {
 		chatBatchIdx = make(map[string]int)
 		msgBatch = nil
 		rxBatch = nil
+		pinBatch = nil
 	}
 
 	type histMsgEntry struct {
@@ -3378,6 +3410,40 @@ func processHistorySync(evt *events.HistorySync) {
 						"isFromMe":        parsed.Info.IsFromMe,
 						"emoji":           rm.GetText(),
 						"timestamp":       parsed.Info.Timestamp.UnixMilli(),
+					})
+				}
+				continue
+			}
+			if pinMsg := inner.GetPinInChatMessage(); pinMsg != nil {
+				if tid := pinMsg.GetKey().GetID(); tid != "" {
+					isUnpin := pinMsg.GetType() == waE2E.PinInChatMessage_UNPIN_FOR_ALL
+					var durSec uint32
+					if ctxInfo := parsed.Message.GetMessageContextInfo(); ctxInfo != nil {
+						durSec = ctxInfo.GetMessageAddOnDurationInSecs()
+					}
+					if durSec == 0 {
+						if ctxInfo := inner.GetMessageContextInfo(); ctxInfo != nil {
+							durSec = ctxInfo.GetMessageAddOnDurationInSecs()
+						}
+					}
+					ts := pinMsg.GetSenderTimestampMS()
+					if ts == 0 {
+						ts = parsed.Info.Timestamp.UnixMilli()
+					}
+					canonPinSender, _ := canonicalizeDMChatJID(baseCtx, cli, parsed.Info.Sender)
+					pinSender := canonPinSender.String()
+					if pinSender == "" {
+						pinSender = parsed.Info.Sender.String()
+					}
+					pinBatch = append(pinBatch, map[string]any{
+						"chatJid":         chatJID.String(),
+						"altChatJid":      altJID.String(),
+						"targetMessageId": tid,
+						"senderJid":       pinSender,
+						"isFromMe":        parsed.Info.IsFromMe,
+						"isUnpin":         isUnpin,
+						"durationSec":     durSec,
+						"timestamp":       ts,
 					})
 				}
 				continue
@@ -5380,4 +5446,58 @@ func SetContactBlocked(jidStr string, blocked bool) error {
 	defer cancel()
 	_, uErr := cli.UpdateBlocklist(ctx, target, action, "")
 	return uErr
+}
+
+// PinChatMessage pins or unpins a target message in a chat with durationSec (e.g. 86400, 604800, 2592000).
+func PinChatMessage(
+	chatJid string,
+	targetMessageId string,
+	fromMe bool,
+	senderJid string,
+	durationSec int64,
+	isUnpin bool,
+) error {
+	mu.Lock()
+	cli := client
+	mu.Unlock()
+	if cli == nil || !cli.IsConnected() {
+		return errors.New("client not connected")
+	}
+	chatParsed, err := types.ParseJID(strings.TrimSpace(chatJid))
+	if err != nil {
+		return fmt.Errorf("invalid chat jid: %s", chatJid)
+	}
+	var targetSender types.JID
+	if !fromMe {
+		if strings.TrimSpace(senderJid) != "" {
+			if sp, sErr := types.ParseJID(strings.TrimSpace(senderJid)); sErr == nil {
+				targetSender = sp
+			}
+		}
+		if targetSender.IsEmpty() {
+			targetSender = chatParsed
+		}
+	}
+	pinType := waE2E.PinInChatMessage_PIN_FOR_ALL
+	if isUnpin {
+		pinType = waE2E.PinInChatMessage_UNPIN_FOR_ALL
+	}
+	msgKey := cli.BuildMessageKey(chatParsed, targetSender, types.MessageID(targetMessageId))
+	pinMsg := &waE2E.PinInChatMessage{
+		Key:               msgKey,
+		Type:              pinType.Enum(),
+		SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
+	}
+	msg := &waE2E.Message{
+		PinInChatMessage: pinMsg,
+	}
+	if !isUnpin && durationSec > 0 {
+		msg.MessageContextInfo = &waE2E.MessageContextInfo{
+			MessageAddOnDurationInSecs: proto.Uint32(uint32(durationSec)),
+		}
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 15*time.Second)
+	defer cancel()
+	_, sErr := cli.SendMessage(ctx, chatParsed, msg)
+	return sErr
 }

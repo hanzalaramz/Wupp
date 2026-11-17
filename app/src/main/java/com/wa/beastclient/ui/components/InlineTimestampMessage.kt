@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -112,7 +114,8 @@ fun InlineTimestampMessage(
                         isEdited = msg.isEdited,
                         isEphemeral = msg.isEphemeral,
                         isFromMe = msg.isFromMe,
-                        deliveryStatus = msg.deliveryStatus
+                        deliveryStatus = msg.deliveryStatus,
+                        isPinned = msg.isPinned
                     )
                 }
             ) { measurables, constraints ->
@@ -169,7 +172,8 @@ fun InlineTimestampMessage(
                     isEdited = msg.isEdited,
                     isEphemeral = msg.isEphemeral,
                     isFromMe = msg.isFromMe,
-                    deliveryStatus = msg.deliveryStatus
+                    deliveryStatus = msg.deliveryStatus,
+                    isPinned = msg.isPinned
                 )
             }
         }
@@ -183,7 +187,8 @@ fun MessageMetaCluster(
     isEphemeral: Boolean,
     isFromMe: Boolean,
     deliveryStatus: String,
-    tintOverride: Color? = null
+    tintOverride: Color? = null,
+    isPinned: Boolean = false
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
@@ -193,6 +198,14 @@ fun MessageMetaCluster(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
+        if (isPinned) {
+            Icon(
+                imageVector = Icons.Rounded.PushPin,
+                contentDescription = "Pinned",
+                modifier = Modifier.size(11.dp),
+                tint = secondary
+            )
+        }
         if (isEphemeral) {
             Text(
                 text = "⏳",

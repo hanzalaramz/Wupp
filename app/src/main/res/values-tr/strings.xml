@@ -41,6 +41,14 @@
     <!-- Chat Actions -->
     <string name="chat_action_pin">Sohbeti sabitle</string>
     <string name="chat_action_unpin">Sabitlemeyi kaldır</string>
+    <string name="pin_message">Sabitle</string>
+    <string name="unpin_message">Sabitlemeyi kaldır</string>
+    <string name="pin_message_title">Mesajı sabitle</string>
+    <string name="pin_message_subtitle">Sabitlemenin ne kadar süreceğini seçin</string>
+    <string name="pin_duration_24h">24 saat</string>
+    <string name="pin_duration_7d">7 gün</string>
+    <string name="pin_duration_30d">30 gün</string>
+    <string name="pinned_message_banner_label">Sabitlenmiş mesaj</string>
     <string name="chat_action_mute">Bildirimleri sessize al</string>
     <string name="chat_action_unmute">Sesi aç</string>
     <string name="chat_action_archive">Yerel olarak arşivle</string>

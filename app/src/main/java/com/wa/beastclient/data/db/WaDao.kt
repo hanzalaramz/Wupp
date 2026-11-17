@@ -362,6 +362,36 @@ interface WaDao {
         """
         SELECT * FROM messages
         WHERE chat_jid = :chatJid
+          AND is_pinned = 1
+          AND (pinned_until = 0 OR pinned_until > :now)
+        ORDER BY pinned_at DESC
+        LIMIT 3
+        """
+    )
+    fun observePinnedMessages(chatJid: String, now: Long = System.currentTimeMillis()): Flow<List<MessageEntity>>
+
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE chat_jid = :chatJid
+          AND is_pinned = 1
+          AND (pinned_until = 0 OR pinned_until > :now)
+        ORDER BY pinned_at DESC
+        LIMIT 3
+        """
+    )
+    suspend fun getPinnedMessages(chatJid: String, now: Long = System.currentTimeMillis()): List<MessageEntity>
+
+    @Query("UPDATE messages SET is_pinned = :isPinned, pinned_at = :pinnedAt, pinned_until = :pinnedUntil WHERE id = :messageId")
+    suspend fun updateMessagePinnedStatus(messageId: String, isPinned: Boolean, pinnedAt: Long, pinnedUntil: Long)
+
+    @Query("UPDATE messages SET is_pinned = 0 WHERE chat_jid = :chatJid AND is_pinned = 1 AND pinned_until > 0 AND pinned_until <= :now")
+    suspend fun cleanExpiredPinnedMessages(chatJid: String, now: Long = System.currentTimeMillis())
+
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE chat_jid = :chatJid
           AND is_view_once = 0
           AND (msg_type = 'IMAGE' OR msg_type = 'VIDEO')
           AND local_media_path IS NOT NULL
