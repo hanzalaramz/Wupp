@@ -901,7 +901,9 @@ func SendMediaMessage(
 		wf := parseWaveformCsv(waveformCsv)
 		audioMime := mimeType
 		if isVoiceNote {
-			audioMime = "audio/ogg; codecs=opus"
+			if strings.Contains(mimeLower, "ogg") || strings.Contains(mimeLower, "opus") || mimeLower == "" {
+				audioMime = "audio/ogg; codecs=opus"
+			}
 		}
 		msg = &waE2E.Message{
 			AudioMessage: &waE2E.AudioMessage{
