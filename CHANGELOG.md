@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.3-pre.2] - 2026-11-17
+
 ### ✨ Features
 - 📌 **Pinned Messages (#53):** Two-way sync for pinned messages with sticky top banner, 24h/7d/30d durations, tap-to-scroll, and unpin actions
 - 🎨 **Photo Editor (#32):** Native WhatsApp-style editor before sending with freehand doodle pen, text overlays, stickers, rotation, and color filters
