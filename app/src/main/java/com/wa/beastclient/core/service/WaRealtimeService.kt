@@ -1787,6 +1787,41 @@ class WaRealtimeService : Service() {
                 .getOrDefault("{}")
         }
 
+        fun getGroupParticipants(groupJid: String): List<String> {
+            if (!groupJid.endsWith("@g.us")) return emptyList()
+            if (!runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) return emptyList()
+            return runCatching {
+                val raw = Whatsbridge.getGroupParticipantsJson(groupJid)
+                val arr = JSONArray(raw)
+                buildList {
+                    for (i in 0 until arr.length()) {
+                        val p = arr.optString(i).trim()
+                        if (p.isNotBlank()) add(p)
+                    }
+                }
+            }.getOrDefault(emptyList())
+        }
+
+        fun getGroupAdminJids(groupJid: String): Set<String> {
+            if (!groupJid.endsWith("@g.us")) return emptySet()
+            if (!runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) return emptySet()
+            return runCatching {
+                val method = Whatsbridge::class.java.getMethod("getGroupInfoJson", String::class.java)
+                val raw = method.invoke(null, groupJid) as? String ?: return emptySet()
+                val obj = JSONArray(raw).let { null } ?: JSONObject(raw)
+                val arr = obj.optJSONArray("participants") ?: return emptySet()
+                buildSet {
+                    for (i in 0 until arr.length()) {
+                        val p = arr.optJSONObject(i) ?: continue
+                        if (p.optBoolean("isAdmin", false) || p.optBoolean("isSuperAdmin", false)) {
+                            val j = p.optString("jid").trim()
+                            if (j.isNotBlank()) add(j)
+                        }
+                    }
+                }
+            }.getOrDefault(emptySet())
+        }
+
         fun requestFullProfilePicture(jid: String) {
             if (jid.isBlank()) return
             companionScope.launch {

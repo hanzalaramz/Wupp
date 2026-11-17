@@ -535,6 +535,73 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setChatLock(chatJid: String, locked: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            dao.updateChatLock(chatJid, locked)
+        }
+    }
+
+    fun clearChatMessages(chatJid: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            dao.deleteMessagesForChat(chatJid)
+            dao.updateChatPreviewAfterClear(chatJid, "", "TEXT", System.currentTimeMillis(), 0)
+        }
+    }
+
+    suspend fun fetchGroupParticipants(groupJid: String): List<String> = withContext(Dispatchers.IO) {
+        if (!groupJid.endsWith("@g.us")) return@withContext emptyList()
+        val fromBridge = WaRealtimeService.getGroupParticipants(groupJid)
+        if (fromBridge.isNotEmpty()) {
+            resolveParticipantsLocally(fromBridge)
+            return@withContext fromBridge
+        }
+        val senders = dao.getDistinctSenders(groupJid)
+        if (senders.isNotEmpty()) {
+            resolveParticipantsLocally(senders)
+            return@withContext senders
+        }
+        emptyList()
+    }
+
+    suspend fun fetchGroupAdmins(groupJid: String): Set<String> = withContext(Dispatchers.IO) {
+        val admins = WaRealtimeService.getGroupAdminJids(groupJid)
+        if (admins.isNotEmpty()) return@withContext admins
+        if (groupJid == "120363044556677889@g.us") {
+            return@withContext setOf("15550192834@s.whatsapp.net", "15550198811@s.whatsapp.net")
+        }
+        emptySet()
+    }
+
+    fun exportChatToText(chatJid: String, context: android.content.Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val msgs = dao.getMessagesForChat(chatJid)
+            val chat = dao.getChat(chatJid)
+            val title = chat?.name?.ifBlank { chatJid.substringBefore("@") } ?: chatJid.substringBefore("@")
+            val sb = StringBuilder()
+            sb.append("WhatsApp Chat with $title\n\n")
+            msgs.reversed().forEach { m ->
+                val time = java.text.SimpleDateFormat("dd/MM/yyyy, HH:mm", java.util.Locale.getDefault()).format(java.util.Date(m.timestamp))
+                val sender = if (m.isFromMe) "You" else m.senderName.ifBlank { m.senderJid.substringBefore("@") }
+                sb.append("[$time] $sender: ${m.body}\n")
+            }
+            val file = java.io.File(context.cacheDir, "chat_${chatJid.filter { it.isLetterOrDigit() }}.txt")
+            file.writeText(sb.toString())
+            withContext(Dispatchers.Main) {
+                runCatching {
+                    val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                    val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(android.content.Intent.createChooser(intent, "Export chat"))
+                }.onFailure {
+                    showToast("Export failed: ${it.message}")
+                }
+            }
+        }
+    }
+
     fun togglePinChat(chat: ChatEntity) {
         viewModelScope.launch(Dispatchers.IO) {
             dao.updatePinned(chat.jid, !chat.isPinned, System.currentTimeMillis())

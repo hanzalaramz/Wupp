@@ -4,6 +4,7 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
+import android.widget.Toast
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -266,6 +267,7 @@ internal fun resolveTabIdForPagerIndex(tabOrder: List<Int>, pageIndex: Int): Int
 fun HomeScreen(
     viewModel: MainViewModel,
     onOpenChat: (String) -> Unit,
+    onOpenContactInfo: (String) -> Unit = {},
     currentTab: Int = 0,
     onSelectTab: (Int) -> Unit = {},
     chatsListState: LazyListState = rememberLazyListState(),
@@ -1078,9 +1080,17 @@ fun HomeScreen(
             aboutOverride = if (stealth.alwaysShowContactBio) cachedBio else "",
             onDismiss = { quickContactTarget = null },
             onOpenChat = { onOpenChat(target.jid) },
-            onOpenGhostInfo = { onSelectTab(3) },
-            onOpenPresenceLog = { onSelectTab(3) },
-            onOpenAvatarHistory = { onSelectTab(3) },
+            onOpenInfo = {
+                val jid = target.jid
+                quickContactTarget = null
+                onOpenContactInfo(jid)
+            },
+            onAudioCall = {
+                Toast.makeText(context, "Calls require official WhatsApp app", Toast.LENGTH_SHORT).show()
+            },
+            onVideoCall = {
+                Toast.makeText(context, "Calls require official WhatsApp app", Toast.LENGTH_SHORT).show()
+            },
             onRequestFullAvatar = { viewModel.requestFullProfilePicture(target.jid) },
             onSaveAvatar = {
                 val safeName = target.name.ifBlank { target.jid.substringBefore("@") }

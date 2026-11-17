@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.3.3-pre.1] - 2026-11-17
+
+### 🛠️ Fixes & Features
+- 👤 **Contact & Group Info (#72):** Fixed DP popup `(i)` button opening own settings; now opens dedicated Contact & Group Info screen
+- 👥 **Group Members & Admins:** Group Info displays full participant list with search filter and green Group Admin badges
+- 🖼️ **Media, Links & Docs:** Dedicated Media tab with item count, storage usage calculator, and horizontal media carousel
+- ⚙️ **Chat Settings:** Toggle chat lock, notifications mute, custom wallpaper, per-thread privacy, and clear chat
+
 ## [0.3.2] - 2026-11-16
 
 ### ✨ Features

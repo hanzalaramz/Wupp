@@ -52,6 +52,7 @@ import com.wa.beastclient.ui.MainViewModel
 import com.wa.beastclient.ui.components.AppLockOverlay
 import com.wa.beastclient.ui.components.AppUpdateDialog
 import com.wa.beastclient.ui.screens.ChatScreen
+import com.wa.beastclient.ui.screens.ContactInfoScreen
 import com.wa.beastclient.ui.screens.FirstInstallSetupScreen
 import com.wa.beastclient.ui.screens.HomeScreen
 import com.wa.beastclient.ui.screens.LinkDeviceScreen
@@ -91,6 +92,7 @@ class MainActivity : FragmentActivity() {
             val showUpdatePrompt by vm.showUpdatePrompt.collectAsState()
             var setupDone by remember { mutableStateOf(initialSetupDone) }
             var selectedChatJid by rememberSaveable { mutableStateOf<String?>(null) }
+            var activeContactInfoJid by rememberSaveable { mutableStateOf<String?>(null) }
             val requestedChatJid by pendingOpenChatJid.collectAsState()
 
             LaunchedEffect(appLockConfig) {
@@ -100,6 +102,7 @@ class MainActivity : FragmentActivity() {
             LaunchedEffect(requestedChatJid, setupDone, bridgeStatus.isLoggedIn, isAppLocked) {
                 val target = requestedChatJid
                 if (!target.isNullOrBlank() && setupDone && bridgeStatus.isLoggedIn && !isAppLocked) {
+                    activeContactInfoJid = null
                     selectedChatJid = target
                     pendingOpenChatJid.value = null
                 }
@@ -112,8 +115,12 @@ class MainActivity : FragmentActivity() {
                 }
             }
 
-            BackHandler(enabled = setupDone && bridgeStatus.isLoggedIn && selectedChatJid != null && !isAppLocked) {
-                selectedChatJid = null
+            BackHandler(enabled = setupDone && bridgeStatus.isLoggedIn && (activeContactInfoJid != null || selectedChatJid != null) && !isAppLocked) {
+                if (activeContactInfoJid != null) {
+                    activeContactInfoJid = null
+                } else {
+                    selectedChatJid = null
+                }
             }
 
             WhatsAppTheme(
@@ -180,7 +187,7 @@ class MainActivity : FragmentActivity() {
 
                     @OptIn(ExperimentalMaterial3ExpressiveApi::class)
                     AnimatedContent(
-                        targetState = selectedChatJid,
+                        targetState = activeContactInfoJid,
                         transitionSpec = {
                             if (targetState != null) {
                                 (slideInHorizontally(
@@ -210,26 +217,74 @@ class MainActivity : FragmentActivity() {
                                 ))
                             }
                         },
-                        label = "home_chat_route"
-                    ) { activeJid ->
-                        if (activeJid == null) {
-                            HomeScreen(
+                        label = "contact_info_route"
+                    ) { infoJid ->
+                        if (infoJid != null) {
+                            ContactInfoScreen(
+                                chatJid = infoJid,
                                 viewModel = vm,
-                                onOpenChat = { jid -> selectedChatJid = jid },
-                                currentTab = homeTab,
-                                onSelectTab = { homeTab = it },
-                                chatsListState = chatsListState,
-                                groupsListState = groupsListState,
-                                updatesListState = updatesListState,
-                                communitiesListState = communitiesListState,
-                                toolsListState = toolsListState
+                                onBack = { activeContactInfoJid = null },
+                                onOpenChat = { jid ->
+                                    activeContactInfoJid = null
+                                    selectedChatJid = jid
+                                }
                             )
                         } else {
-                            ChatScreen(
-                                chatJid = activeJid,
-                                viewModel = vm,
-                                onBack = { selectedChatJid = null }
-                            )
+                            AnimatedContent(
+                                targetState = selectedChatJid,
+                                transitionSpec = {
+                                    if (targetState != null) {
+                                        (slideInHorizontally(
+                                            animationSpec = motionScheme.defaultSpatialSpec()
+                                        ) { it / 3 } + scaleIn(
+                                            initialScale = 0.96f,
+                                            animationSpec = motionScheme.defaultSpatialSpec()
+                                        ) + fadeIn(
+                                            animationSpec = motionScheme.fastEffectsSpec()
+                                        )) togetherWith (slideOutHorizontally(
+                                            animationSpec = motionScheme.defaultSpatialSpec()
+                                        ) { -it / 6 } + fadeOut(
+                                            animationSpec = motionScheme.fastEffectsSpec()
+                                        ))
+                                    } else {
+                                        (slideInHorizontally(
+                                            animationSpec = motionScheme.defaultSpatialSpec()
+                                        ) { -it / 6 } + fadeIn(
+                                            animationSpec = motionScheme.fastEffectsSpec()
+                                        )) togetherWith (slideOutHorizontally(
+                                            animationSpec = motionScheme.defaultSpatialSpec()
+                                        ) { it / 3 } + scaleOut(
+                                            targetScale = 0.96f,
+                                            animationSpec = motionScheme.defaultSpatialSpec()
+                                        ) + fadeOut(
+                                            animationSpec = motionScheme.fastEffectsSpec()
+                                        ))
+                                    }
+                                },
+                                label = "home_chat_route"
+                            ) { activeJid ->
+                                if (activeJid == null) {
+                                    HomeScreen(
+                                        viewModel = vm,
+                                        onOpenChat = { jid -> selectedChatJid = jid },
+                                        onOpenContactInfo = { jid -> activeContactInfoJid = jid },
+                                        currentTab = homeTab,
+                                        onSelectTab = { homeTab = it },
+                                        chatsListState = chatsListState,
+                                        groupsListState = groupsListState,
+                                        updatesListState = updatesListState,
+                                        communitiesListState = communitiesListState,
+                                        toolsListState = toolsListState
+                                    )
+                                } else {
+                                    ChatScreen(
+                                        chatJid = activeJid,
+                                        viewModel = vm,
+                                        onBack = { selectedChatJid = null },
+                                        onOpenContactInfo = { jid -> activeContactInfoJid = jid }
+                                    )
+                                }
+                            }
                         }
                     }
                 }

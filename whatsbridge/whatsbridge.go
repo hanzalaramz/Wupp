@@ -2063,6 +2063,57 @@ func GetGroupParticipantsJson(groupJid string) (string, error) {
 	return string(b), nil
 }
 
+func GetGroupInfoJson(groupJid string) (string, error) {
+	mu.Lock()
+	cli := client
+	ctx := baseCtx
+	mu.Unlock()
+	if cli == nil || !cli.IsConnected() {
+		return "{}", errors.New("client not connected")
+	}
+	jid, err := types.ParseJID(groupJid)
+	if err != nil {
+		return "{}", err
+	}
+	info, err := cli.GetGroupInfo(ctx, jid)
+	if err != nil {
+		return "{}", err
+	}
+	type participantDto struct {
+		JID          string `json:"jid"`
+		IsAdmin      bool   `json:"isAdmin"`
+		IsSuperAdmin bool   `json:"isSuperAdmin"`
+		DisplayName  string `json:"displayName"`
+	}
+	type groupInfoDto struct {
+		JID          string           `json:"jid"`
+		Name         string           `json:"name"`
+		Topic        string           `json:"topic"`
+		OwnerJID     string           `json:"ownerJid"`
+		IsLocked     bool             `json:"isLocked"`
+		IsAnnounce   bool             `json:"isAnnounce"`
+		Participants []participantDto `json:"participants"`
+	}
+	dto := groupInfoDto{
+		JID:        info.JID.String(),
+		Name:       info.GroupName.Name,
+		Topic:      info.Topic,
+		OwnerJID:   info.OwnerJID.String(),
+		IsLocked:   info.IsLocked,
+		IsAnnounce: info.IsAnnounce,
+	}
+	for _, p := range info.Participants {
+		dto.Participants = append(dto.Participants, participantDto{
+			JID:          p.JID.String(),
+			IsAdmin:      p.IsAdmin,
+			IsSuperAdmin: p.IsSuperAdmin,
+			DisplayName:  p.DisplayName,
+		})
+	}
+	b, _ := json.Marshal(dto)
+	return string(b), nil
+}
+
 func VerifyNumbersOnWhatsApp(phonesCsv string) (string, error) {
 	mu.Lock()
 	cli := client

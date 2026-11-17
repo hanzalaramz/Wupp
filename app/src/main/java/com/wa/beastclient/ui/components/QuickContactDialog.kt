@@ -19,9 +19,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Chat
-import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Info
-import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -55,9 +55,9 @@ fun QuickContactDialog(
     aboutOverride: String = "",
     onDismiss: () -> Unit,
     onOpenChat: () -> Unit,
-    onOpenGhostInfo: () -> Unit,
-    onOpenPresenceLog: () -> Unit,
-    onOpenAvatarHistory: () -> Unit,
+    onOpenInfo: () -> Unit,
+    onAudioCall: () -> Unit = {},
+    onVideoCall: () -> Unit = {},
     onRequestFullAvatar: (() -> Unit)? = null,
     onSaveAvatar: (() -> Unit)? = null
 ) {
@@ -189,14 +189,14 @@ fun QuickContactDialog(
                     IconButton(onClick = { onDismiss(); onOpenChat() }) {
                         Icon(Icons.AutoMirrored.Rounded.Chat, "Open Chat", tint = colors.accentGreen)
                     }
-                    IconButton(onClick = { onDismiss(); onOpenGhostInfo() }) {
-                        Icon(Icons.Rounded.Shield, "Ghost Privacy", tint = colors.accentGreen)
+                    IconButton(onClick = { onDismiss(); onAudioCall() }) {
+                        Icon(Icons.Rounded.Call, "Audio Call", tint = colors.accentGreen)
                     }
-                    IconButton(onClick = { onDismiss(); onOpenPresenceLog() }) {
-                        Icon(Icons.Rounded.Info, "Presence Log", tint = colors.accentGreen)
+                    IconButton(onClick = { onDismiss(); onVideoCall() }) {
+                        Icon(Icons.Rounded.Videocam, "Video Call", tint = colors.accentGreen)
                     }
-                    IconButton(onClick = { onDismiss(); onOpenAvatarHistory() }) {
-                        Icon(Icons.Rounded.History, "Avatar Archive", tint = colors.accentGreen)
+                    IconButton(onClick = { onDismiss(); onOpenInfo() }) {
+                        Icon(Icons.Rounded.Info, "Contact Info", tint = colors.accentGreen)
                     }
                 }
             }

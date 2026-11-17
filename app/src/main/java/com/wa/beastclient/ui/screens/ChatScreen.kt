@@ -234,7 +234,8 @@ import kotlin.math.abs
 fun ChatScreen(
     chatJid: String,
     viewModel: MainViewModel,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onOpenContactInfo: (String) -> Unit = {}
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
@@ -754,7 +755,7 @@ fun ChatScreen(
                             Column(
                                 modifier = Modifier
                                     .weight(1f, fill = false)
-                                    .clickable { showGhostOverrideSheet = true }
+                                    .clickable { onOpenContactInfo(chatJid) }
                             ) {
                                 Text(
                                     text = chat?.name?.ifBlank { chatJid.substringBefore("@") }
@@ -853,10 +854,10 @@ fun ChatScreen(
                         }
                         DropdownMenu(expanded = showOverflow, onDismissRequest = { showOverflow = false }) {
                             DropdownMenuItem(
-                                text = { Text("View contact & privacy") },
+                                text = { Text("View contact info") },
                                 onClick = {
                                     showOverflow = false
-                                    showGhostOverrideSheet = true
+                                    onOpenContactInfo(chatJid)
                                 }
                             )
                             DropdownMenuItem(

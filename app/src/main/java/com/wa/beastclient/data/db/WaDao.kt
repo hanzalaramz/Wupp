@@ -147,6 +147,9 @@ interface WaDao {
     @Query("UPDATE chats SET is_favorite = :favorite WHERE jid = :chatJid")
     suspend fun updateFavorite(chatJid: String, favorite: Boolean)
 
+    @Query("UPDATE chats SET is_locked = :locked WHERE jid = :chatJid")
+    suspend fun updateChatLock(chatJid: String, locked: Boolean)
+
     @Query("UPDATE chats SET unread_count = :unreadCount WHERE jid = :chatJid")
     suspend fun updateUnreadCount(chatJid: String, unreadCount: Int)
 
@@ -312,6 +315,9 @@ interface WaDao {
     @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, rowid DESC LIMIT 1")
     suspend fun getLatestMessageForChat(chatJid: String): MessageEntity?
 
+    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, rowid DESC")
+    suspend fun getMessagesForChat(chatJid: String): List<MessageEntity>
+
     @Query("SELECT * FROM messages WHERE chat_jid = :chatJid AND timestamp > :afterTimestamp ORDER BY timestamp ASC LIMIT 1")
     suspend fun getNextNewerMessage(chatJid: String, afterTimestamp: Long): MessageEntity?
 
@@ -367,6 +373,9 @@ interface WaDao {
 
     @Query("SELECT * FROM messages WHERE id = :messageId LIMIT 1")
     suspend fun getMessage(messageId: String): MessageEntity?
+
+    @Query("SELECT DISTINCT sender_jid FROM messages WHERE chat_jid = :chatJid AND sender_jid != ''")
+    suspend fun getDistinctSenders(chatJid: String): List<String>
 
     @Query("SELECT COUNT(*) FROM messages WHERE chat_jid = :chatJid")
     suspend fun countMessagesInChat(chatJid: String): Int
