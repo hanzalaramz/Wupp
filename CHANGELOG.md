@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+## [0.3.3-pre.5] - 2026-11-17
+
+### ✨ Features
+- 📑 **Native WhatsApp-Style Emoji, GIF & Sticker Dock:** Full visual parity with official WhatsApp featuring a centered 3-segment stadium pill switcher `[ 😊 | GIF | 📑 ]`, reaction tag chips, search, and edit controls.
+- 📜 **Continuous 5-Column Sticker Feed:** Unified scrolling sticker grid with green circular "Create sticker" action tile, recent stickers, favorites section, and Cuppy built-in pack.
+- 🧭 **Sticker Pack Bar & Smooth Jump:** Bottom switcher `[ 🕒 Recent | ⭐ Favorites | ☕ Cuppy | ➕ Add ]` with active circular pill highlight and smooth section scrolling.
+- ↕️ **Vertical Stretch Gesture:** Drag top handle to expand dock smoothly up to ~74% screen height over chat messages while keeping composer bar visible.
+- ⭐ **Sticker Favorites & 1-Tap Creation:** Star/unstar stickers via long-press and convert any photo into a custom transparent sticker in 1 tap.
+- ☕ **Built-in Cuppy Pack:** High-resolution transparent Cuppy coffee cup sticker pack rendered programmatically at runtime.
+
+### 🛠️ Fixes
+- 🎙️ **Native Voice Notes / PTT (#79, #66):** Fixed voice recordings being delivered as generic audio or PDF-like document attachments on recipient devices. Enforced outbound `whatsmeow.MediaAudio` dispatch, native Android Ogg Opus (`audio/ogg; codecs=opus`) encoding on API 29+, `PTT: true`, and 64-bar speech waveform so recipient WhatsApp clients display the native green voice note waveform player bubble.
+- 🖼️ **Sticker Message Rendering:** Fixed sent and received stickers rendering as blank or wrapped in chat bubbles; now rendered with transparent aspect-fit background directly on chat canvas.
+
+## [0.3.3-pre.4] - 2026-11-17
+
+### ✨ Features
+- 📑 **Expandable Sticker & Emoji Dock:** Bottom sheet dock with drag-to-stretch handle, smooth keyboard switching, and favorites management.
+- ☕ **Cuppy Sticker Pack:** Built-in programmatic Cuppy coffee cup stickers with instant send and preview.
+- ⭐ **Favorite Stickers Store:** Persistent storage for favorite stickers with long-press context options.
+
+## [0.3.3-pre.3] - 2026-11-17
+
+### ✨ Features & Fixes
+- 📑 **Sticker Tab & Picker:** Added dedicated sticker picker dock in chat.
+- 🖼️ **Sticker Chat Bubbles:** Fixed received stickers showing as blank messages; enabled aspect-fit sticker rendering.
+
 ## [0.3.3-pre.2] - 2026-11-17
 
 ### ✨ Features
