@@ -4,6 +4,7 @@
 
 ### ✨ Features
 - 🧭 **Fluid Nav Animation (#67):** Liquid stretch-and-settle jelly physics for floating bottom navigation pill
+- 💬 **Status Replies & Reactions (#25):** Reply directly to contact statuses with inline composer and send real emoji reactions
 
 ## [0.3.3-pre.1] - 2026-11-17
 

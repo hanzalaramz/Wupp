@@ -1276,6 +1276,16 @@ fun HomeScreen(
                     onOpenChat(target.senderJid)
                 }
             },
+            onSendReply = { target, text ->
+                if (target.senderJid.isNotBlank() && !isOwnStatusSender(target.senderJid, bridgeStatus.ownJid)) {
+                    viewModel.sendStatusReply(target, text)
+                }
+            },
+            onSendReaction = { target, emoji ->
+                if (target.senderJid.isNotBlank() && !isOwnStatusSender(target.senderJid, bridgeStatus.ownJid)) {
+                    viewModel.sendStatusReaction(target, emoji)
+                }
+            },
             onAddStatus = { statusComposerInitialMode = StatusComposerMode.MEDIA }
         )
     }
@@ -2655,7 +2665,7 @@ private fun AddStatusStoryCard(
     }
 }
 
-private fun normalizeStatusSenderJid(rawJid: String): String {
+internal fun normalizeStatusSenderJid(rawJid: String): String {
     val trimmed = rawJid.trim()
     val atIdx = trimmed.indexOf('@')
     if (atIdx <= 0) return trimmed

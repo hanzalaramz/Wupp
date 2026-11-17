@@ -2026,6 +2026,114 @@ class WaRealtimeService : Service() {
             }
         }
 
+        suspend fun sendStatusReply(
+            context: Context,
+            status: StatusEntity,
+            text: String
+        ): Result<MessageEntity> = withContext(Dispatchers.IO) {
+            runCatching {
+                val targetChatJid = status.senderJid.ifBlank { error("Invalid status sender JID") }
+                val dao = WaUiDatabase.getInstance(context).waDao()
+                val privacy = StealthMatrixManager.getEffectivePrivacy(dao, targetChatJid)
+                val statusCaption = com.wa.beastclient.ui.components.resolveStatusQuoteFallback(status)
+
+                val stanzaId = if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+                    runCatching {
+                        val method = Whatsbridge::class.java.getMethod(
+                            "sendStatusReply",
+                            String::class.java,
+                            String::class.java,
+                            String::class.java,
+                            String::class.java,
+                            String::class.java,
+                            Boolean::class.javaPrimitiveType
+                        )
+                        method.invoke(
+                            null,
+                            targetChatJid,
+                            status.id,
+                            status.senderJid,
+                            statusCaption,
+                            text,
+                            !privacy.sendChatPresence
+                        ) as String
+                    }.getOrElse {
+                        Whatsbridge.sendTextMessage(
+                            targetChatJid,
+                            text,
+                            status.id,
+                            status.senderJid,
+                            statusCaption,
+                            "",
+                            !privacy.sendChatPresence
+                        )
+                    }
+                } else {
+                    "LOCAL_${UUID.randomUUID().toString().take(12).uppercase()}"
+                }
+
+                val ownJid = _bridgeStatus.value.ownJid.ifBlank { "me@s.whatsapp.net" }
+                val entity = MessageEntity(
+                    id = stanzaId,
+                    chatJid = targetChatJid,
+                    senderJid = ownJid,
+                    senderName = "You",
+                    isFromMe = true,
+                    timestamp = System.currentTimeMillis(),
+                    body = text,
+                    msgType = "TEXT",
+                    deliveryStatus = if (runCatching { Whatsbridge.isConnected() }.getOrDefault(false)) "SENT" else "LOCAL_SENT",
+                    quotedId = status.id,
+                    quotedSender = status.senderName.ifBlank { status.senderJid.substringBefore("@") },
+                    quotedBody = statusCaption
+                )
+                dao.upsertIncomingMessageAndRefreshChat(
+                    message = entity,
+                    chatNameHint = status.senderName.ifBlank { targetChatJid.substringBefore("@") },
+                    isGroup = false,
+                    incrementUnread = false
+                )
+                SoundPoolManager.playSend()
+                entity
+            }
+        }
+
+        suspend fun sendStatusReaction(
+            context: Context,
+            status: StatusEntity,
+            emoji: String
+        ): Result<Unit> = withContext(Dispatchers.IO) {
+            runCatching {
+                val targetChatJid = status.senderJid.ifBlank { return@runCatching }
+                if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+                    val success = runCatching {
+                        val method = Whatsbridge::class.java.getMethod(
+                            "sendStatusReaction",
+                            String::class.java,
+                            String::class.java,
+                            String::class.java
+                        )
+                        method.invoke(null, targetChatJid, status.id, emoji)
+                        true
+                    }.getOrDefault(false)
+
+                    if (!success) {
+                        Whatsbridge::class.java
+                            .getMethod(
+                                "sendReaction",
+                                String::class.java,
+                                String::class.java,
+                                String::class.java,
+                                Boolean::class.javaPrimitiveType,
+                                String::class.java
+                            )
+                            .invoke(null, "status@broadcast", status.id, targetChatJid, false, emoji)
+                    }
+                }
+                Unit
+            }
+        }
+
         suspend fun sendMediaMessage(
             context: Context,
             chatJid: String,

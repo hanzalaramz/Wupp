@@ -56,4 +56,45 @@ class StatusUtilsTest {
         assertFalse(isStatusMediaType("TEXT", ""))
         assertFalse(isStatusMediaType("TEXT", "text/plain"))
     }
+
+    @Test
+    fun normalizeStatusSenderJid_stripsCompanionDeviceSuffixForChatRouting() {
+        assertEquals(
+            "923001234567@s.whatsapp.net",
+            com.wa.beastclient.ui.screens.normalizeStatusSenderJid("923001234567:15@s.whatsapp.net")
+        )
+        assertEquals(
+            "923001234567@s.whatsapp.net",
+            com.wa.beastclient.ui.screens.normalizeStatusSenderJid("923001234567@s.whatsapp.net")
+        )
+    }
+
+    @Test
+    fun resolveStatusQuoteFallback_formatsAppropriatePlaceholder() {
+        val imageStatus = StatusEntity(
+            id = "s1",
+            senderJid = "user@s.whatsapp.net",
+            caption = "",
+            msgType = "IMAGE",
+            timestamp = 1000L
+        )
+        val videoStatus = StatusEntity(
+            id = "s2",
+            senderJid = "user@s.whatsapp.net",
+            caption = "",
+            msgType = "VIDEO",
+            timestamp = 2000L
+        )
+        val captionedStatus = StatusEntity(
+            id = "s3",
+            senderJid = "user@s.whatsapp.net",
+            caption = "Sunset at the beach",
+            msgType = "IMAGE",
+            timestamp = 3000L
+        )
+
+        assertEquals("📷 Photo status", com.wa.beastclient.ui.components.resolveStatusQuoteFallback(imageStatus))
+        assertEquals("📹 Video status", com.wa.beastclient.ui.components.resolveStatusQuoteFallback(videoStatus))
+        assertEquals("Sunset at the beach", com.wa.beastclient.ui.components.resolveStatusQuoteFallback(captionedStatus))
+    }
 }

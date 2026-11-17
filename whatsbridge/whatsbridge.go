@@ -5023,7 +5023,121 @@ func SendReaction(chatJid, targetMessageId, senderJid string, fromMe bool, emoji
 	msg := cli.BuildReaction(chatParsed, targetSender, types.MessageID(targetMessageId), emoji)
 	ctx, cancel := context.WithTimeout(baseCtx, 15*time.Second)
 	defer cancel()
-	_, sErr := cli.SendMessage(ctx, chatParsed, msg)
+	dest := chatParsed
+	if chatParsed == types.StatusBroadcastJID || chatParsed.Server == types.BroadcastServer {
+		dest = targetSender
+	}
+	_, sErr := cli.SendMessage(ctx, dest, msg)
+	return sErr
+}
+
+// SendStatusReply sends a text reply to a status author quoting their status@broadcast stanza.
+func SendStatusReply(
+	recipientJid string,
+	statusId string,
+	statusSenderJid string,
+	statusCaption string,
+	text string,
+	ghostTyping bool,
+) (string, error) {
+	mu.Lock()
+	cli := client
+	ctx := baseCtx
+	mu.Unlock()
+	if cli == nil || !cli.IsConnected() {
+		return "", errors.New("client not connected")
+	}
+	rJid, err := types.ParseJID(strings.TrimSpace(recipientJid))
+	if err != nil {
+		return "", fmt.Errorf("invalid recipient JID: %w", err)
+	}
+
+	if !ghostTyping && cli.IsConnected() {
+		_ = cli.SendChatPresence(ctx, rJid, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+		baseMs := len([]rune(text)) * 35
+		if baseMs > 2500 {
+			baseMs = 2500
+		}
+		if baseMs < 250 {
+			baseMs = 250
+		}
+		jitterFactor := 0.8 + randomFloat()*0.4
+		time.Sleep(time.Duration(float64(baseMs)*jitterFactor) * time.Millisecond)
+		_ = cli.SendChatPresence(ctx, rJid, types.ChatPresencePaused, types.ChatPresenceMediaText)
+	}
+
+	ctxInfo := &waE2E.ContextInfo{
+		StanzaID:  proto.String(strings.TrimSpace(statusId)),
+		RemoteJID: proto.String(types.StatusBroadcastJID.String()),
+	}
+	if strings.TrimSpace(statusSenderJid) != "" {
+		if sParsed, sErr := types.ParseJID(strings.TrimSpace(statusSenderJid)); sErr == nil {
+			ctxInfo.Participant = proto.String(sParsed.ToNonAD().String())
+		} else {
+			ctxInfo.Participant = proto.String(strings.TrimSpace(statusSenderJid))
+		}
+	} else {
+		ctxInfo.Participant = proto.String(rJid.ToNonAD().String())
+	}
+	cleanCaption := strings.TrimSpace(statusCaption)
+	if cleanCaption == "" {
+		cleanCaption = "Status"
+	}
+	ctxInfo.QuotedMessage = &waE2E.Message{
+		Conversation: proto.String(cleanCaption),
+	}
+
+	msg := &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text:        proto.String(text),
+			ContextInfo: ctxInfo,
+		},
+	}
+
+	sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	resp, err := cli.SendMessage(sendCtx, rJid, msg)
+	if err != nil {
+		return "", err
+	}
+	return string(resp.ID), nil
+}
+
+// SendStatusReaction sends an emoji reaction to a contact's status broadcast.
+func SendStatusReaction(
+	statusSenderJid string,
+	statusMessageId string,
+	emoji string,
+) error {
+	mu.Lock()
+	cli := client
+	ctx := baseCtx
+	mu.Unlock()
+	if cli == nil || !cli.IsConnected() {
+		return errors.New("client not connected")
+	}
+	senderParsed, err := types.ParseJID(strings.TrimSpace(statusSenderJid))
+	if err != nil {
+		return fmt.Errorf("invalid sender JID: %w", err)
+	}
+	nonAD := senderParsed.ToNonAD()
+
+	statusKey := &waCommon.MessageKey{
+		RemoteJID:   proto.String(types.StatusBroadcastJID.String()),
+		FromMe:      proto.Bool(false),
+		ID:          proto.String(strings.TrimSpace(statusMessageId)),
+		Participant: proto.String(nonAD.String()),
+	}
+	msg := &waE2E.Message{
+		ReactionMessage: &waE2E.ReactionMessage{
+			Key:               statusKey,
+			Text:              proto.String(emoji),
+			SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
+		},
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	_, sErr := cli.SendMessage(sendCtx, nonAD, msg)
 	return sErr
 }
 

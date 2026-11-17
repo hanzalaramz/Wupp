@@ -733,6 +733,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun sendStatusReply(
+        status: StatusEntity,
+        text: String,
+        onDone: ((Boolean) -> Unit)? = null
+    ) {
+        if (text.isBlank()) return
+        viewModelScope.launch {
+            WaRealtimeService.sendStatusReply(appContext, status, text.trim())
+                .onSuccess {
+                    showToast("Reply sent")
+                    onDone?.invoke(true)
+                }
+                .onFailure { err ->
+                    showToast(err.message ?: "Failed to send status reply")
+                    onDone?.invoke(false)
+                }
+        }
+    }
+
+    fun sendStatusReaction(
+        status: StatusEntity,
+        emoji: String
+    ) {
+        viewModelScope.launch {
+            WaRealtimeService.sendStatusReaction(appContext, status, emoji)
+                .onFailure { err ->
+                    showToast("Reaction failed: ${err.message}")
+                }
+        }
+    }
+
     fun editMessage(chatJid: String, messageId: String, newText: String) {
         if (newText.isBlank()) return
         viewModelScope.launch {

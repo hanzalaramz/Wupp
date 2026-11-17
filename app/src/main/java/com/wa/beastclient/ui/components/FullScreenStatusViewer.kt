@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -30,9 +31,12 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.MoreVert
@@ -59,6 +63,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -68,6 +73,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -140,6 +146,17 @@ internal fun partitionOwnAndContactStatuses(
     return own to others
 }
 
+internal fun resolveStatusQuoteFallback(status: StatusEntity): String {
+    return status.caption.ifBlank {
+        when (status.msgType.uppercase()) {
+            "VIDEO" -> "📹 Video status"
+            "IMAGE" -> "📷 Photo status"
+            "AUDIO" -> "🎵 Voice status"
+            else -> "Status"
+        }
+    }
+}
+
 @Composable
 fun FullScreenStatusViewer(
     groups: List<StatusGroup>,
@@ -151,6 +168,8 @@ fun FullScreenStatusViewer(
     onDismiss: () -> Unit,
     onSaveToGallery: (StatusEntity) -> Unit,
     onReply: ((StatusEntity) -> Unit)? = null,
+    onSendReply: ((StatusEntity, String) -> Unit)? = null,
+    onSendReaction: ((StatusEntity, String) -> Unit)? = null,
     onAddStatus: (() -> Unit)? = null
 ) {
     val nonEmptyGroups = remember(groups) { groups.filter { it.items.isNotEmpty() } }
@@ -301,6 +320,8 @@ fun FullScreenStatusViewer(
                     onDismiss = onDismiss,
                     onSaveToGallery = onSaveToGallery,
                     onReply = onReply,
+                    onSendReply = onSendReply,
+                    onSendReaction = onSendReaction,
                     onAddStatus = onAddStatus
                 )
             }
@@ -322,6 +343,8 @@ private fun StatusGroupPage(
     onDismiss: () -> Unit,
     onSaveToGallery: (StatusEntity) -> Unit,
     onReply: ((StatusEntity) -> Unit)?,
+    onSendReply: ((StatusEntity, String) -> Unit)?,
+    onSendReaction: ((StatusEntity, String) -> Unit)?,
     onAddStatus: (() -> Unit)?
 ) {
     val context = LocalContext.current
@@ -330,9 +353,11 @@ private fun StatusGroupPage(
     var progress by remember(current.id, storyIndex) { mutableFloatStateOf(0f) }
     var isPressed by remember { mutableStateOf(false) }
     var showOverflow by remember { mutableStateOf(false) }
+    var isReplying by remember(current.id) { mutableStateOf(false) }
+    var replyText by remember(current.id) { mutableStateOf("") }
     var liked by remember(current.id) { mutableStateOf(false) }
 
-    val isPaused = !isPageActive || isPressed || showOverflow
+    val isPaused = !isPageActive || isPressed || showOverflow || isReplying
 
     val mediaFile = remember(current.id, current.localMediaPath) {
         current.localMediaPath?.takeIf { it.isNotBlank() }?.let { path ->
@@ -714,60 +739,152 @@ private fun StatusGroupPage(
                     }
                 }
             } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Box(
+                if (isReplying) {
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .height(46.dp)
-                            .clip(RoundedCornerShape(23.dp))
-                            .background(Color(0xFF202C33).copy(alpha = 0.92f))
-                            .clickable {
-                                if (onReply != null) {
-                                    onReply(current)
-                                    onDismiss()
+                            .fillMaxWidth()
+                            .imePadding(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        IconButton(
+                            onClick = {
+                                isReplying = false
+                                replyText = ""
+                            },
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF202C33).copy(alpha = 0.92f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "Cancel reply",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        BasicTextField(
+                            value = replyText,
+                            onValueChange = { replyText = it },
+                            textStyle = TextStyle(
+                                color = Color.White,
+                                fontSize = 15.sp
+                            ),
+                            cursorBrush = SolidColor(Color(0xFF25D366)),
+                            singleLine = true,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp)
+                                .clip(RoundedCornerShape(23.dp))
+                                .background(Color(0xFF202C33).copy(alpha = 0.92f))
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            decorationBox = { innerTextField ->
+                                Box(contentAlignment = Alignment.CenterStart) {
+                                    if (replyText.isEmpty()) {
+                                        Text(
+                                            text = "Reply to ${group.senderName.ifBlank { "status" }}...",
+                                            color = Color(0xFF8696A0),
+                                            fontSize = 15.sp
+                                        )
+                                    }
+                                    innerTextField()
                                 }
                             }
-                            .padding(horizontal = 18.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        Text(
-                            text = "Reply",
-                            color = Color(0xFFD1D7DB),
-                            fontSize = 15.sp
                         )
+
+                        IconButton(
+                            onClick = {
+                                if (replyText.isNotBlank()) {
+                                    val textToSend = replyText.trim()
+                                    if (onSendReply != null) {
+                                        onSendReply(current, textToSend)
+                                    } else {
+                                        onReply?.invoke(current)
+                                    }
+                                    isReplying = false
+                                    replyText = ""
+                                }
+                            },
+                            enabled = replyText.isNotBlank(),
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (replyText.isNotBlank()) Color(0xFF25D366)
+                                    else Color(0xFF202C33).copy(alpha = 0.7f)
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.Send,
+                                contentDescription = "Send status reply",
+                                tint = if (replyText.isNotBlank()) Color(0xFF0B141A) else Color(0xFF8696A0),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
-                    listOf("❤️", "👍", "😮").forEach { emoji ->
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
+                                .weight(1f)
+                                .height(46.dp)
+                                .clip(RoundedCornerShape(23.dp))
+                                .background(Color(0xFF202C33).copy(alpha = 0.92f))
+                                .clickable {
+                                    isReplying = true
+                                }
+                                .padding(horizontal = 18.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            Text(
+                                text = "Reply",
+                                color = Color(0xFFD1D7DB),
+                                fontSize = 15.sp
+                            )
+                        }
+                        listOf("❤️", "👍", "😮", "😂").forEach { emoji ->
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF202C33).copy(alpha = 0.92f))
+                                    .clickable {
+                                        onSendReaction?.invoke(current, emoji)
+                                        Toast.makeText(context, "Reacted $emoji to status", Toast.LENGTH_SHORT).show()
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(text = emoji, fontSize = 17.sp)
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
                                 .clip(CircleShape)
                                 .background(Color(0xFF202C33).copy(alpha = 0.92f))
                                 .clickable {
-                                    Toast.makeText(context, "Reacted $emoji to status", Toast.LENGTH_SHORT).show()
+                                    liked = !liked
+                                    val emoji = if (liked) "❤️" else ""
+                                    onSendReaction?.invoke(current, emoji)
+                                    if (liked) {
+                                        Toast.makeText(context, "Reacted ❤️ to status", Toast.LENGTH_SHORT).show()
+                                    }
                                 },
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(text = emoji, fontSize = 17.sp)
+                            Icon(
+                                imageVector = if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                contentDescription = "Like status",
+                                tint = if (liked) Color(0xFFFF4D6D) else Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
                         }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(46.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFF202C33).copy(alpha = 0.92f))
-                            .clickable { liked = !liked },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                            contentDescription = "Like status",
-                            tint = if (liked) Color(0xFFFF4D6D) else Color.White,
-                            modifier = Modifier.size(22.dp)
-                        )
                     }
                 }
             }
