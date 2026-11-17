@@ -2190,11 +2190,16 @@ fun ChatScreen(
             initialCaption = draftValue.text.trim(),
             initialQualityMode = qualityMode,
             onDismiss = { pendingOutboundPreview = null },
-            onSend = { captionText, chosenQuality, isViewOnce ->
+            onSend = { finalFile, captionText, chosenQuality, isViewOnce ->
                 pendingOutboundPreview = null
                 qualityMode = chosenQuality
                 scrollToBottomPending = true
-                viewModel.sendStagedMedia(chatJid, staged, captionText, chosenQuality, isViewOnce)
+                val targetStaged = if (finalFile != staged.file) {
+                    staged.copy(file = finalFile, fileSize = finalFile.length())
+                } else {
+                    staged
+                }
+                viewModel.sendStagedMedia(chatJid, targetStaged, captionText, chosenQuality, isViewOnce)
                 draftValue = TextFieldValue("")
                 scope.launch { listState.animateScrollToItem(0) }
             }

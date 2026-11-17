@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### ✨ Features
+- 🎨 **Photo Editor (#32):** Native WhatsApp-style editor before sending with freehand doodle pen, text overlays, stickers, rotation, and color filters
 - 🧭 **Fluid Nav Animation (#67):** Liquid stretch-and-settle jelly physics for floating bottom navigation pill
 - 💬 **Status Replies & Reactions (#25):** Reply directly to contact statuses with inline composer and send real emoji reactions
 
