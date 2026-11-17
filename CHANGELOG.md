@@ -2,7 +2,8 @@
 
 ## [Unreleased]
 
-### 🛠️ Fixes
+### 🛠️ Fixes & Improvements
+- 👁️ **Eager View-Once Auto-Download:** Automatically fetch and decrypt View-Once photos and videos into the local encrypted vault as soon as the stanza arrives in real-time before Meta's CDN can consume or expire it, allowing unlimited viewing, zooming, and exporting to gallery. Added tap-to-download fallback in chat bubble.
 - ⌛ **24-Hour Status Expiration (#65):** Filter expired status updates (`timestamp < System.currentTimeMillis() - 86400000L`) from the Updates feed, story viewer, and ViewModel state flow. Automatically sweep and purge expired status database records and their orphaned media cache files on service launch and status updates.
 
 ## [0.3.3-pre.5] - 2026-11-17

@@ -2795,7 +2795,7 @@ private fun MessageBubbleRow(
                         val subLabel = if (hasVaultFile) {
                             if (msg.durationSec > 0) "${formatVideoDuration(msg.durationSec)} · Vaulted" else "Vaulted"
                         } else {
-                            if (msg.durationSec > 0) "${formatVideoDuration(msg.durationSec)} · Open in original WhatsApp" else "Open in original WhatsApp"
+                            if (msg.durationSec > 0) "${formatVideoDuration(msg.durationSec)} · Tap to download" else "Tap to download"
                         }
                         Row(
                             modifier = Modifier
@@ -2810,11 +2810,7 @@ private fun MessageBubbleRow(
                                         if (hasVaultFile) {
                                             onOpenMedia()
                                         } else {
-                                            Toast.makeText(
-                                                context,
-                                                "View-Once media can only be opened in official WhatsApp",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
+                                            onRequestDownload()
                                         }
                                     },
                                     onLongClick = onLongPress

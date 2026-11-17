@@ -4032,8 +4032,12 @@ func SetAutoDownloadPolicy(allowPhoto, allowAudio, allowVideo, allowDoc bool) {
 }
 
 func shouldAutoDownloadMedia(job *mediaJob) bool {
-	if job == nil || job.MessageID == "" || job.IsViewOnce {
+	if job == nil || job.MessageID == "" {
 		return false
+	}
+	// Eagerly auto-download View-Once media before it expires on WhatsApp CDN
+	if job.IsViewOnce {
+		return job.FileLength <= maxManualMediaBytes
 	}
 	switch job.MediaType {
 	case "IMAGE", "STICKER":
