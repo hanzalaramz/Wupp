@@ -64,7 +64,7 @@ jobs:
             PRE_NUM=99
           fi
           VER_CODE=$((BASE_CODE + PRE_NUM))
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event.inputs.prerelease }}" = "true" ] || [[ "$TAG" == *"-"* ]]; then
+          if [ "${{ github.event.inputs.prerelease }}" = "true" ] || [[ "$TAG" == *"-"* ]]; then
             IS_PRE="true"
           else
             IS_PRE="false"

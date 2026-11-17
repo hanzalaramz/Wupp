@@ -2,12 +2,31 @@
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-17
+
+### ✨ Features
+- 📑 **Native WhatsApp-Style Emoji, GIF & Sticker Dock:** Full visual and functional parity with official WhatsApp featuring a centered 3-segment stadium pill switcher `[ 😊 | GIF | 📑 ]`, reaction tag chips, search, and edit controls.
+- 📜 **Continuous 5-Column Sticker Feed:** Unified scrolling sticker grid with green circular "Create sticker" action tile, recent stickers, favorites section, and Cuppy built-in pack.
+- 🧭 **Sticker Pack Bar & Smooth Section Jump:** Bottom switcher `[ 🕒 Recent | ⭐ Favorites | ☕ Cuppy | ➕ Add ]` with active circular pill highlight and smooth section scrolling.
+- ↕️ **Vertical Stretch Gesture:** Drag top dock handle smoothly up to ~74% screen height over chat messages while keeping the composer bar and keyboard visible.
+- ⭐ **Sticker Favorites & 1-Tap Creation:** Star/unstar stickers via long-press and convert any photo into a custom transparent sticker in 1 tap.
+- ☕ **Built-in Cuppy Sticker Pack:** High-resolution transparent Cuppy coffee cup sticker pack rendered programmatically at runtime.
+- 📌 **Pinned Messages (#53):** Two-way sync for pinned messages with sticky top banner, 24h / 7d / 30d durations, tap-to-scroll, and unpin actions.
+- 🎨 **Photo & Media Editor (#32):** Native WhatsApp-style editor before sending with freehand doodle pen, text overlays, stickers, rotation, and color filters.
+- 🧭 **Fluid Navigation Animation (#67):** Liquid stretch-and-settle jelly physics for floating bottom navigation capsule.
+- 💬 **Status Replies & Realtime Reactions (#25):** Reply directly to contact stories/statuses with inline composer and send genuine emoji reactions.
+- 👤 **Dedicated Contact & Group Info Screen (#72):** Tapping avatar/profile popup navigates to dedicated Contact & Group Info screen with member roster, admin badges, search, and shared media/docs/links browser.
+- ⚙️ **Granular Thread Settings:** Toggle chat lock, notification mute, custom wallpaper, per-thread privacy, and clear chat.
+
 ### 🛡️ Security & Privacy Patches
 - 👻 **Ghost Mode Outbound Activity Guard:** Implemented dynamic presence unfreezing (`PresenceAvailable`) before any outbound activity (messages, media uploads, reactions, status replies, pinned messages) and automated refreeze (`PresenceUnavailable` after 1.5s delay). Protects against server heuristics detecting messages from offline clients. Added user confirmation prompt toggle in Settings under Privacy & Ghost Mode.
 - 👁️ **Native View-Once Compliance:** Removed all anti-view-once bypass and vaulting logic. Incoming View-Once messages now strictly mirror native WhatsApp companion clients with `"View once · Open on phone"` and `"For added privacy, you can only open this view once message on your phone"` toast notification.
 
 ### 🛠️ Fixes
+- 🎙️ **Native Voice Notes / PTT (#79, #66):** Fixed voice recordings being delivered as generic audio or PDF-like document attachments on recipient devices. Enforced outbound `whatsmeow.MediaAudio` dispatch, native Android Ogg Opus (`audio/ogg; codecs=opus`) encoding on API 29+ (with M4A fallback on Android 8/9), `PTT: true`, and 64-bar speech waveform so recipient WhatsApp clients display the native green voice note waveform player bubble.
 - ⌛ **24-Hour Status Expiration (#65):** Filter expired status updates (`timestamp < System.currentTimeMillis() - 86400000L`) from the Updates feed, story viewer, and ViewModel state flow. Automatically sweep and purge expired status database records and their orphaned media cache files on service launch and status updates.
+- 👥 **Group Chat Previews (#56):** Display sender name prefix (`<Sender>: <message>`) for incoming messages in group chats and community subgroups, while preserving delivery status indicators on user-sent messages and enabling group sender search matching.
+- 🖼️ **Sticker Message Rendering:** Fixed sent and received stickers rendering as blank or wrapped in chat bubbles; now rendered with transparent aspect-fit background directly on chat canvas.
 
 ## [0.3.3-pre.5] - 2026-11-17
 
