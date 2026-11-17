@@ -8,6 +8,9 @@
 - 🧭 **Fluid Nav Animation (#67):** Liquid stretch-and-settle jelly physics for floating bottom navigation pill
 - 💬 **Status Replies & Reactions (#25):** Reply directly to contact statuses with inline composer and send real emoji reactions
 
+### 🛠️ Fixes
+- 👥 **Group Chat Previews (#56):** Display sender name prefix (`<Sender>: <message>`) for incoming messages in group chats and community subgroups, while preserving delivery status indicators on user-sent messages and enabling group sender search matching.
+
 ## [0.3.3-pre.1] - 2026-11-17
 
 ### 🛠️ Fixes & Features

@@ -223,6 +223,7 @@ class WaRealtimeService : Service() {
                 dao.getChatsWithBlankPreview().forEach { chat ->
                     val latest = dao.getLatestMessageForChat(chat.jid)
                     if (latest != null) {
+                        val latestSenderName = if (latest.isFromMe) "" else latest.senderName.ifBlank { latest.senderJid.substringBefore("@") }
                         dao.upsertChat(
                             chat.copy(
                                 lastMessageId = latest.id,
@@ -231,7 +232,8 @@ class WaRealtimeService : Service() {
                                 lastMessageFromMe = latest.isFromMe,
                                 lastMessageStatus = latest.deliveryStatus,
                                 lastMessageIsDeleted = latest.isDeletedBySender,
-                                lastMessageTimestamp = maxOf(chat.lastMessageTimestamp, latest.timestamp)
+                                lastMessageTimestamp = maxOf(chat.lastMessageTimestamp, latest.timestamp),
+                                lastMessageSenderName = latestSenderName
                             )
                         )
                     }
@@ -2643,6 +2645,7 @@ class WaRealtimeService : Service() {
                         lastMessageId = "msg_grp_1220",
                         lastMessagePreview = "Group benchmark message #1220 · 120fps Paging verified",
                         lastMessageType = "TEXT",
+                        lastMessageSenderName = "Marcus Chen",
                         lastMessageTimestamp = now - 120_000L,
                         hasDeletedMessages = true
                     ),

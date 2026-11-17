@@ -181,7 +181,7 @@ interface WaDao {
     suspend fun deleteChatRow(chatJid: String)
 
     @Query(
-        "UPDATE chats SET last_message_preview = :preview, last_message_type = :type, last_message_timestamp = :timestamp, unread_count = :unreadCount WHERE jid = :chatJid"
+        "UPDATE chats SET last_message_preview = :preview, last_message_type = :type, last_message_timestamp = :timestamp, unread_count = :unreadCount, last_message_sender_name = '' WHERE jid = :chatJid"
     )
     suspend fun updateChatPreviewAfterClear(
         chatJid: String,
@@ -790,6 +790,10 @@ interface WaDao {
             ?: if (dupIsNewer) duplicate.lastMessageStatus else canonical.lastMessageStatus
         val mergedIsDeleted = latestMsg?.isDeletedBySender
             ?: (canonical.lastMessageIsDeleted || duplicate.lastMessageIsDeleted)
+        val mergedSenderName = latestMsg?.let { msg ->
+            if (msg.isFromMe) ""
+            else msg.senderName.ifBlank { msg.senderJid.substringBefore("@") }
+        } ?: if (dupIsNewer) duplicate.lastMessageSenderName else canonical.lastMessageSenderName
         val mergedTs = maxOf(
             canonical.lastMessageTimestamp,
             duplicate.lastMessageTimestamp,
@@ -825,6 +829,7 @@ interface WaDao {
                 lastMessageFromMe = mergedFromMe,
                 lastMessageStatus = mergedStatus,
                 lastMessageIsDeleted = mergedIsDeleted,
+                lastMessageSenderName = mergedSenderName,
                 lastMessageTimestamp = mergedTs,
                 hasDeletedMessages = canonical.hasDeletedMessages || duplicate.hasDeletedMessages,
                 hasEditedMessages = canonical.hasEditedMessages || duplicate.hasEditedMessages,
@@ -914,6 +919,7 @@ interface WaDao {
                 } else {
                     chat.lastMessageStatus
                 }
+                val latestSenderName = if (latest.isFromMe) "" else latest.senderName.ifBlank { latest.senderJid.substringBefore("@") }
                 upsertChat(
                     chat.copy(
                         lastMessageId = latest.id,
@@ -921,6 +927,7 @@ interface WaDao {
                         lastMessageType = if (latest.isViewOnce) "VIEW_ONCE_${latest.msgType}" else latest.msgType,
                         lastMessageFromMe = latest.isFromMe,
                         lastMessageStatus = upgradedStatus,
+                        lastMessageSenderName = latestSenderName,
                         lastMessageTimestamp = maxOf(chat.lastMessageTimestamp, latest.timestamp)
                     )
                 )
@@ -981,6 +988,7 @@ interface WaDao {
             return isNewMessage
         }
         val preview = previewTextFor(effectiveMessage)
+        val incomingSenderName = if (effectiveMessage.isFromMe) "" else effectiveMessage.senderName.ifBlank { effectiveMessage.senderJid.substringBefore("@") }
         val effectiveType = if (effectiveMessage.isViewOnce) "VIEW_ONCE_${effectiveMessage.msgType}" else effectiveMessage.msgType
         val shouldBumpUnread = incrementUnread && isNewMessage && !effectiveMessage.isFromMe
         if (existingChat == null) {
@@ -997,6 +1005,7 @@ interface WaDao {
                     lastMessageStatus = effectiveMessage.deliveryStatus,
                     lastMessageIsDeleted = effectiveMessage.isDeletedBySender,
                     lastMessageTimestamp = effectiveMessage.timestamp,
+                    lastMessageSenderName = incomingSenderName,
                     hasDeletedMessages = effectiveMessage.isDeletedBySender,
                     hasEditedMessages = effectiveMessage.isEdited,
                     ephemeralDuration = effectiveMessage.ephemeralDuration
@@ -1022,6 +1031,7 @@ interface WaDao {
                     lastMessageStatus = if (shouldAdvancePreview) effectiveMessage.deliveryStatus else existingChat.lastMessageStatus,
                     lastMessageIsDeleted = if (shouldAdvancePreview) effectiveMessage.isDeletedBySender else existingChat.lastMessageIsDeleted,
                     lastMessageTimestamp = maxOf(existingChat.lastMessageTimestamp, effectiveMessage.timestamp),
+                    lastMessageSenderName = if (shouldAdvancePreview) incomingSenderName else existingChat.lastMessageSenderName,
                     ephemeralDuration = if (effectiveMessage.ephemeralDuration > 0) effectiveMessage.ephemeralDuration else existingChat.ephemeralDuration
                 )
             )
@@ -1068,6 +1078,9 @@ interface WaDao {
             val hasDeleted = hasAnyDeletedMessage(existing.chatJid)
             val hasEdited = hasAnyEditedMessage(existing.chatJid)
             val shouldRefreshPreview = chat.lastMessageId == messageId || chat.lastMessageId.isNullOrBlank()
+            val latestSenderName = latest?.let { msg ->
+                if (msg.isFromMe) "" else msg.senderName.ifBlank { msg.senderJid.substringBefore("@") }
+            }.orEmpty()
             upsertChat(
                 chat.copy(
                     hasDeletedMessages = hasDeleted,
@@ -1078,7 +1091,8 @@ interface WaDao {
                     lastMessageFromMe = if (shouldRefreshPreview) latest?.isFromMe ?: false else chat.lastMessageFromMe,
                     lastMessageStatus = if (shouldRefreshPreview) latest?.deliveryStatus.orEmpty() else chat.lastMessageStatus,
                     lastMessageIsDeleted = if (shouldRefreshPreview) latest?.isDeletedBySender ?: false else chat.lastMessageIsDeleted,
-                    lastMessageTimestamp = if (shouldRefreshPreview && latest != null) latest.timestamp else chat.lastMessageTimestamp
+                    lastMessageTimestamp = if (shouldRefreshPreview && latest != null) latest.timestamp else chat.lastMessageTimestamp,
+                    lastMessageSenderName = if (shouldRefreshPreview) latestSenderName else chat.lastMessageSenderName
                 )
             )
         }

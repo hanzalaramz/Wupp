@@ -22,7 +22,7 @@ import java.io.File
         ContactEntity::class,
         MessageReactionEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = true
 )
 abstract class WaUiDatabase : RoomDatabase() {
@@ -91,6 +91,26 @@ abstract class WaUiDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chats ADD COLUMN last_message_sender_name TEXT NOT NULL DEFAULT ''")
+                db.execSQL(
+                    "UPDATE chats SET last_message_sender_name = COALESCE(" +
+                        "(SELECT CASE " +
+                            "WHEN sender_name != '' THEN sender_name " +
+                            "WHEN sender_jid != '' AND instr(sender_jid, '@') > 1 THEN substr(sender_jid, 1, instr(sender_jid, '@') - 1) " +
+                            "ELSE '' " +
+                        "END " +
+                        "FROM messages " +
+                        "WHERE messages.chat_jid = chats.jid " +
+                            "AND messages.is_from_me = 0 " +
+                        "ORDER BY timestamp DESC, rowid DESC LIMIT 1), " +
+                        "''" +
+                    ") WHERE is_group = 1"
+                )
+            }
+        }
+
         fun getInstance(context: Context): WaUiDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -98,7 +118,7 @@ abstract class WaUiDatabase : RoomDatabase() {
                     WaUiDatabase::class.java,
                     File(context.applicationContext.filesDir, "wa_ui.db").absolutePath
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
                     .addCallback(object : Callback() {
                         override fun onOpen(db: SupportSQLiteDatabase) {

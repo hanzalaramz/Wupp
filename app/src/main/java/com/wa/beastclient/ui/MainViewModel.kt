@@ -101,7 +101,8 @@ internal fun filterHomeThreads(
     else byChip.filter {
         it.name.lowercase().contains(q) ||
             it.jid.lowercase().contains(q) ||
-            it.lastMessagePreview.lowercase().contains(q)
+            it.lastMessagePreview.lowercase().contains(q) ||
+            (it.isGroup && it.lastMessageSenderName.lowercase().contains(q))
     }
 }
 

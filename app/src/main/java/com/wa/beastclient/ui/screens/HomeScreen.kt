@@ -1994,6 +1994,46 @@ private fun ChatsTabContent(
     }
 }
 
+internal fun resolveChatSubtitlePreview(chat: ChatEntity): String {
+    val isViewOncePreview = chat.lastMessageType.startsWith("VIEW_ONCE") ||
+        chat.lastMessagePreview.startsWith("View once")
+
+    val fallbackPreview = when (chat.lastMessageType) {
+        "PTT" -> "🎤 Voice message"
+        "AUDIO" -> "🎵 Audio"
+        "IMAGE" -> "📷 Photo"
+        "VIDEO" -> "🎥 Video"
+        "STICKER" -> "💟 Sticker"
+        "DOCUMENT" -> "📄 Document"
+        else -> ""
+    }
+    val baseSubtitle = when {
+        chat.chatPresence.isNotBlank() -> chat.chatPresence
+        isViewOncePreview && !chat.lastMessageIsDeleted -> when {
+            chat.lastMessagePreview.startsWith("Opened") -> chat.lastMessagePreview
+            chat.lastMessageType.endsWith("VIDEO") -> "Video"
+            chat.lastMessageType.endsWith("AUDIO") || chat.lastMessageType.endsWith("PTT") -> "Voice message"
+            else -> "Photo"
+        }
+        chat.lastMessagePreview.isNotBlank() -> chat.lastMessagePreview
+        else -> fallbackPreview
+    }
+    val cleanSender = chat.lastMessageSenderName.trim()
+    return if (
+        chat.isGroup &&
+        !chat.lastMessageFromMe &&
+        chat.chatPresence.isBlank() &&
+        cleanSender.isNotBlank() &&
+        baseSubtitle.isNotBlank() &&
+        !baseSubtitle.startsWith("$cleanSender:") &&
+        !baseSubtitle.contains(" reacted ")
+    ) {
+        "$cleanSender: $baseSubtitle"
+    } else {
+        baseSubtitle
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatListRow(
@@ -2159,26 +2199,7 @@ private fun ChatListRow(
                     }
                 }
 
-                val fallbackPreview = when (chat.lastMessageType) {
-                    "PTT" -> "🎤 Voice message"
-                    "AUDIO" -> "🎵 Audio"
-                    "IMAGE" -> "📷 Photo"
-                    "VIDEO" -> "🎥 Video"
-                    "STICKER" -> "💟 Sticker"
-                    "DOCUMENT" -> "📄 Document"
-                    else -> ""
-                }
-                val subtitle = when {
-                    chat.chatPresence.isNotBlank() -> chat.chatPresence
-                    isViewOncePreview && !chat.lastMessageIsDeleted -> when {
-                        chat.lastMessagePreview.startsWith("Opened") -> chat.lastMessagePreview
-                        chat.lastMessageType.endsWith("VIDEO") -> "Video"
-                        chat.lastMessageType.endsWith("AUDIO") || chat.lastMessageType.endsWith("PTT") -> "Voice message"
-                        else -> "Photo"
-                    }
-                    chat.lastMessagePreview.isNotBlank() -> chat.lastMessagePreview
-                    else -> fallbackPreview
-                }
+                val subtitle = resolveChatSubtitlePreview(chat)
                 Text(
                     text = subtitle,
                     color = when {
@@ -3222,7 +3243,7 @@ private fun CommunityGroupRow(
     } else {
         chat.name.ifBlank { chat.jid.substringBefore("@") }
     }
-    val subtitle = chat.lastMessagePreview.ifBlank {
+    val subtitle = resolveChatSubtitlePreview(chat).ifBlank {
         chat.aboutText.ifBlank { if (chat.isDefaultSubgroup) "Announcements" else "" }
     }
 

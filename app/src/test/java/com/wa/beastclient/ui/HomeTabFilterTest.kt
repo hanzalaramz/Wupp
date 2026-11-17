@@ -1,6 +1,7 @@
 package com.wa.beastclient.ui
 
 import com.wa.beastclient.data.db.ChatEntity
+import com.wa.beastclient.ui.screens.resolveChatSubtitlePreview
 import com.wa.beastclient.ui.screens.resolveHomeTabOrder
 import com.wa.beastclient.ui.screens.resolvePagerIndexForTab
 import com.wa.beastclient.ui.screens.resolveTabIdForPagerIndex
@@ -58,5 +59,70 @@ class HomeTabFilterTest {
         assertEquals(2, resolvePagerIndexForTab(separated, 1))
         assertEquals(4, resolveTabIdForPagerIndex(separated, 1))
         assertEquals(3, resolveTabIdForPagerIndex(separated, 4))
+    }
+
+    @Test
+    fun filterHomeThreads_matchesGroupLastMessageSenderName() {
+        val grpWithSender = grp1.copy(lastMessageSenderName = "Sarah Jenkins", lastMessagePreview = "Meeting at 3")
+        val sample = listOf(dm1, grpWithSender)
+
+        val matchSender = filterHomeThreads(sample, HomeFilterChip.ALL, query = "sarah", hideLocked = true)
+        assertEquals(listOf(grpWithSender), matchSender)
+
+        val noMatch = filterHomeThreads(sample, HomeFilterChip.ALL, query = "robert", hideLocked = true)
+        assertEquals(emptyList<ChatEntity>(), noMatch)
+    }
+
+    @Test
+    fun resolveChatSubtitlePreview_prefixesGroupSenderNameAccurately() {
+        val grpFromOther = grp1.copy(
+            lastMessageSenderName = "Sarah",
+            lastMessagePreview = "Hey team",
+            lastMessageFromMe = false
+        )
+        assertEquals("Sarah: Hey team", resolveChatSubtitlePreview(grpFromOther))
+
+        val grpFromMe = grp1.copy(
+            lastMessageSenderName = "Sarah",
+            lastMessagePreview = "Hey team",
+            lastMessageFromMe = true
+        )
+        assertEquals("Hey team", resolveChatSubtitlePreview(grpFromMe))
+
+        val grpWithPresence = grp1.copy(
+            lastMessageSenderName = "Sarah",
+            lastMessagePreview = "Hey team",
+            chatPresence = "typing..."
+        )
+        assertEquals("typing...", resolveChatSubtitlePreview(grpWithPresence))
+
+        val dm = dm1.copy(
+            lastMessageSenderName = "Sarah",
+            lastMessagePreview = "Hey Alice",
+            isGroup = false
+        )
+        assertEquals("Hey Alice", resolveChatSubtitlePreview(dm))
+
+        val grpReaction = grp1.copy(
+            lastMessageSenderName = "Sarah",
+            lastMessagePreview = "Sarah reacted 👍 to \"Meeting at 3\"",
+            lastMessageFromMe = false
+        )
+        assertEquals("Sarah reacted 👍 to \"Meeting at 3\"", resolveChatSubtitlePreview(grpReaction))
+
+        val grpPhotoFallback = grp1.copy(
+            lastMessageSenderName = "Sarah",
+            lastMessageType = "IMAGE",
+            lastMessagePreview = "",
+            lastMessageFromMe = false
+        )
+        assertEquals("Sarah: 📷 Photo", resolveChatSubtitlePreview(grpPhotoFallback))
+
+        val grpAlreadyPrefixed = grp1.copy(
+            lastMessageSenderName = "Sarah",
+            lastMessagePreview = "Sarah: Already prefixed",
+            lastMessageFromMe = false
+        )
+        assertEquals("Sarah: Already prefixed", resolveChatSubtitlePreview(grpAlreadyPrefixed))
     }
 }

@@ -47,6 +47,8 @@ data class ChatEntity(
     val lastMessageIsDeleted: Boolean = false,
     @ColumnInfo(name = "last_message_timestamp")
     val lastMessageTimestamp: Long = 0L,
+    @ColumnInfo(name = "last_message_sender_name", defaultValue = "''")
+    val lastMessageSenderName: String = "",
     @ColumnInfo(name = "has_deleted_messages")
     val hasDeletedMessages: Boolean = false,
     @ColumnInfo(name = "has_edited_messages")
