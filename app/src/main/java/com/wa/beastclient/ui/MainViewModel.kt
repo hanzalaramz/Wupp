@@ -26,9 +26,12 @@ import com.wa.beastclient.data.db.PresenceLogEntity
 import com.wa.beastclient.data.db.ProfileHistoryEntity
 import com.wa.beastclient.data.db.StatusEntity
 import com.wa.beastclient.data.db.WaUiDatabase
+import com.wa.beastclient.data.media.BuiltinSticker
+import com.wa.beastclient.data.media.CuppyPackManager
 import com.wa.beastclient.data.media.EagerMediaVault
 import com.wa.beastclient.data.media.OutboundQualityMode
 import com.wa.beastclient.data.media.SoundPoolManager
+import com.wa.beastclient.data.media.StickerFavoritesStore
 import com.wa.beastclient.domain.security.AppLockConfig
 import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.domain.stealth.AutoDownloadNetwork
@@ -49,6 +52,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -177,6 +181,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             list.filter { !it.localMediaPath.isNullOrBlank() && File(it.localMediaPath).exists() }
         }
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    private val stickerFavoritesStore = StickerFavoritesStore.getInstance(appContext)
+
+    val favoriteStickerKeys: StateFlow<Set<String>> = stickerFavoritesStore.favorites
+
+    val favoriteStickers: StateFlow<List<MessageEntity>> = combine(
+        recentStickers,
+        favoriteStickerKeys
+    ) { stickers, favKeys ->
+        stickers.filter { msg ->
+            val sha = msg.mediaSha256
+            val path = msg.localMediaPath
+            val id = msg.id
+            (sha != null && favKeys.contains(sha)) ||
+                (path != null && favKeys.contains(path)) ||
+                favKeys.contains(id)
+        }
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val cuppyStickers: StateFlow<List<BuiltinSticker>> = flow {
+        emit(CuppyPackManager.getCuppyStickers(appContext))
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val archivedCount: StateFlow<Int> = dao.observeArchivedCount()
         .stateIn(viewModelScope, SharingStarted.Lazily, 0)
@@ -962,6 +988,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ).onFailure { err ->
                 showToast(err.message ?: "Failed to send sticker")
             }
+        }
+    }
+
+    fun toggleFavoriteSticker(msg: MessageEntity): Boolean {
+        val key = msg.mediaSha256?.takeIf { it.isNotBlank() }
+            ?: msg.localMediaPath?.takeIf { it.isNotBlank() }
+            ?: msg.id
+        return stickerFavoritesStore.toggleFavorite(key)
+    }
+
+    fun isStickerFavorite(msg: MessageEntity): Boolean {
+        val key = msg.mediaSha256?.takeIf { it.isNotBlank() }
+            ?: msg.localMediaPath?.takeIf { it.isNotBlank() }
+            ?: msg.id
+        return stickerFavoritesStore.isFavorite(key)
+    }
+
+    fun sendStickerFromUri(chatJid: String, uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val cachedFile = EagerMediaVault.copyUriToCacheFile(appContext, uri, "webp") ?: return@launch
+            val prepared = EagerMediaVault.prepareOutboundMedia(
+                context = appContext,
+                sourceFile = cachedFile,
+                mimeType = "image/webp",
+                mode = OutboundQualityMode.STICKER
+            )
+            sendSticker(chatJid, prepared.file)
         }
     }
 

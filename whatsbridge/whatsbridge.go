@@ -2742,6 +2742,20 @@ func handleWhatsmeowEvent(rawEvt any) {
 	case *events.MediaRetry:
 		go processMediaRetry(evt)
 
+	case *events.AppState:
+		if evt != nil && evt.SyncActionValue != nil {
+			if sa := evt.GetStickerAction(); sa != nil {
+				isFav := sa.GetIsFavorite()
+				shaHex := hex.EncodeToString(sa.GetFileEncSHA256())
+				emitJSON("STICKER_ACTION", map[string]any{
+					"fileEncSha256": shaHex,
+					"url":           sa.GetURL(),
+					"directPath":    sa.GetDirectPath(),
+					"isFavorite":    isFav,
+				})
+			}
+		}
+
 	case *events.NewsletterLiveUpdate:
 		if evt != nil && !evt.JID.IsEmpty() {
 			mu.Lock()

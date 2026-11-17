@@ -75,6 +75,15 @@
     <string name="chat_sticker_panel_title">Stickers</string>
     <string name="chat_sticker_empty_title">No stickers yet</string>
     <string name="chat_sticker_empty_desc">Stickers received or sent in WhatsApp chats will appear here automatically.</string>
+    <string name="chat_sticker_favorites_title">Favorites</string>
+    <string name="chat_sticker_recent_title">Recent</string>
+    <string name="chat_sticker_create_title">Create sticker</string>
+    <string name="chat_sticker_empty_favorites">No favorite stickers yet.\nLong-press any sticker to add to favorites.</string>
+    <string name="chat_sticker_add_favorite">Add to Favorites</string>
+    <string name="chat_sticker_remove_favorite">Remove from Favorites</string>
+    <string name="chat_sticker_send">Send</string>
+    <string name="chat_sticker_search_hint">Search stickers…</string>
+    <string name="chat_emoji_search_hint">Search emoji…</string>
     <string name="chat_doc_save_downloads">Save to Downloads</string>
     <string name="chat_doc_open_with">Open file</string>
     <string name="chat_doc_download">Download %1$s</string>

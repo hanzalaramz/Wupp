@@ -420,6 +420,10 @@ fun ChatScreen(
     var showEmojiPicker by remember(chatJid) { mutableStateOf(false) }
     var holdDockForIme by remember(chatJid) { mutableStateOf(false) }
     val recentStickers by viewModel.recentStickers.collectAsState()
+    val favoriteStickers by viewModel.favoriteStickers.collectAsState()
+    val favoriteStickerKeys by viewModel.favoriteStickerKeys.collectAsState()
+    val cuppyStickers by viewModel.cuppyStickers.collectAsState()
+    var isDockExpanded by rememberSaveable(chatJid) { mutableStateOf(false) }
 
     val keyboardController = LocalSoftwareKeyboardController.current
     val draftFocusRequester = remember { FocusRequester() }
@@ -436,6 +440,12 @@ fun ChatScreen(
     var rememberedKeyboardDp by remember {
         mutableStateOf(uiPrefs.getFloat("cached_ime_height_dp", 296f).coerceIn(220f, 420f).dp)
     }
+    LaunchedEffect(showEmojiPicker) {
+        if (!showEmojiPicker) {
+            isDockExpanded = false
+        }
+    }
+
     LaunchedEffect(imeExclusivePx) {
         val minImePx = with(density) { 120.dp.toPx() }
         if (imeExclusivePx > minImePx) {
@@ -493,8 +503,12 @@ fun ChatScreen(
     var showWallpaperDialog by remember { mutableStateOf(false) }
 
     BackHandler(enabled = showEmojiPicker) {
-        showEmojiPicker = false
-        holdDockForIme = false
+        if (isDockExpanded) {
+            isDockExpanded = false
+        } else {
+            showEmojiPicker = false
+            holdDockForIme = false
+        }
     }
 
     BackHandler(enabled = actionMenuTarget != null) {
@@ -535,6 +549,14 @@ fun ChatScreen(
     ) { uri ->
         if (uri != null) {
             handlePickedAttachment(uri, "application/octet-stream")
+        }
+    }
+
+    val pickStickerVisualLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.sendStickerFromUri(chatJid, uri)
         }
     }
 
@@ -1892,8 +1914,11 @@ fun ChatScreen(
                     }
                 }
 
-                // Native Keyboard-Height Emoji Dock
-                val desiredDockDp = minOf(rememberedKeyboardDp, maxLandscapeDockDp)
+                // Native Keyboard-Height Emoji & Sticker Dock (with WhatsApp vertical stretch expansion)
+                val screenHeightDp = LocalConfiguration.current.screenHeightDp.dp
+                val standardDockDp = minOf(rememberedKeyboardDp, maxLandscapeDockDp)
+                val expandedDockDp = (screenHeightDp * 0.72f).coerceIn(460.dp, 640.dp)
+                val desiredDockDp = if (isDockExpanded) expandedDockDp else standardDockDp
                 val targetDockDp = if (showEmojiPicker || holdDockForIme) {
                     (desiredDockDp - imeExclusiveDp).coerceAtLeast(0.dp)
                 } else {
@@ -1902,7 +1927,7 @@ fun ChatScreen(
                 val animatedDockDp by animateDpAsState(
                     targetValue = targetDockDp,
                     animationSpec = tween(
-                        durationMillis = if (imeExclusivePx > 0 || holdDockForIme) 0 else 190
+                        durationMillis = if (imeExclusivePx > 0 || holdDockForIme) 0 else 200
                     ),
                     label = "emoji_dock_height"
                 )
@@ -1917,6 +1942,14 @@ fun ChatScreen(
                             ChatEmojiPickerDock(
                                 dockHeight = desiredDockDp,
                                 colors = colors,
+                                isExpanded = isDockExpanded,
+                                onToggleExpand = { isDockExpanded = !isDockExpanded },
+                                onExpand = { isDockExpanded = true },
+                                onCollapse = { isDockExpanded = false },
+                                onDismiss = {
+                                    showEmojiPicker = false
+                                    isDockExpanded = false
+                                },
                                 onEmojiSelected = { emoji ->
                                     draftValue = insertTextAtSelection(draftValue, emoji)
                                 },
@@ -1924,6 +1957,9 @@ fun ChatScreen(
                                     draftValue = deleteBeforeSelection(draftValue)
                                 },
                                 recentStickers = recentStickers,
+                                favoriteStickers = favoriteStickers,
+                                favoriteStickerKeys = favoriteStickerKeys,
+                                cuppyStickers = cuppyStickers,
                                 onStickerSelected = { stickerMsg ->
                                     val path = stickerMsg.localMediaPath
                                     if (!path.isNullOrBlank()) {
@@ -1932,6 +1968,17 @@ fun ChatScreen(
                                             viewModel.sendSticker(chatJid, file)
                                         }
                                     }
+                                },
+                                onSendBuiltinSticker = { builtinSticker ->
+                                    viewModel.sendSticker(chatJid, builtinSticker.file)
+                                },
+                                onToggleFavorite = { stickerMsg ->
+                                    viewModel.toggleFavoriteSticker(stickerMsg)
+                                },
+                                onCreateSticker = {
+                                    pickStickerVisualLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
                                 }
                             )
                         }

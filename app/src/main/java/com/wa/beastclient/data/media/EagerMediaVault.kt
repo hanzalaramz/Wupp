@@ -103,7 +103,66 @@ object EagerMediaVault {
         mode: OutboundQualityMode
     ): PreparedMedia = withContext(Dispatchers.IO) {
         ensureDirectories(context)
-        if (mode == OutboundQualityMode.STICKER || mode == OutboundQualityMode.ORIGINAL || mimeType.equals("image/webp", ignoreCase = true) || !mimeType.startsWith("image/")) {
+
+        // Native WhatsApp Sticker formatting: ensure valid 512x512 WebP
+        if (mode == OutboundQualityMode.STICKER) {
+            val isAlreadyWebp = mimeType.equals("image/webp", ignoreCase = true) ||
+                sourceFile.extension.equals("webp", ignoreCase = true)
+            if (isAlreadyWebp) {
+                val outFile = if (sourceFile.parentFile == mediaDir(context)) {
+                    sourceFile
+                } else {
+                    File(mediaDir(context), "sticker_${System.currentTimeMillis()}.webp").also { dest ->
+                        sourceFile.copyTo(dest, overwrite = true)
+                    }
+                }
+                return@withContext PreparedMedia(
+                    file = outFile,
+                    mimeType = "image/webp",
+                    sha256 = computeSha256(outFile),
+                    fileSize = outFile.length()
+                )
+            } else {
+                val dest = File(mediaDir(context), "sticker_${System.currentTimeMillis()}.webp")
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(sourceFile.absolutePath, bounds)
+                val srcW = bounds.outWidth
+                val srcH = bounds.outHeight
+                if (srcW > 0 && srcH > 0) {
+                    var sample = 1
+                    while ((srcW / sample) > 1024 || (srcH / sample) > 1024) {
+                        sample *= 2
+                    }
+                    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+                    val bmp = BitmapFactory.decodeFile(sourceFile.absolutePath, opts)
+                    if (bmp != null) {
+                        val maxDim = 512
+                        val scale = min(1f, maxDim.toFloat() / max(bmp.width, bmp.height).toFloat())
+                        val targetW = max(1, (bmp.width * scale).roundToInt())
+                        val targetH = max(1, (bmp.height * scale).roundToInt())
+                        val scaled = Bitmap.createScaledBitmap(bmp, targetW, targetH, true)
+                        FileOutputStream(dest).use { out ->
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                scaled.compress(Bitmap.CompressFormat.WEBP_LOSSY, 88, out)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                scaled.compress(Bitmap.CompressFormat.WEBP, 88, out)
+                            }
+                        }
+                        if (scaled !== bmp) scaled.recycle()
+                        bmp.recycle()
+                        return@withContext PreparedMedia(
+                            file = dest,
+                            mimeType = "image/webp",
+                            sha256 = computeSha256(dest),
+                            fileSize = dest.length()
+                        )
+                    }
+                }
+            }
+        }
+
+        if (mode == OutboundQualityMode.ORIGINAL || mimeType.equals("image/webp", ignoreCase = true) || !mimeType.startsWith("image/")) {
             val outFile = if (sourceFile.parentFile == mediaDir(context)) {
                 sourceFile
             } else {

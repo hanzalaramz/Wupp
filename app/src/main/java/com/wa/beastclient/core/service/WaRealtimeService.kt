@@ -39,6 +39,7 @@ import com.wa.beastclient.data.db.WaUiDatabase
 import com.wa.beastclient.data.media.EagerMediaVault
 import com.wa.beastclient.data.media.OutboundQualityMode
 import com.wa.beastclient.data.media.SoundPoolManager
+import com.wa.beastclient.data.media.StickerFavoritesStore
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.bridge.whatsbridge.NativeBridgeCallback
 import com.wa.bridge.whatsbridge.Whatsbridge
@@ -587,6 +588,7 @@ class WaRealtimeService : Service() {
             "CHAT_PRESENCE" -> handleChatPresence(json)
             "CHAT_META_UPDATE" -> handleChatMetaUpdate(json)
             "PROFILE_UPDATE" -> handleProfileUpdate(json)
+            "STICKER_ACTION" -> handleStickerAction(json)
             "BRIDGE_LOG" -> {
                 val lvl = json.optString("level", "INFO")
                 val mod = json.optString("module", "Go")
@@ -1623,6 +1625,19 @@ class WaRealtimeService : Service() {
                     capturedAt = ts
                 )
             )
+        }
+    }
+
+    private fun handleStickerAction(json: JSONObject) {
+        val sha = json.optString("fileEncSha256").takeIf { it.isNotBlank() }
+        val isFav = json.optBoolean("isFavorite", false)
+        if (sha != null) {
+            val store = StickerFavoritesStore.getInstance(applicationContext)
+            if (isFav) {
+                store.addFavorite(sha)
+            } else {
+                store.removeFavorite(sha)
+            }
         }
     }
 
