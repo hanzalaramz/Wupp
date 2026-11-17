@@ -1,37 +1,58 @@
 package com.wa.beastclient.ui.components
 
+import android.graphics.BitmapFactory
 import android.view.ContextThemeWrapper
 import android.view.ViewGroup
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Backspace
+import androidx.compose.material.icons.rounded.SentimentSatisfiedAlt
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -40,15 +61,20 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.emoji2.emojipicker.EmojiPickerView
 import com.wa.beastclient.R
+import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.ui.theme.WaColors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.BreakIterator
 
 /**
@@ -95,9 +121,11 @@ internal fun deleteBeforeSelection(current: TextFieldValue): TextFieldValue {
     )
 }
 
+enum class DockTab { EMOJI, STICKER }
+
 /**
- * Native AndroidX [EmojiPickerView] panel docked at IME height inside the chat screen,
- * with grapheme-aware repeat backspace and Dark/Light theme overlay matching.
+ * Native AndroidX [EmojiPickerView] & Sticker panel docked inside the chat screen,
+ * with bottom tab navigation, grapheme-aware repeat backspace, and WhatsApp dark/light styling.
  */
 @Composable
 fun ChatEmojiPickerDock(
@@ -105,10 +133,14 @@ fun ChatEmojiPickerDock(
     colors: WaColors,
     onEmojiSelected: (String) -> Unit,
     onBackspace: () -> Unit,
+    recentStickers: List<MessageEntity> = emptyList(),
+    onStickerSelected: (MessageEntity) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    var selectedTab by rememberSaveable { mutableStateOf(DockTab.EMOJI) }
     val latestOnEmojiSelected by rememberUpdatedState(onEmojiSelected)
     val latestOnBackspace by rememberUpdatedState(onBackspace)
+    val latestOnStickerSelected by rememberUpdatedState(onStickerSelected)
     val dockBg = colors.chatCanvas
     val barBg = colors.elevatedBar
     val backspaceCd = stringResource(R.string.chat_emoji_backspace)
@@ -121,6 +153,8 @@ fun ChatEmojiPickerDock(
             .background(dockBg)
     ) {
         HorizontalDivider(color = colors.divider, thickness = 0.6.dp)
+
+        // Top bar: Title + drag handle + backspace (for emoji tab)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -130,7 +164,11 @@ fun ChatEmojiPickerDock(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = stringResource(R.string.chat_emoji_panel_title),
+                text = if (selectedTab == DockTab.EMOJI) {
+                    stringResource(R.string.chat_emoji_panel_title)
+                } else {
+                    stringResource(R.string.chat_sticker_panel_title)
+                },
                 color = colors.textSecondary,
                 fontSize = 12.5.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -143,74 +181,256 @@ fun ChatEmojiPickerDock(
                     .clip(RoundedCornerShape(2.dp))
                     .background(colors.textSecondary.copy(alpha = 0.28f))
             )
-            Spacer(modifier = Modifier.weight(1f))
             Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .semantics {
-                        contentDescription = backspaceCd
-                        role = Role.Button
-                    }
-                    .pointerInput(Unit) {
-                        awaitEachGesture {
-                            awaitFirstDown(requireUnconsumed = false)
-                            latestOnBackspace()
-                            val repeatJob = scope.launch {
-                                delay(380L)
-                                while (true) {
-                                    latestOnBackspace()
-                                    delay(65L)
-                                }
-                            }
-                            try {
-                                waitForUpOrCancellation()
-                            } finally {
-                                repeatJob.cancel()
-                            }
-                        }
-                    },
-                contentAlignment = Alignment.Center
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.CenterEnd
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.Backspace,
-                    contentDescription = null,
-                    tint = colors.textSecondary,
-                    modifier = Modifier.size(19.dp)
-                )
+                if (selectedTab == DockTab.EMOJI) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .semantics {
+                                contentDescription = backspaceCd
+                                role = Role.Button
+                            }
+                            .pointerInput(Unit) {
+                                awaitEachGesture {
+                                    awaitFirstDown(requireUnconsumed = false)
+                                    latestOnBackspace()
+                                    val repeatJob = scope.launch {
+                                        delay(380L)
+                                        while (true) {
+                                            latestOnBackspace()
+                                            delay(65L)
+                                        }
+                                    }
+                                    try {
+                                        waitForUpOrCancellation()
+                                    } finally {
+                                        repeatJob.cancel()
+                                    }
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.Backspace,
+                            contentDescription = null,
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                }
             }
         }
 
-        // Re-create AndroidView when light/dark mode flips so ContextThemeWrapper applies crisp colors.
-        key(colors.isDark) {
-            val themeRes = if (colors.isDark) {
-                R.style.ThemeOverlay_Wupp_EmojiPicker_Dark
-            } else {
-                R.style.ThemeOverlay_Wupp_EmojiPicker_Light
-            }
-            AndroidView(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                factory = { ctx ->
-                    EmojiPickerView(ContextThemeWrapper(ctx, themeRes)).apply {
-                        layoutParams = ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                        setBackgroundColor(dockBg.toArgb())
-                        emojiGridColumns = 9
-                        setOnEmojiPickedListener { item ->
-                            latestOnEmojiSelected(item.emoji)
+        // Center Content Area
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
+            when (selectedTab) {
+                DockTab.EMOJI -> {
+                    key(colors.isDark) {
+                        val themeRes = if (colors.isDark) {
+                            R.style.ThemeOverlay_Wupp_EmojiPicker_Dark
+                        } else {
+                            R.style.ThemeOverlay_Wupp_EmojiPicker_Light
                         }
-                    }
-                },
-                update = { picker ->
-                    picker.setBackgroundColor(dockBg.toArgb())
-                    picker.setOnEmojiPickedListener { item ->
-                        latestOnEmojiSelected(item.emoji)
+                        AndroidView(
+                            modifier = Modifier.fillMaxSize(),
+                            factory = { ctx ->
+                                EmojiPickerView(ContextThemeWrapper(ctx, themeRes)).apply {
+                                    layoutParams = ViewGroup.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT
+                                    )
+                                    setBackgroundColor(dockBg.toArgb())
+                                    emojiGridColumns = 9
+                                    setOnEmojiPickedListener { item ->
+                                        latestOnEmojiSelected(item.emoji)
+                                    }
+                                }
+                            },
+                            update = { picker ->
+                                picker.setBackgroundColor(dockBg.toArgb())
+                                picker.setOnEmojiPickedListener { item ->
+                                    latestOnEmojiSelected(item.emoji)
+                                }
+                            }
+                        )
                     }
                 }
+                DockTab.STICKER -> {
+                    if (recentStickers.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 32.dp, vertical = 24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    painter = painterResource(R.drawable.ic_tab_sticker),
+                                    contentDescription = null,
+                                    tint = colors.textSecondary.copy(alpha = 0.45f),
+                                    modifier = Modifier.size(46.dp)
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Text(
+                                    text = stringResource(R.string.chat_sticker_empty_title),
+                                    color = colors.textPrimary,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = stringResource(R.string.chat_sticker_empty_desc),
+                                    color = colors.textSecondary,
+                                    fontSize = 12.5.sp,
+                                    textAlign = TextAlign.Center,
+                                    lineHeight = 17.sp
+                                )
+                            }
+                        }
+                    } else {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(4),
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(recentStickers, key = { it.id }) { stickerMsg ->
+                                StickerPickerGridItem(
+                                    msg = stickerMsg,
+                                    colors = colors,
+                                    onClick = { latestOnStickerSelected(stickerMsg) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
+
+        // Bottom Tab Switcher Bar: [😊 Emoji | 💟 Stickers]
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp)
+                .background(barBg),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Emoji Tab
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clickable { selectedTab = DockTab.EMOJI },
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.SentimentSatisfiedAlt,
+                        contentDescription = stringResource(R.string.chat_emoji_panel_title),
+                        tint = if (selectedTab == DockTab.EMOJI) colors.accentGreen else colors.textSecondary,
+                        modifier = Modifier.size(23.dp)
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Box(
+                        modifier = Modifier
+                            .width(28.dp)
+                            .height(2.5.dp)
+                            .clip(RoundedCornerShape(1.dp))
+                            .background(if (selectedTab == DockTab.EMOJI) colors.accentGreen else Color.Transparent)
+                    )
+                }
+            }
+
+            // Sticker Tab
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clickable { selectedTab = DockTab.STICKER },
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_tab_sticker),
+                        contentDescription = stringResource(R.string.chat_sticker_panel_title),
+                        tint = if (selectedTab == DockTab.STICKER) colors.accentGreen else colors.textSecondary,
+                        modifier = Modifier.size(21.dp)
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Box(
+                        modifier = Modifier
+                            .width(28.dp)
+                            .height(2.5.dp)
+                            .clip(RoundedCornerShape(1.dp))
+                            .background(if (selectedTab == DockTab.STICKER) colors.accentGreen else Color.Transparent)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StickerPickerGridItem(
+    msg: MessageEntity,
+    colors: WaColors,
+    onClick: () -> Unit
+) {
+    val localFile = remember(msg.localMediaPath) {
+        msg.localMediaPath?.takeIf { it.isNotBlank() }?.let { path ->
+            File(path).takeIf { it.exists() && it.length() > 0L }
+        }
+    }
+    val bmp by produceState<ImageBitmap?>(initialValue = null, key1 = localFile?.absolutePath) {
+        value = if (localFile != null) {
+            withContext(Dispatchers.IO) {
+                runCatching { BitmapFactory.decodeFile(localFile.absolutePath)?.asImageBitmap() }.getOrNull()
+            }
+        } else null
+    }
+
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        val loaded = bmp
+        if (loaded != null) {
+            Image(
+                bitmap = loaded,
+                contentDescription = "Sticker",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(colors.incomingBubble.copy(alpha = 0.35f))
             )
         }
     }

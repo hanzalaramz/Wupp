@@ -454,6 +454,19 @@ interface WaDao {
     )
     suspend fun getUndownloadedAudioMessages(chatJid: String): List<MessageEntity>
 
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE msg_type = 'STICKER'
+          AND local_media_path IS NOT NULL
+          AND local_media_path != ''
+        GROUP BY COALESCE(media_sha256, local_media_path)
+        ORDER BY timestamp DESC
+        LIMIT 120
+        """
+    )
+    fun observeRecentStickers(): Flow<List<MessageEntity>>
+
     @Query("UPDATE messages SET delivery_status = 'READ' WHERE chat_jid = :chatJid AND is_from_me = 0 AND delivery_status != 'PLAYED'")
     suspend fun markIncomingLocallyRead(chatJid: String)
 

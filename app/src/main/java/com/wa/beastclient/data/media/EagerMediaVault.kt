@@ -33,7 +33,8 @@ import kotlin.math.sqrt
 enum class OutboundQualityMode(val wireValue: String, val label: String) {
     STANDARD("standard", "Standard (Fast)"),
     HD("hd", "HD (2560px)"),
-    ORIGINAL("original", "Original (Lossless Doc)")
+    ORIGINAL("original", "Original (Lossless Doc)"),
+    STICKER("sticker", "Sticker")
 }
 
 data class PreparedMedia(
@@ -102,7 +103,7 @@ object EagerMediaVault {
         mode: OutboundQualityMode
     ): PreparedMedia = withContext(Dispatchers.IO) {
         ensureDirectories(context)
-        if (mode == OutboundQualityMode.ORIGINAL || !mimeType.startsWith("image/")) {
+        if (mode == OutboundQualityMode.STICKER || mode == OutboundQualityMode.ORIGINAL || mimeType.equals("image/webp", ignoreCase = true) || !mimeType.startsWith("image/")) {
             val outFile = if (sourceFile.parentFile == mediaDir(context)) {
                 sourceFile
             } else {

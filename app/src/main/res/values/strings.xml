@@ -72,6 +72,9 @@
     <string name="chat_switch_to_keyboard">Keyboard</string>
     <string name="chat_emoji_panel_title">Emoji</string>
     <string name="chat_emoji_backspace">Backspace</string>
+    <string name="chat_sticker_panel_title">Stickers</string>
+    <string name="chat_sticker_empty_title">No stickers yet</string>
+    <string name="chat_sticker_empty_desc">Stickers received or sent in WhatsApp chats will appear here automatically.</string>
     <string name="chat_doc_save_downloads">Save to Downloads</string>
     <string name="chat_doc_open_with">Open file</string>
     <string name="chat_doc_download">Download %1$s</string>

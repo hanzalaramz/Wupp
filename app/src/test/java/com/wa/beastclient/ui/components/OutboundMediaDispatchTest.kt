@@ -38,6 +38,10 @@ class OutboundMediaDispatchTest {
             "PTT" to "standard",
             resolveOutboundMediaDispatch("audio/ogg", OutboundQualityMode.STANDARD, isVoiceNote = true)
         )
+        assertEquals(
+            "STICKER" to "sticker",
+            resolveOutboundMediaDispatch("image/webp", OutboundQualityMode.STICKER, isVoiceNote = false)
+        )
     }
 
     @Test

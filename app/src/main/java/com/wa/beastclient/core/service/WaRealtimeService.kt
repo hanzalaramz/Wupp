@@ -83,6 +83,7 @@ internal fun resolveOutboundMediaDispatch(
     isVoiceNote: Boolean
 ): Pair<String, String> = when {
     isVoiceNote -> "PTT" to qualityMode.wireValue
+    qualityMode == OutboundQualityMode.STICKER || (mimeType.equals("image/webp", ignoreCase = true) && qualityMode.wireValue == "sticker") -> "STICKER" to "sticker"
     mimeType.startsWith("video/", ignoreCase = true) -> {
         val wireMode = if (qualityMode == OutboundQualityMode.ORIGINAL) {
             OutboundQualityMode.HD.wireValue

@@ -172,6 +172,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val allContacts: StateFlow<List<ContactEntity>> = dao.observeContacts()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
+    val recentStickers: StateFlow<List<MessageEntity>> = dao.observeRecentStickers()
+        .map { list ->
+            list.filter { !it.localMediaPath.isNullOrBlank() && File(it.localMediaPath).exists() }
+        }
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
     val archivedCount: StateFlow<Int> = dao.observeArchivedCount()
         .stateIn(viewModelScope, SharingStarted.Lazily, 0)
 
@@ -934,6 +940,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 durationSec = staged.durationSec
             ).onFailure { err ->
                 showToast(err.message ?: "Media send failed")
+            }
+        }
+    }
+
+    fun sendSticker(chatJid: String, stickerFile: File) {
+        viewModelScope.launch {
+            if (!stickerFile.exists() || stickerFile.length() == 0L) {
+                showToast("Sticker file not found")
+                return@launch
+            }
+            WaRealtimeService.sendMediaMessage(
+                context = appContext,
+                chatJid = chatJid,
+                sourceFile = stickerFile,
+                mimeType = "image/webp",
+                caption = "",
+                qualityMode = OutboundQualityMode.STICKER,
+                isVoiceNote = false,
+                durationSec = 0
+            ).onFailure { err ->
+                showToast(err.message ?: "Failed to send sticker")
             }
         }
     }

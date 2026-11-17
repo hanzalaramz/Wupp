@@ -54,6 +54,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -113,7 +114,7 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -418,6 +419,7 @@ fun ChatScreen(
     var showAttachTray by remember { mutableStateOf(false) }
     var showEmojiPicker by remember(chatJid) { mutableStateOf(false) }
     var holdDockForIme by remember(chatJid) { mutableStateOf(false) }
+    val recentStickers by viewModel.recentStickers.collectAsState()
 
     val keyboardController = LocalSoftwareKeyboardController.current
     val draftFocusRequester = remember { FocusRequester() }
@@ -1920,6 +1922,16 @@ fun ChatScreen(
                                 },
                                 onBackspace = {
                                     draftValue = deleteBeforeSelection(draftValue)
+                                },
+                                recentStickers = recentStickers,
+                                onStickerSelected = { stickerMsg ->
+                                    val path = stickerMsg.localMediaPath
+                                    if (!path.isNullOrBlank()) {
+                                        val file = File(path)
+                                        if (file.exists() && file.length() > 0L) {
+                                            viewModel.sendSticker(chatJid, file)
+                                        }
+                                    }
                                 }
                             )
                         }
@@ -2423,8 +2435,14 @@ private fun MessageBubbleRow(
     val showSeconds = LocalWuppShowSeconds.current
     val context = LocalContext.current
     val effectiveOutgoing = msg.isFromMe && !isChannel
-    val bubbleColor = if (effectiveOutgoing) colors.outgoingBubble else colors.incomingBubble
+    val isSticker = msg.msgType == "STICKER" && !msg.isDeletedBySender
+    val bubbleColor = when {
+        isSticker -> Color.Transparent
+        effectiveOutgoing -> colors.outgoingBubble
+        else -> colors.incomingBubble
+    }
     val shape = when {
+        isSticker -> RoundedCornerShape(0.dp)
         isChannel -> RoundedCornerShape(12.dp)
         showTail -> WhatsAppBubbleShape(effectiveOutgoing, true)
         else -> WhatsAppClusterInnerShape
@@ -2443,21 +2461,25 @@ private fun MessageBubbleRow(
         !msg.isDeletedBySender
 
     val sideStartPad = when {
+        isSticker -> 0.dp
         isMediaCard -> if (!isChannel && showTail && !effectiveOutgoing) 9.dp else 3.dp
         isDocCard -> if (!isChannel && showTail && !effectiveOutgoing) 10.dp else 6.dp
         else -> if (!isChannel && showTail && !effectiveOutgoing) 15.dp else 12.dp
     }
     val sideEndPad = when {
+        isSticker -> 0.dp
         isMediaCard -> if (!isChannel && showTail && effectiveOutgoing) 9.dp else 3.dp
         isDocCard -> if (!isChannel && showTail && effectiveOutgoing) 10.dp else 6.dp
         else -> if (!isChannel && showTail && effectiveOutgoing) 15.dp else 12.dp
     }
     val topBottomPad = when {
+        isSticker -> 0.dp
         isMediaCard -> 3.dp
         isDocCard -> 5.dp
         else -> 8.dp
     }
     val bubbleMaxW = when {
+        isSticker -> 160.dp
         isMediaCard -> 256.dp
         isDocCard -> 285.dp
         else -> 305.dp
@@ -3005,9 +3027,10 @@ private fun MessageBubbleRow(
                                             contentAlignment = Alignment.Center
                                         ) {
                                             if (isDownloadingMedia) {
-                                                LoadingIndicator(
+                                                CircularProgressIndicator(
                                                     color = colors.accentGreen,
-                                                    modifier = Modifier.size(28.dp)
+                                                    modifier = Modifier.size(28.dp),
+                                                    strokeWidth = 2.5.dp
                                                 )
                                             } else {
                                                 Icon(
@@ -3114,6 +3137,19 @@ private fun MessageBubbleRow(
                                 isPinned = msg.isPinned
                             )
                         }
+                    }
+
+                    // Sticker message (transparent borderless, WebP render, floating timestamp pill)
+                    msg.msgType == "STICKER" && !msg.isDeletedBySender -> {
+                        StickerMessageBubbleItem(
+                            msg = msg,
+                            showSeconds = showSeconds,
+                            isDownloadingMedia = isDownloadingMedia,
+                            mediaDownloadError = mediaDownloadError,
+                            onAutoRequestDownload = onAutoRequestDownload,
+                            onRequestDownload = onRequestDownload,
+                            onLongPress = onLongPress
+                        )
                     }
 
                     // Standard Text, Sticker, or Anti-Deleted text bubble
@@ -3406,4 +3442,121 @@ private fun resolveQuotedBannerSender(
         chatsByJid = chatsByJid,
         senderPushByJid = senderPushByJid
     )
+}
+
+@Composable
+private fun StickerMessageBubbleItem(
+    msg: MessageEntity,
+    showSeconds: Boolean,
+    isDownloadingMedia: Boolean,
+    mediaDownloadError: String?,
+    onAutoRequestDownload: () -> Unit,
+    onRequestDownload: () -> Unit,
+    onLongPress: () -> Unit
+) {
+    val localFile = remember(msg.localMediaPath) {
+        msg.localMediaPath?.takeIf { it.isNotBlank() }?.let { p ->
+            File(p).takeIf { it.exists() && it.length() > 0L }
+        }
+    }
+    val bmp by produceState<ImageBitmap?>(
+        initialValue = null,
+        key1 = localFile?.absolutePath
+    ) {
+        value = if (localFile != null) {
+            withContext(Dispatchers.IO) {
+                runCatching { BitmapFactory.decodeFile(localFile.absolutePath)?.asImageBitmap() }.getOrNull()
+            }
+        } else null
+    }
+
+    LaunchedEffect(msg.id, localFile != null) {
+        if (localFile == null && !isDownloadingMedia && mediaDownloadError == null) {
+            onAutoRequestDownload()
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .sizeIn(minWidth = 120.dp, minHeight = 120.dp, maxWidth = 160.dp, maxHeight = 160.dp)
+            .combinedClickable(
+                onClick = {
+                    if (localFile == null) onRequestDownload()
+                },
+                onLongClick = onLongPress
+            )
+    ) {
+        val loaded = bmp
+        if (loaded != null) {
+            Image(
+                bitmap = loaded,
+                contentDescription = "Sticker",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .size(150.dp)
+                    .align(Alignment.Center)
+            )
+        } else if (isDownloadingMedia) {
+            Box(
+                modifier = Modifier
+                    .size(140.dp)
+                    .align(Alignment.Center),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(28.dp),
+                    color = Color.White.copy(alpha = 0.8f),
+                    strokeWidth = 2.5.dp
+                )
+            }
+        } else {
+            // Placeholder / tap to download
+            Box(
+                modifier = Modifier
+                    .size(140.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.Black.copy(alpha = 0.15f))
+                    .align(Alignment.Center),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_tab_sticker),
+                        contentDescription = "Download sticker",
+                        tint = Color.White.copy(alpha = 0.7f),
+                        modifier = Modifier.size(32.dp)
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (mediaDownloadError != null) "Retry" else "Tap to load",
+                        color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        }
+
+        // WhatsApp-style floating dark timestamp pill
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 4.dp, bottom = 4.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0x66000000))
+                .padding(horizontal = 5.dp, vertical = 2.dp)
+        ) {
+            MessageMetaCluster(
+                timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
+                isEdited = msg.isEdited,
+                isEphemeral = msg.isEphemeral,
+                isFromMe = msg.isFromMe,
+                deliveryStatus = msg.deliveryStatus,
+                isPinned = msg.isPinned,
+                tintOverride = Color.White.copy(alpha = 0.92f)
+            )
+        }
+    }
 }

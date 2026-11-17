@@ -811,8 +811,11 @@ func SendMediaMessage(
 	isViewOnce := strings.Contains(rawMode, "viewonce") || strings.Contains(rawMode, "view_once")
 	modeLower := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(rawMode, ":viewonce"), "_viewonce"))
 	mimeLower := strings.ToLower(strings.TrimSpace(mimeType))
+	isSticker := modeLower == "sticker" || strings.Contains(rawMode, "sticker")
 
 	switch {
+	case isSticker:
+		waMediaType = whatsmeow.MediaImage
 	case !isViewOnce && modeLower == "original" && !strings.HasPrefix(mimeLower, "video/"):
 		waMediaType = whatsmeow.MediaDocument
 	case isVoiceNote || strings.HasPrefix(mimeLower, "audio/"):
@@ -833,7 +836,20 @@ func SendMediaMessage(
 	var msg *waE2E.Message
 	fileName := filepath.Base(filePath)
 
-	switch waMediaType {
+	if isSticker {
+		msg = &waE2E.Message{
+			StickerMessage: &waE2E.StickerMessage{
+				URL:           &up.URL,
+				DirectPath:    &up.DirectPath,
+				MediaKey:      up.MediaKey,
+				FileEncSHA256: up.FileEncSHA256,
+				FileSHA256:    up.FileSHA256,
+				FileLength:    &up.FileLength,
+				Mimetype:      proto.String("image/webp"),
+			},
+		}
+	} else {
+		switch waMediaType {
 	case whatsmeow.MediaImage:
 		msg = &waE2E.Message{
 			ImageMessage: &waE2E.ImageMessage{
@@ -910,6 +926,7 @@ func SendMediaMessage(
 				FileLength:    &up.FileLength,
 			},
 		}
+	}
 	}
 
 	resp, err := cli.SendMessage(ctx, jid, msg)
