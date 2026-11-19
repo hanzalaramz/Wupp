@@ -80,6 +80,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.wa.beastclient.data.db.MessageEntity
+import com.wa.beastclient.ui.theme.LocalWuppShowSeconds
 import com.wa.beastclient.ui.theme.LocalWuppUse24Hour
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -266,6 +267,22 @@ fun FullScreenMediaViewer(
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f, fill = false)
                             )
+                            if (current.isDeletedBySender) {
+                                Text(
+                                    text = formatDeletedLabel(
+                                        deletedAtMs = current.deletedAt,
+                                        fallbackTimestampMs = current.timestamp,
+                                        includeSeconds = LocalWuppShowSeconds.current,
+                                        use24Hour = use24Hour
+                                    ),
+                                    color = Color(0xFFFF6B6B),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier
+                                        .background(Color(0xFF44181A), RoundedCornerShape(6.dp))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
                             if (current.isViewOnce) {
                                 Text(
                                     text = "View Once Vault",

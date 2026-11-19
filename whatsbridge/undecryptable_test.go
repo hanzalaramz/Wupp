@@ -492,3 +492,134 @@ func TestResolveGroupParticipantJID(t *testing.T) {
 		}
 	})
 }
+
+func TestKnownStatusOriginPromotionAndFallback(t *testing.T) {
+	t.Cleanup(func() {
+		clearPendingStatusRecoveries(true)
+	})
+	clearPendingStatusRecoveries(true)
+
+	const msgID = "status-origin-msg-1"
+	senderPN := types.NewJID("15551230000", types.DefaultUserServer)
+	senderLID := types.NewJID("991122334455", types.HiddenUserServer)
+
+	recordKnownStatusOrigin(&types.MessageInfo{
+		MessageSource: types.MessageSource{
+			Chat:      types.StatusBroadcastJID,
+			Sender:    senderPN,
+			SenderAlt: senderLID,
+			IsGroup:   true,
+		},
+		ID:        msgID,
+		Timestamp: time.Now(),
+	})
+
+	// Resend payload arrives keyed to the sender's DM JID instead of status@broadcast
+	resentDMInfo := types.MessageInfo{
+		MessageSource: types.MessageSource{
+			Chat:   senderPN,
+			Sender: types.EmptyJID,
+		},
+		ID: msgID,
+	}
+	applyKnownStatusOriginHint(&resentDMInfo, true)
+	if resentDMInfo.Chat != types.StatusBroadcastJID {
+		t.Fatalf("got chat=%v, want %v", resentDMInfo.Chat, types.StatusBroadcastJID)
+	}
+	if !resentDMInfo.IsGroup {
+		t.Fatal("expected promoted status@broadcast MessageInfo to have IsGroup=true")
+	}
+	if resentDMInfo.Sender != senderPN {
+		t.Fatalf("got sender=%v, want %v", resentDMInfo.Sender, senderPN)
+	}
+	if resentDMInfo.SenderAlt != senderLID {
+		t.Fatalf("got senderAlt=%v, want %v", resentDMInfo.SenderAlt, senderLID)
+	}
+}
+
+func TestPickStatusRecoverySenderPrefersPNFromAlt(t *testing.T) {
+	lid := types.NewJID("991122334455", types.HiddenUserServer)
+	pn := types.NewJID("15551230000", types.DefaultUserServer)
+
+	if got := pickStatusRecoverySender(nil, nil, lid, pn); got != pn {
+		t.Fatalf("got %v, want %v", got, pn)
+	}
+	if got := pickStatusRecoverySender(nil, nil, lid, types.EmptyJID); got != lid {
+		t.Fatalf("got %v, want %v", got, lid)
+	}
+}
+
+func TestNextStatusRecoveryRetryDelayAndReschedule(t *testing.T) {
+	t.Cleanup(func() {
+		clearPendingStatusRecoveries(true)
+	})
+	clearPendingStatusRecoveries(true)
+
+	baseNow := time.Now().UnixMilli()
+	statusRecoveryMu.Lock()
+	statusLastConnectMs = baseNow - 4_000
+	statusSentWindowMs = []int64{baseNow - int64((9*time.Minute)/time.Millisecond)}
+	statusRecoveryMu.Unlock()
+
+	if d := nextStatusRecoveryRetryDelay(baseNow, "reconnect_settling"); d < 10*time.Second || d > 20*time.Second {
+		t.Fatalf("unexpected reconnect_settling retry delay: %v", d)
+	}
+	if d := nextStatusRecoveryRetryDelay(baseNow, "window_budget_exhausted"); d < 50*time.Second || d > 75*time.Second {
+		t.Fatalf("unexpected window_budget_exhausted retry delay: %v", d)
+	}
+
+	const msgID = "reschedule-status-1"
+	entry := &statusRecoveryEntry{
+		msgID: msgID,
+		chat:  types.StatusBroadcastJID,
+		tsMs:  baseNow,
+	}
+	pendingStatusRecovery.Store(msgID, entry)
+	reschedulePendingStatusRecovery(entry, 5*time.Second)
+
+	entry.timerMu.Lock()
+	hasTimer := entry.timer != nil
+	entry.timerMu.Unlock()
+	if !hasTimer {
+		t.Fatal("expected reschedulePendingStatusRecovery to arm a retry timer")
+	}
+}
+
+func TestExtractModernStatusTypes(t *testing.T) {
+	innerQ, _, _, _, _ := unwrapMessageContainer(&waE2E.Message{
+		QuestionMessage: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{Conversation: proto.String("Ask me anything")},
+		},
+	})
+	if innerQ == nil || innerQ.GetConversation() != "Ask me anything" {
+		t.Fatalf("failed to unwrap QuestionMessage: %v", innerQ)
+	}
+
+	body, mt, _, _, _, _ := extractMessageContent(&waE2E.Message{
+		MusicMessage: &waE2E.MusicMessage{
+			EmbeddedMusic: &waE2E.EmbeddedMusic{
+				Title:  proto.String("Midnight City"),
+				Author: proto.String("M83"),
+			},
+		},
+	})
+	if mt != "TEXT" || body != "🎵 Midnight City — M83" {
+		t.Fatalf("got MusicMessage (%q, %q)", body, mt)
+	}
+
+	ptv := &waE2E.VideoMessage{Caption: proto.String("Quick clip"), Seconds: proto.Uint32(4), DirectPath: proto.String("/v/ptv")}
+	body, mt, _, dur, _, dl := extractMessageContent(&waE2E.Message{PtvMessage: ptv})
+	if mt != "VIDEO" || body != "Quick clip" || dur != 4 || dl != ptv {
+		t.Fatalf("got PtvMessage (%q, %q, dur=%d, dl=%v)", body, mt, dur, dl)
+	}
+
+	body, mt, _, _, _, _ = extractMessageContent(&waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Title:       proto.String("Article Title"),
+			MatchedText: proto.String("https://example.com"),
+		},
+	})
+	if mt != "TEXT" || body == "" {
+		t.Fatalf("expected link-preview ExtendedTextMessage fallback, got (%q, %q)", body, mt)
+	}
+}

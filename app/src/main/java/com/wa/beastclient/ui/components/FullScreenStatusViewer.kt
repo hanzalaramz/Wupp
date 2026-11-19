@@ -87,6 +87,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.wa.beastclient.R
 import com.wa.beastclient.data.db.StatusEntity
 import com.wa.beastclient.ui.screens.WhatsAppAvatar
+import com.wa.beastclient.ui.theme.LocalWuppShowSeconds
 import com.wa.beastclient.ui.theme.LocalWuppUse24Hour
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -625,7 +626,12 @@ private fun StatusGroupPage(
                         )
                         if (current.isRevoked) {
                             Text(
-                                text = "Deleted",
+                                text = formatDeletedLabel(
+                                    deletedAtMs = current.revokedAt,
+                                    fallbackTimestampMs = current.timestamp,
+                                    includeSeconds = LocalWuppShowSeconds.current,
+                                    use24Hour = LocalWuppUse24Hour.current
+                                ),
                                 color = Color(0xFFFF6B6B),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,

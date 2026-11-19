@@ -1054,7 +1054,7 @@ class WaRealtimeService : Service() {
 
     private suspend fun handleMessageRevoke(json: JSONObject) {
         val targetId = json.optString("targetMessageId")
-        val revokedAt = json.optLong("revokedAt", System.currentTimeMillis())
+        val revokedAt = json.optLong("revokedAt", 0L).takeIf { it > 0L } ?: System.currentTimeMillis()
         val isStatus = json.optBoolean("isStatus", false)
         if (targetId.isBlank()) return
         if (isStatus) {

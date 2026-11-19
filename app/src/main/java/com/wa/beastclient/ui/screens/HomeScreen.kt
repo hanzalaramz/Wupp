@@ -234,6 +234,7 @@ import com.wa.beastclient.ui.components.WuppGlassNavBar
 import com.wa.beastclient.ui.components.describeChatWallpaper
 import com.wa.beastclient.ui.components.expressivePressScale
 import com.wa.beastclient.ui.components.findFragmentActivity
+import com.wa.beastclient.ui.components.formatDeletedLabel
 import com.wa.beastclient.ui.components.formatMessageClock
 import com.wa.beastclient.ui.components.launchDeviceAuthPrompt
 import com.wa.beastclient.ui.components.rememberWuppBackdropState
@@ -2377,7 +2378,7 @@ private fun UpdatesStatusTab(
                                 .then(
                                     if (latestOwnStatus != null) {
                                         Modifier
-                                            .border(2.dp, colors.brightGreen, CircleShape)
+                                            .border(2.dp, if (latestOwnStatus.isRevoked) colors.antiDeleteRed else colors.brightGreen, CircleShape)
                                             .padding(2.dp)
                                     } else {
                                         Modifier
@@ -2432,6 +2433,17 @@ private fun UpdatesStatusTab(
                             text = if (latestOwnStatus != null) {
                                 buildString {
                                     append(formatMessageClock(latestOwnStatus.timestamp, includeSeconds = showSeconds, use24Hour = LocalWuppUse24Hour.current))
+                                    if (latestOwnStatus.isRevoked) {
+                                        append(" · ")
+                                        append(
+                                            formatDeletedLabel(
+                                                deletedAtMs = latestOwnStatus.revokedAt,
+                                                fallbackTimestampMs = latestOwnStatus.timestamp,
+                                                includeSeconds = showSeconds,
+                                                use24Hour = LocalWuppUse24Hour.current
+                                            )
+                                        )
+                                    }
                                     if (ownStatuses.size > 1) {
                                         append(" · ${ownStatuses.size}")
                                     }
@@ -2439,7 +2451,7 @@ private fun UpdatesStatusTab(
                             } else {
                                 stringResource(R.string.status_add_update)
                             },
-                            color = colors.textSecondary,
+                            color = if (latestOwnStatus?.isRevoked == true) colors.antiDeleteRed else colors.textSecondary,
                             fontSize = 12.5.sp
                         )
                     }
@@ -2492,12 +2504,23 @@ private fun UpdatesStatusTab(
                             Text(
                                 text = buildString {
                                     append(formatMessageClock(st.timestamp, includeSeconds = showSeconds, use24Hour = LocalWuppUse24Hour.current))
+                                    if (st.isRevoked) {
+                                        append(" · ")
+                                        append(
+                                            formatDeletedLabel(
+                                                deletedAtMs = st.revokedAt,
+                                                fallbackTimestampMs = st.timestamp,
+                                                includeSeconds = showSeconds,
+                                                use24Hour = LocalWuppUse24Hour.current
+                                            )
+                                        )
+                                    }
                                     if (st.caption.isNotBlank()) {
                                         append(" · ")
                                         append(st.caption)
                                     }
                                 },
-                                color = colors.textSecondary,
+                                color = if (st.isRevoked) colors.antiDeleteRed else colors.textSecondary,
                                 fontSize = 12.5.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -2652,7 +2675,7 @@ private fun AddStatusStoryCard(
                     .then(
                         if (latestOwnStatus != null) {
                             Modifier
-                                .border(2.dp, colors.brightGreen, CircleShape)
+                                .border(2.dp, if (latestOwnStatus.isRevoked) colors.antiDeleteRed else colors.brightGreen, CircleShape)
                                 .padding(2.dp)
                         } else {
                             Modifier
@@ -2695,15 +2718,38 @@ private fun AddStatusStoryCard(
                 )
             }
         }
-        Text(
-            text = if (latestOwnStatus != null) stringResource(R.string.status_my_status) else "Add status",
-            color = if (latestOwnStatus != null) Color.White else colors.textPrimary,
-            fontSize = 12.5.sp,
-            fontWeight = FontWeight.Medium,
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 12.dp, start = 8.dp, end = 8.dp)
-        )
+                .padding(bottom = 10.dp, start = 8.dp, end = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            if (latestOwnStatus?.isRevoked == true) {
+                Text(
+                    text = formatDeletedLabel(
+                        deletedAtMs = latestOwnStatus.revokedAt,
+                        fallbackTimestampMs = latestOwnStatus.timestamp,
+                        includeSeconds = LocalWuppShowSeconds.current,
+                        use24Hour = LocalWuppUse24Hour.current
+                    ),
+                    color = Color(0xFFFF6B6B),
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .background(Color(0xB344181A), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                )
+            }
+            Text(
+                text = if (latestOwnStatus != null) stringResource(R.string.status_my_status) else "Add status",
+                color = if (latestOwnStatus != null) Color.White else colors.textPrimary,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
     }
 }
 
@@ -2867,18 +2913,40 @@ private fun StatusStoryCard(
             )
         }
 
-        Text(
-            text = displayName,
-            color = Color.White,
-            fontSize = 12.5.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            lineHeight = 15.sp,
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(horizontal = 8.dp, vertical = 8.dp)
-        )
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            if (status.isRevoked) {
+                Text(
+                    text = formatDeletedLabel(
+                        deletedAtMs = status.revokedAt,
+                        fallbackTimestampMs = status.timestamp,
+                        includeSeconds = LocalWuppShowSeconds.current,
+                        use24Hour = LocalWuppUse24Hour.current
+                    ),
+                    color = Color(0xFFFF6B6B),
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .background(Color(0xB344181A), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                )
+            }
+            Text(
+                text = displayName,
+                color = Color.White,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                lineHeight = 15.sp
+            )
+        }
     }
 }
 

@@ -137,4 +137,45 @@ class StatusUtilsTest {
         assertEquals("📹 Video status", com.wa.beastclient.ui.components.resolveStatusQuoteFallback(videoStatus))
         assertEquals("Sunset at the beach", com.wa.beastclient.ui.components.resolveStatusQuoteFallback(captionedStatus))
     }
+
+    @Test
+    fun formatDeletedLabel_prefersDeletionTimestampAndFallsBackToPostedTimestamp() {
+        val postedAt = 1_700_000_000_000L
+        val deletedAt = 1_700_000_600_000L
+        val withDeletedAt = com.wa.beastclient.ui.components.formatDeletedLabel(
+            deletedAtMs = deletedAt,
+            fallbackTimestampMs = postedAt,
+            includeSeconds = false,
+            use24Hour = true
+        )
+        val expectedDeletedClock = com.wa.beastclient.ui.components.formatMessageClock(
+            epochMs = deletedAt,
+            includeSeconds = false,
+            use24Hour = true
+        )
+        assertEquals("Deleted · $expectedDeletedClock", withDeletedAt)
+
+        val fallback = com.wa.beastclient.ui.components.formatDeletedLabel(
+            deletedAtMs = 0L,
+            fallbackTimestampMs = postedAt,
+            includeSeconds = true,
+            use24Hour = true
+        )
+        val expectedPostedClock = com.wa.beastclient.ui.components.formatMessageClock(
+            epochMs = postedAt,
+            includeSeconds = true,
+            use24Hour = true
+        )
+        assertEquals("Deleted · $expectedPostedClock", fallback)
+
+        assertEquals(
+            "Deleted",
+            com.wa.beastclient.ui.components.formatDeletedLabel(
+                deletedAtMs = 0L,
+                fallbackTimestampMs = 0L,
+                includeSeconds = false,
+                use24Hour = true
+            )
+        )
+    }
 }

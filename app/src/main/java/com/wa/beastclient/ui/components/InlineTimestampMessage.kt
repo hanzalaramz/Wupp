@@ -50,6 +50,55 @@ import java.util.Locale
 import kotlin.math.max
 import kotlin.math.roundToInt
 
+fun formatDeletedLabel(
+    deletedAtMs: Long,
+    fallbackTimestampMs: Long,
+    includeSeconds: Boolean,
+    use24Hour: Boolean
+): String {
+    val effectiveMs = deletedAtMs.takeIf { it > 0L } ?: fallbackTimestampMs
+    val clock = formatMessageClock(effectiveMs, includeSeconds = includeSeconds, use24Hour = use24Hour)
+    return if (clock.isNotBlank()) "Deleted · $clock" else "Deleted"
+}
+
+@Composable
+fun DeletedTimestampBadge(
+    deletedAtMs: Long,
+    fallbackTimestampMs: Long,
+    modifier: Modifier = Modifier
+) {
+    val colors = LocalWaColors.current
+    val mono = LocalWaMonoFamily.current
+    val showSeconds = LocalWuppShowSeconds.current
+    val use24Hour = LocalWuppUse24Hour.current
+    Row(
+        modifier = modifier
+            .background(colors.antiDeleteRed.copy(alpha = 0.16f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.vec_ic_delete_sweep),
+            contentDescription = "Anti-Deleted",
+            tint = colors.antiDeleteRed,
+            modifier = Modifier.size(13.dp)
+        )
+        Text(
+            text = formatDeletedLabel(
+                deletedAtMs = deletedAtMs,
+                fallbackTimestampMs = fallbackTimestampMs,
+                includeSeconds = showSeconds,
+                use24Hour = use24Hour
+            ),
+            color = colors.antiDeleteRed,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            fontFamily = mono
+        )
+    }
+}
+
 /**
  * WhatsApp-accurate message body layout that inspects TextLayoutResult.getLineRight(lastLine)
  * to tuck the timestamp, Edited label, and vector delivery ticks cleanly into the final line.
@@ -58,10 +107,10 @@ import kotlin.math.roundToInt
 @Composable
 fun InlineTimestampMessage(
     msg: MessageEntity,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showDeletedBadge: Boolean = true
 ) {
     val colors = LocalWaColors.current
-    val mono = LocalWaMonoFamily.current
     val showSeconds = LocalWuppShowSeconds.current
     val use24Hour = LocalWuppUse24Hour.current
     val fontScale = LocalWuppChatFontScale.current
@@ -76,29 +125,12 @@ fun InlineTimestampMessage(
     }
 
     Column(modifier = modifier) {
-        if (msg.isDeletedBySender) {
-            Row(
-                modifier = Modifier
-                    .padding(bottom = 4.dp)
-                    .background(colors.antiDeleteRed.copy(alpha = 0.16f), RoundedCornerShape(6.dp))
-                    .padding(horizontal = 7.dp, vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Icon(
-                    painter = painterResource(R.drawable.vec_ic_delete_sweep),
-                    contentDescription = "Anti-Deleted",
-                    tint = colors.antiDeleteRed,
-                    modifier = Modifier.size(13.dp)
-                )
-                Text(
-                    text = "Deleted · ${formatMessageClock(msg.deletedAt.takeIf { it > 0L } ?: msg.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour)}",
-                    color = colors.antiDeleteRed,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    fontFamily = mono
-                )
-            }
+        if (showDeletedBadge && msg.isDeletedBySender) {
+            DeletedTimestampBadge(
+                deletedAtMs = msg.deletedAt,
+                fallbackTimestampMs = msg.timestamp,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
         }
 
         if (displayText.isNotEmpty()) {

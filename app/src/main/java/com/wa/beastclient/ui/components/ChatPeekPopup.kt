@@ -495,6 +495,14 @@ private fun ChatPeekMessageBubble(
                 )
             }
 
+            if (msg.isDeletedBySender) {
+                DeletedTimestampBadge(
+                    deletedAtMs = msg.deletedAt,
+                    fallbackTimestampMs = msg.timestamp,
+                    modifier = Modifier.padding(bottom = 2.dp)
+                )
+            }
+
             if (displayText.isNotBlank() && !(thumbnail != null && msg.body.isBlank())) {
                 Text(
                     text = formattedBody,

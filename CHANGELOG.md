@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.3] - 2026-11-19
+
+### 🛠️ Fixes
+- 📱 **Contact Statuses:** Fixed new contact statuses failing to appear after recovery or arriving in newer status formats.
+- 🕒 **Deletion Time (#62):** Added the exact deletion time to deleted text, images, videos, voice notes, stickers, and statuses.
+
 ## [0.3.5-pre.2] - 2026-11-19
 
 ### 🛠️ Fixes

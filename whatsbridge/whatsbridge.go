@@ -116,6 +116,7 @@ var (
 	retryCounts            sync.Map
 	pendingUndecryptable   sync.Map
 	pendingStatusRecovery  sync.Map
+	knownStatusOrigins     sync.Map
 	resolvedStatusIDs      sync.Map
 	emittedStubIDs         sync.Map
 	statusRecoveryMu       sync.Mutex
@@ -2562,6 +2563,10 @@ func unwrapMessageContainer(m *waE2E.Message) (
 				return curr, isViewOnce, isEphemeral, ephemeralSec, isEdit
 			}
 		default:
+			if nextMsg, unwrapped := unwrapExtraStatusContainer(curr); unwrapped {
+				curr = nextMsg
+				continue
+			}
 			ephemeralSec = extractEphemeralDuration(curr)
 			if ephemeralSec > 0 {
 				isEphemeral = true
@@ -2573,6 +2578,25 @@ func unwrapMessageContainer(m *waE2E.Message) (
 		}
 	}
 	return nil, isViewOnce, isEphemeral, ephemeralSec, isEdit
+}
+
+func unwrapExtraStatusContainer(m *waE2E.Message) (*waE2E.Message, bool) {
+	if m == nil {
+		return nil, false
+	}
+	for _, fp := range []*waE2E.FutureProofMessage{
+		m.GetQuestionMessage(),
+		m.GetQuestionReplyMessage(),
+		m.GetNewsletterAdminProfileStatusMessage(),
+		m.GetNewsletterAdminProfileMessage(),
+		m.GetEventCoverImage(),
+		m.GetPollCreationMessageV4(),
+	} {
+		if fp != nil && fp.GetMessage() != nil {
+			return fp.GetMessage(), true
+		}
+	}
+	return nil, false
 }
 
 func extractEphemeralDuration(m *waE2E.Message) uint32 {
@@ -3152,7 +3176,8 @@ func handlePictureUpdate(evt *events.Picture) {
 }
 
 const (
-	maxStatusRecoveryPending     = 64
+	maxStatusRecoveryPending     = 256
+	maxKnownStatusOrigins        = 512
 	statusRecoveryDelay          = 25 * time.Second
 	statusReconnectSettleDelay   = 15 * time.Second
 	statusReconnectFlushCooldown = 10 * time.Minute
@@ -3164,6 +3189,13 @@ const (
 	statusRecoveryMaxPerSync     = 3
 )
 
+type statusOriginMeta struct {
+	chat      types.JID
+	sender    types.JID
+	senderAlt types.JID
+	tsMs      int64
+}
+
 type statusRecoveryEntry struct {
 	msgID     string
 	chat      types.JID
@@ -3173,6 +3205,7 @@ type statusRecoveryEntry struct {
 	timerMu   sync.Mutex
 	timer     *time.Timer
 	requested atomic.Bool
+	attempts  atomic.Int32
 }
 
 func clearPendingUndecryptable() {
@@ -3201,6 +3234,10 @@ func clearPendingStatusRecoveries(deleteEntries bool) {
 		return true
 	})
 	if deleteEntries {
+		knownStatusOrigins.Range(func(key, _ any) bool {
+			knownStatusOrigins.Delete(key)
+			return true
+		})
 		resolvedStatusIDs.Range(func(key, _ any) bool {
 			resolvedStatusIDs.Delete(key)
 			return true
@@ -3259,6 +3296,116 @@ func prunePendingStatusRecoveries(nowMs int64) {
 		}
 		return true
 	})
+	originCount := 0
+	oldestOriginKey := ""
+	oldestOriginTs := int64(0)
+	knownStatusOrigins.Range(func(key, value any) bool {
+		meta, ok := value.(statusOriginMeta)
+		if !ok || meta.tsMs < cutoffMs {
+			knownStatusOrigins.Delete(key)
+			return true
+		}
+		originCount++
+		if oldestOriginTs == 0 || meta.tsMs < oldestOriginTs {
+			oldestOriginTs = meta.tsMs
+			oldestOriginKey = fmt.Sprint(key)
+		}
+		return true
+	})
+	if originCount > maxKnownStatusOrigins && oldestOriginKey != "" {
+		knownStatusOrigins.Delete(oldestOriginKey)
+	}
+}
+
+func recordKnownStatusOrigin(info *types.MessageInfo) {
+	if info == nil || info.ID == "" || !isStatusMessageInfo(info) {
+		return
+	}
+	tsMs := info.Timestamp.UnixMilli()
+	if tsMs <= 0 {
+		tsMs = time.Now().UnixMilli()
+	}
+	msgID := string(info.ID)
+	meta := statusOriginMeta{
+		chat:      info.Chat,
+		sender:    info.Sender,
+		senderAlt: info.SenderAlt,
+		tsMs:      tsMs,
+	}
+	if prevRaw, ok := knownStatusOrigins.Load(msgID); ok {
+		if prev, ok2 := prevRaw.(statusOriginMeta); ok2 {
+			if meta.chat.IsEmpty() {
+				meta.chat = prev.chat
+			}
+			if meta.sender.IsEmpty() {
+				meta.sender = prev.sender
+			}
+			if meta.senderAlt.IsEmpty() {
+				meta.senderAlt = prev.senderAlt
+			}
+		}
+	}
+	knownStatusOrigins.Store(msgID, meta)
+}
+
+func lookupStatusOrigin(msgID string) (statusOriginMeta, bool) {
+	if msgID == "" {
+		return statusOriginMeta{}, false
+	}
+	if val, ok := pendingStatusRecovery.Load(msgID); ok {
+		if entry, ok2 := val.(*statusRecoveryEntry); ok2 && entry != nil {
+			chat := entry.chat
+			if chat.IsEmpty() {
+				chat = types.StatusBroadcastJID
+			}
+			return statusOriginMeta{
+				chat:      chat,
+				sender:    entry.sender,
+				senderAlt: entry.senderAlt,
+				tsMs:      entry.tsMs,
+			}, true
+		}
+	}
+	if val, ok := knownStatusOrigins.Load(msgID); ok {
+		if meta, ok2 := val.(statusOriginMeta); ok2 {
+			if meta.chat.IsEmpty() {
+				meta.chat = types.StatusBroadcastJID
+			}
+			return meta, true
+		}
+	}
+	return statusOriginMeta{}, false
+}
+
+func applyKnownStatusOriginHint(info *types.MessageInfo, allowPromoteChat bool) {
+	if info == nil || info.ID == "" {
+		return
+	}
+	meta, ok := lookupStatusOrigin(string(info.ID))
+	if !ok {
+		return
+	}
+	if allowPromoteChat &&
+		info.Chat != types.StatusBroadcastJID &&
+		!info.IsNewsletterStatus &&
+		info.Chat.Server != types.GroupServer &&
+		info.Chat.Server != types.NewsletterServer {
+		info.Chat = meta.chat
+		if info.Chat.IsEmpty() {
+			info.Chat = types.StatusBroadcastJID
+		}
+		if info.Chat == types.StatusBroadcastJID {
+			info.IsGroup = true
+		}
+	}
+	if isStatusMessageInfo(info) {
+		if info.Sender.IsEmpty() && !meta.sender.IsEmpty() {
+			info.Sender = meta.sender
+		}
+		if info.SenderAlt.IsEmpty() && !meta.senderAlt.IsEmpty() {
+			info.SenderAlt = meta.senderAlt
+		}
+	}
 }
 
 func reserveStatusRecoveryBudget(nowMs int64) (allowed bool, waitMs int64, reason string) {
@@ -3333,6 +3480,18 @@ func shouldFlushStatusOnReconnect(nowMs int64) bool {
 
 func pickStatusRecoverySender(ctx context.Context, cli *whatsmeow.Client, sender, senderAlt types.JID) types.JID {
 	canon, _ := canonicalizeDMChatJID(ctx, cli, sender)
+	if !canon.IsEmpty() && canon.Server != types.HiddenUserServer {
+		return canon
+	}
+	if !senderAlt.IsEmpty() {
+		altCanon, _ := canonicalizeDMChatJID(ctx, cli, senderAlt)
+		if !altCanon.IsEmpty() && altCanon.Server != types.HiddenUserServer {
+			return altCanon
+		}
+		if senderAlt.Server == types.DefaultUserServer {
+			return senderAlt.ToNonAD()
+		}
+	}
 	if !canon.IsEmpty() {
 		return canon
 	}
@@ -3343,6 +3502,69 @@ func pickStatusRecoverySender(ctx context.Context, cli *whatsmeow.Client, sender
 		return senderAlt.ToNonAD()
 	}
 	return types.EmptyJID
+}
+
+func nextStatusRecoveryRetryDelay(nowMs int64, skipReason string) time.Duration {
+	statusRecoveryMu.Lock()
+	defer statusRecoveryMu.Unlock()
+
+	const minDelayMs = 2_000
+	const maxDelayMs = int64((11 * time.Minute) / time.Millisecond)
+
+	var delayMs int64 = 10_000
+	switch skipReason {
+	case "reconnect_settling":
+		settleMs := int64(statusReconnectSettleDelay / time.Millisecond)
+		if statusLastConnectMs > 0 {
+			delayMs = (statusLastConnectMs + settleMs - nowMs) + 1_000
+		} else {
+			delayMs = settleMs
+		}
+	case "error_backoff":
+		if statusBackoffUntilMs > nowMs {
+			delayMs = (statusBackoffUntilMs - nowMs) + 1_000
+		} else {
+			delayMs = int64(statusRecoveryErrBackoff / time.Millisecond)
+		}
+	case "window_budget_exhausted":
+		winMs := int64(statusRecoveryWindow / time.Millisecond)
+		if len(statusSentWindowMs) > 0 {
+			delayMs = (statusSentWindowMs[0] + winMs - nowMs) + 1_500 + int64(randomFloat()*2_500)
+		} else {
+			delayMs = 15_000
+		}
+	}
+	if delayMs < minDelayMs {
+		delayMs = minDelayMs
+	}
+	if delayMs > maxDelayMs {
+		delayMs = maxDelayMs
+	}
+	return time.Duration(delayMs) * time.Millisecond
+}
+
+func reschedulePendingStatusRecovery(entry *statusRecoveryEntry, delay time.Duration) {
+	if entry == nil || entry.msgID == "" || entry.requested.Load() {
+		return
+	}
+	if _, alreadyResolved := resolvedStatusIDs.Load(entry.msgID); alreadyResolved {
+		cancelPendingStatusRecovery(entry.msgID)
+		return
+	}
+	if delay < 2*time.Second {
+		delay = 2 * time.Second
+	}
+	entry.timerMu.Lock()
+	defer entry.timerMu.Unlock()
+	if _, stillPending := pendingStatusRecovery.Load(entry.msgID); !stillPending || entry.requested.Load() {
+		return
+	}
+	if entry.timer != nil {
+		entry.timer.Stop()
+	}
+	entry.timer = time.AfterFunc(delay, func() {
+		attemptStatusPeerRecovery(entry)
+	})
 }
 
 func attemptStatusPeerRecovery(entry *statusRecoveryEntry) {
@@ -3371,10 +3593,12 @@ func attemptStatusPeerRecovery(entry *statusRecoveryEntry) {
 	}
 	allowed, waitMs, skipReason := reserveStatusRecoveryBudget(nowMs)
 	if !allowed {
+		retryDelay := nextStatusRecoveryRetryDelay(nowMs, skipReason)
+		reschedulePendingStatusRecovery(entry, retryDelay)
 		emitJSON("BRIDGE_LOG", map[string]any{
 			"level":  "INFO",
 			"module": "StatusRecovery",
-			"msg":    fmt.Sprintf("skipped peer resend id=%s reason=%s", entry.msgID, skipReason),
+			"msg":    fmt.Sprintf("deferred peer resend id=%s reason=%s retryIn=%s", entry.msgID, skipReason, retryDelay.Round(time.Second)),
 		})
 		return
 	}
@@ -3409,6 +3633,10 @@ func attemptStatusPeerRecovery(entry *statusRecoveryEntry) {
 		"module": "StatusRecovery",
 		"msg":    fmt.Sprintf("peer status resend id=%s sender=%s err=%v", entry.msgID, targetSender.String(), err),
 	})
+	if err != nil && entry.attempts.Add(1) < 2 {
+		entry.requested.Store(false)
+		reschedulePendingStatusRecovery(entry, nextStatusRecoveryRetryDelay(time.Now().UnixMilli(), "error_backoff"))
+	}
 }
 
 func scheduleStatusRecovery(evt *events.UndecryptableMessage) {
@@ -3570,6 +3798,7 @@ func processUndecryptable(evt *events.UndecryptableMessage) {
 	}
 
 	if evt.Info.Chat == types.StatusBroadcastJID {
+		recordKnownStatusOrigin(&evt.Info)
 		scheduleStatusRecovery(evt)
 	}
 
@@ -3633,7 +3862,6 @@ func processIncomingMessage(evt *events.Message) {
 		return
 	}
 	evtMsgID := string(evt.Info.ID)
-	cancelPendingUndecryptable(evtMsgID)
 
 	raw := evt.Message
 	if raw == nil {
@@ -3649,6 +3877,11 @@ func processIncomingMessage(evt *events.Message) {
 	if evt.IsEdit {
 		isEdit = true
 	}
+	if isStatusMessageInfo(&evt.Info) {
+		recordKnownStatusOrigin(&evt.Info)
+	}
+	applyKnownStatusOriginHint(&evt.Info, !isEdit)
+	cancelPendingUndecryptable(evtMsgID)
 	if inner == nil {
 		resolveEmittedStubIfNonVisible(evtMsgID, evt.Info.Chat.String())
 		return
@@ -3678,13 +3911,18 @@ func processIncomingMessage(evt *events.Message) {
 		switch pm.GetType() {
 		case waE2E.ProtocolMessage_REVOKE:
 			targetID := pm.GetKey().GetID()
+			revokedAtMs := evt.Info.Timestamp.UnixMilli()
+			if evt.Info.Timestamp.IsZero() || revokedAtMs <= 0 {
+				revokedAtMs = time.Now().UnixMilli()
+			}
+			_, isKnownStatus := lookupStatusOrigin(targetID)
 			emitJSON("MESSAGE_REVOKE", map[string]any{
 				"chatJid":         evtChatStr,
 				"altChatJid":      altEvtChat.String(),
 				"targetMessageId": targetID,
 				"senderJid":       evtSenderStr,
-				"revokedAt":       evt.Info.Timestamp.UnixMilli(),
-				"isStatus":        evt.Info.Chat == types.StatusBroadcastJID,
+				"revokedAt":       revokedAtMs,
+				"isStatus":        evt.Info.Chat == types.StatusBroadcastJID || isKnownStatus,
 			})
 			resolveEmittedStubIfNonVisible(evtMsgID, evtChatStr)
 			return
@@ -3728,13 +3966,33 @@ func processIncomingMessage(evt *events.Message) {
 							continue
 						}
 						parsedID := webMsg.GetKey().GetID()
+						meta, hasStatusOrigin := lookupStatusOrigin(parsedID)
 						chatHint := types.EmptyJID
-						if webMsg.GetKey().GetRemoteJID() == "" {
-							if _, isStatusPending := pendingStatusRecovery.Load(parsedID); isStatusPending {
+						msgForParse := &webMsg
+						if hasStatusOrigin {
+							chatHint = meta.chat
+							if chatHint.IsEmpty() {
 								chatHint = types.StatusBroadcastJID
 							}
+							if !webMsg.GetKey().GetFromMe() &&
+								strings.TrimSpace(webMsg.GetParticipant()) == "" &&
+								strings.TrimSpace(webMsg.GetKey().GetParticipant()) == "" {
+								fallbackJID := meta.sender
+								if fallbackJID.IsEmpty() {
+									fallbackJID = meta.senderAlt
+								}
+								if !fallbackJID.IsEmpty() {
+									if cloned, ok := proto.Clone(&webMsg).(*waWeb.WebMessageInfo); ok && cloned != nil {
+										if cloned.Key == nil {
+											cloned.Key = &waCommon.MessageKey{}
+										}
+										cloned.Key.Participant = proto.String(fallbackJID.ToNonAD().String())
+										msgForParse = cloned
+									}
+								}
+							}
 						}
-						parsed, pErr := parseStatusWebMessage(cli, chatHint, &webMsg)
+						parsed, pErr := parseStatusWebMessage(cli, chatHint, msgForParse)
 						if pErr != nil || parsed == nil {
 							emitJSON("BRIDGE_LOG", map[string]any{
 								"level":  "WARN",
@@ -3743,6 +4001,7 @@ func processIncomingMessage(evt *events.Message) {
 							})
 							continue
 						}
+						applyKnownStatusOriginHint(&parsed.Info, true)
 						resolvedID := string(parsed.Info.ID)
 						cancelPendingUndecryptable(resolvedID)
 						rInner, rVO, rEph, rEphSec, _ := unwrapMessageContainer(parsed.Message)
@@ -4460,6 +4719,11 @@ func emitStatusFromMessage(info *types.MessageInfo, inner *waE2E.Message, isVO b
 	mt, _ := payload["msgType"].(string)
 	bd, _ := payload["body"].(string)
 	if !isVO && job == nil && mt == "UNKNOWN" && strings.TrimSpace(bd) == "" {
+		emitJSON("BRIDGE_LOG", map[string]any{
+			"level":  "INFO",
+			"module": "StatusSync",
+			"msg":    fmt.Sprintf("skipped empty/unknown status id=%s sender=%s", string(info.ID), info.Sender.String()),
+		})
 		resolveEmittedStubIfNonVisible(string(info.ID), info.Chat.String())
 		return false
 	}
@@ -4830,12 +5094,23 @@ func extractMessageContent(m *waE2E.Message) (
 	case m.Conversation != nil:
 		return m.GetConversation(), "TEXT", "text/plain", 0, 0, nil
 	case m.GetExtendedTextMessage() != nil:
-		return m.GetExtendedTextMessage().GetText(), "TEXT", "text/plain", 0, 0, nil
+		et := m.GetExtendedTextMessage()
+		txt := et.GetText()
+		if strings.TrimSpace(txt) == "" {
+			txt = joinBusinessParts(et.GetTitle(), et.GetDescription(), et.GetMatchedText())
+		}
+		return txt, "TEXT", "text/plain", 0, 0, nil
 	case m.GetImageMessage() != nil:
 		im := m.GetImageMessage()
 		return im.GetCaption(), "IMAGE", im.GetMimetype(), 0, im.GetFileLength(), im
+	case m.GetInstantImageMessage() != nil:
+		im := m.GetInstantImageMessage()
+		return im.GetCaption(), "IMAGE", im.GetMimetype(), 0, im.GetFileLength(), im
 	case m.GetVideoMessage() != nil:
 		vm := m.GetVideoMessage()
+		return vm.GetCaption(), "VIDEO", vm.GetMimetype(), int(vm.GetSeconds()), vm.GetFileLength(), vm
+	case m.GetPtvMessage() != nil:
+		vm := m.GetPtvMessage()
 		return vm.GetCaption(), "VIDEO", vm.GetMimetype(), int(vm.GetSeconds()), vm.GetFileLength(), vm
 	case m.GetAudioMessage() != nil:
 		am := m.GetAudioMessage()
@@ -4926,9 +5201,65 @@ func extractMessageContent(m *waE2E.Message) (
 			return txt, "TEXT", "text/plain", 0, 0, nil
 		}
 		return "", "UNKNOWN", "", 0, 0, nil
+	case m.GetStatusQuestionAnswerMessage() != nil:
+		if txt := strings.TrimSpace(m.GetStatusQuestionAnswerMessage().GetText()); txt != "" {
+			return txt, "TEXT", "text/plain", 0, 0, nil
+		}
+		return "", "UNKNOWN", "", 0, 0, nil
+	case m.GetStatusNotificationMessage() != nil:
+		sn := m.GetStatusNotificationMessage()
+		label := "Shared a status"
+		switch sn.GetType() {
+		case waE2E.StatusNotificationMessage_STATUS_ADD_YOURS:
+			label = "Add yours status"
+		case waE2E.StatusNotificationMessage_STATUS_GROUP_STATUS_REPLY:
+			label = "Replied to group status"
+		}
+		return label, "TEXT", "text/plain", 0, 0, nil
+	case m.GetMusicMessage() != nil:
+		if em := m.GetMusicMessage().GetEmbeddedMusic(); em != nil {
+			title := strings.TrimSpace(em.GetTitle())
+			author := strings.TrimSpace(em.GetAuthor())
+			switch {
+			case title != "" && author != "":
+				return "🎵 " + title + " — " + author, "TEXT", "text/plain", 0, 0, nil
+			case title != "":
+				return "🎵 " + title, "TEXT", "text/plain", 0, 0, nil
+			case author != "":
+				return "🎵 " + author, "TEXT", "text/plain", 0, 0, nil
+			}
+		}
+		return "🎵 Music status", "TEXT", "text/plain", 0, 0, nil
+	case firstNonNilPoll(m) != nil:
+		if name := strings.TrimSpace(firstNonNilPoll(m).GetName()); name != "" {
+			return "📊 " + name, "TEXT", "text/plain", 0, 0, nil
+		}
+		return "📊 Poll", "TEXT", "text/plain", 0, 0, nil
+	case m.GetEventMessage() != nil:
+		if name := strings.TrimSpace(m.GetEventMessage().GetName()); name != "" {
+			return "📅 " + name, "TEXT", "text/plain", 0, 0, nil
+		}
+		return "📅 Event", "TEXT", "text/plain", 0, 0, nil
 	default:
 		return "", "UNKNOWN", "", 0, 0, nil
 	}
+}
+
+func firstNonNilPoll(m *waE2E.Message) *waE2E.PollCreationMessage {
+	if m == nil {
+		return nil
+	}
+	for _, p := range []*waE2E.PollCreationMessage{
+		m.GetPollCreationMessage(),
+		m.GetPollCreationMessageV2(),
+		m.GetPollCreationMessageV3(),
+		m.GetPollCreationMessageV5(),
+	} {
+		if p != nil {
+			return p
+		}
+	}
+	return nil
 }
 
 func extractContextInfo(m *waE2E.Message) (qId, qSender, qBody, mentionsCsv string) {

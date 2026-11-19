@@ -193,6 +193,7 @@ import com.wa.beastclient.ui.ResolvedParticipantUi
 import com.wa.beastclient.ui.components.AnimatedStickerImage
 import com.wa.beastclient.ui.components.ChatEmojiPickerDock
 import com.wa.beastclient.ui.components.ChatMediaVisibilitySelector
+import com.wa.beastclient.ui.components.DeletedTimestampBadge
 import com.wa.beastclient.ui.components.DocumentMessageCard
 import com.wa.beastclient.ui.components.DoodleBackground
 import com.wa.beastclient.ui.components.ForwardMessageDialog
@@ -2959,6 +2960,18 @@ private fun MessageBubbleRow(
                     }
                 }
 
+                if (msg.isDeletedBySender) {
+                    DeletedTimestampBadge(
+                        deletedAtMs = msg.deletedAt,
+                        fallbackTimestampMs = msg.timestamp,
+                        modifier = Modifier.padding(
+                            start = if (isMediaCard) 4.dp else 0.dp,
+                            end = if (isMediaCard) 4.dp else 0.dp,
+                            bottom = 4.dp
+                        )
+                    )
+                }
+
                 when {
                     // Already opened / stripped View-Once (original WhatsApp style)
                     msg.viewOnceState == "STRIPPED" || msg.msgType == "VIEW_ONCE_STRIPPED" -> {
@@ -3353,7 +3366,7 @@ private fun MessageBubbleRow(
                         }
                         if (msg.body.isNotBlank()) {
                             Box(modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)) {
-                                InlineTimestampMessage(msg = msg)
+                                InlineTimestampMessage(msg = msg, showDeletedBadge = false)
                             }
                         }
                     }
@@ -3400,7 +3413,7 @@ private fun MessageBubbleRow(
                     }
 
                     // Sticker message (transparent borderless, WebP render, floating timestamp pill)
-                    msg.msgType == "STICKER" && !msg.isDeletedBySender -> {
+                    msg.msgType == "STICKER" -> {
                         StickerMessageBubbleItem(
                             msg = msg,
                             showSeconds = showSeconds,
@@ -3448,7 +3461,7 @@ private fun MessageBubbleRow(
 
                     // Standard Text, Sticker, or Anti-Deleted text bubble
                     else -> {
-                        InlineTimestampMessage(msg = msg)
+                        InlineTimestampMessage(msg = msg, showDeletedBadge = false)
                     }
                 }
             }
