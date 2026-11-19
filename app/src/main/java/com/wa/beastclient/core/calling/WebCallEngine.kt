@@ -7,6 +7,10 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.view.InputDevice
+import android.view.KeyCharacterMap
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -47,7 +51,7 @@ class WebCallEngine(
 
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var webView: WebView? = null
+    private var webView: WuppWebView? = null
     private var hostContainer: ViewGroup? = null
     private var allowTouchThrough = false
     private var videoOverlayCssActive = false
@@ -83,8 +87,8 @@ class WebCallEngine(
             }
             wv.alpha = if (showVideoSurface) 1f else 0.01f
             wv.isClickable = showVideoSurface
-            wv.isFocusable = false
-            wv.isFocusableInTouchMode = false
+            wv.isFocusable = true
+            wv.isFocusableInTouchMode = true
             wv.onResume()
             wv.resumeTimers()
             setVideoCssActive(showVideoSurface)
@@ -276,8 +280,55 @@ class WebCallEngine(
         }
     }
 
+    private inner class WuppWebView(context: Context) : WebView(context) {
+        override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
+            return if (allowTouchThrough) super.dispatchTouchEvent(ev) else false
+        }
+
+        fun dispatchSyntheticTap(xRatio: Float, yRatio: Float) {
+            val w = width
+            val h = height
+            if (w <= 0 || h <= 0) return
+            val px = xRatio.coerceIn(0.01f, 0.99f) * w
+            val py = yRatio.coerceIn(0.01f, 0.99f) * h
+            val downTime = SystemClock.uptimeMillis()
+            val down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, px, py, 0).apply {
+                source = InputDevice.SOURCE_TOUCHSCREEN
+            }
+            super.dispatchTouchEvent(down)
+            down.recycle()
+
+            mainHandler.postDelayed({
+                val upTime = SystemClock.uptimeMillis()
+                val up = MotionEvent.obtain(downTime, upTime, MotionEvent.ACTION_UP, px, py, 0).apply {
+                    source = InputDevice.SOURCE_TOUCHSCREEN
+                }
+                super.dispatchTouchEvent(up)
+                up.recycle()
+            }, 50L)
+        }
+
+        fun dispatchSyntheticKeyText(text: String, sendEnter: Boolean) {
+            requestFocus()
+            val kcm = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
+            val chars = text.toCharArray()
+            if (chars.isNotEmpty()) {
+                kcm.getEvents(chars)?.forEach { ev ->
+                    super.dispatchKeyEvent(ev)
+                }
+            }
+            if (sendEnter) {
+                mainHandler.postDelayed({
+                    val now = SystemClock.uptimeMillis()
+                    super.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER, 0))
+                    super.dispatchKeyEvent(KeyEvent(now, now + 35L, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER, 0))
+                }, 120L)
+            }
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
-    private fun ensureCreatedLocked(): WebView? {
+    private fun ensureCreatedLocked(): WuppWebView? {
         webView?.let { existing ->
             hostContainer?.let { container ->
                 if (existing.parent == null) {
@@ -293,19 +344,13 @@ class WebCallEngine(
             return existing
         }
 
-        val wv = runCatching {
-            object : WebView(appContext) {
-                override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
-                    return if (allowTouchThrough) super.dispatchTouchEvent(ev) else false
-                }
-            }
-        }.getOrNull() ?: return null
+        val wv = runCatching { WuppWebView(appContext) }.getOrNull() ?: return null
 
         wv.setBackgroundColor(Color.TRANSPARENT)
         wv.alpha = if (videoOverlayCssActive) 1f else 0.01f
         wv.isClickable = false
-        wv.isFocusable = false
-        wv.isFocusableInTouchMode = false
+        wv.isFocusable = true
+        wv.isFocusableInTouchMode = true
 
         val settings = wv.settings
         settings.javaScriptEnabled = true
@@ -415,6 +460,20 @@ class WebCallEngine(
         @JavascriptInterface
         fun onPairingStatus(status: String) {
             mainHandler.post { listener.onPairingStatusChanged(status.trim()) }
+        }
+
+        @JavascriptInterface
+        fun requestNativeTap(xRatio: Double, yRatio: Double) {
+            mainHandler.post {
+                webView?.dispatchSyntheticTap(xRatio.toFloat(), yRatio.toFloat())
+            }
+        }
+
+        @JavascriptInterface
+        fun requestNativeKeyText(text: String, sendEnter: Boolean) {
+            mainHandler.post {
+                webView?.dispatchSyntheticKeyText(text, sendEnter)
+            }
         }
 
         @JavascriptInterface
@@ -621,14 +680,21 @@ class WebCallEngine(
               window.__wuppPairGen = myGen;
               var attempts = 0;
               var submitted = false;
+              var submittedAt = 0;
               var lastStatus = '';
               var lastAltClickAt = 0;
+              var hasClickedAltLink = false;
+              var lastClickedDesc = 'none';
 
               function reportStatus(msg) {
                 if (msg && msg !== lastStatus) {
                   lastStatus = msg;
                   try { WuppCallBridge.onPairingStatus(msg); } catch (e) {}
                 }
+              }
+
+              function normText(el) {
+                return ((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
               }
 
               function isElementUsable(el) {
@@ -672,6 +738,8 @@ class WebCallEngine(
                   var list = document.querySelectorAll(selectors[s]);
                   for (var i = 0; i < list.length; i++) {
                     var el = list[i];
+                    var t = (el.type || '').toLowerCase();
+                    if (t === 'checkbox' || t === 'radio' || t === 'hidden') continue;
                     var ph = (el.getAttribute('placeholder') || el.getAttribute('aria-label') || '').toLowerCase();
                     if (ph.indexOf('search') !== -1 || ph.indexOf('country') !== -1) continue;
                     if (isElementUsable(el)) return el;
@@ -680,49 +748,55 @@ class WebCallEngine(
                 return null;
               }
 
-              function triggerClick(el) {
-                var target = (el.closest && el.closest('button,[role="button"],a')) || el;
-                try { target.focus(); } catch (e) {}
-                target.click();
+              function findAltLinkingElement() {
+                var testEl = document.querySelector('[data-testid*="link-device-qrcode-alt-linking"], [data-testid*="alt-linking"]');
+                if (testEl && isElementUsable(testEl)) return testEl;
+
+                var candidates = document.querySelectorAll('button, [role="button"], a, span, div');
+                var best = null;
+                var bestLen = 9999;
+                for (var i = 0; i < candidates.length; i++) {
+                  var el = candidates[i];
+                  if (!isElementUsable(el)) continue;
+                  var al = (el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+                  var txt = normText(el);
+                  var labelMatch = al.length >= 10 && al.length <= 65 &&
+                    /link with phone number|log in with phone number|use phone number|phone number instead/i.test(al);
+                  var textMatch = txt.length >= 10 && txt.length <= 65 &&
+                    /link with phone number|log in with phone number|use phone number|phone number instead/i.test(txt);
+                  if (labelMatch || textMatch) {
+                    var len = txt ? txt.length : al.length;
+                    if (len <= bestLen) {
+                      bestLen = len;
+                      best = el;
+                    }
+                  }
+                }
+                return best;
               }
 
-              function clickAltLinkingButton() {
-                var now = Date.now();
-                if (now - lastAltClickAt < 2600) return false;
-
-                var testEl = document.querySelector('[data-testid*="link-device-qrcode-alt-linking"], [data-testid*="alt-linking"]');
-                if (testEl && isElementUsable(testEl)) {
-                  lastAltClickAt = now;
-                  triggerClick(testEl);
-                  return true;
+              function activateElement(el) {
+                if (!el) return;
+                try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
+                var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+                var cx = r ? (r.left + r.width / 2) : 0;
+                var cy = r ? (r.top + r.height / 2) : 0;
+                if (cx > 0 && cy > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
+                  try { WuppCallBridge.requestNativeTap(cx / window.innerWidth, cy / window.innerHeight); } catch (e) {}
                 }
-
-                var interactive = document.querySelectorAll('button, [role="button"], a');
-                for (var i = 0; i < interactive.length; i++) {
-                  var el = interactive[i];
-                  if (!isElementUsable(el)) continue;
-                  var al = (el.getAttribute('aria-label') || '').trim();
-                  var txt = (el.innerText || el.textContent || '').trim();
-                  if (/link with phone|log in with phone|use phone number/i.test(al) ||
-                      /link with phone|log in with phone|use phone number/i.test(txt)) {
-                    lastAltClickAt = now;
-                    triggerClick(el);
-                    return true;
-                  }
+                var targets = [el];
+                var parentBtn = el.closest ? el.closest('button,[role="button"],a') : null;
+                if (parentBtn && parentBtn !== el) targets.push(parentBtn);
+                for (var t = 0; t < targets.length; t++) {
+                  var tgt = targets[t];
+                  var evOpts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy };
+                  try { tgt.dispatchEvent(new PointerEvent('pointerdown', evOpts)); } catch (e) {}
+                  try { tgt.dispatchEvent(new MouseEvent('mousedown', evOpts)); } catch (e) {}
+                  try { tgt.dispatchEvent(new PointerEvent('pointerup', evOpts)); } catch (e) {}
+                  try { tgt.dispatchEvent(new MouseEvent('mouseup', evOpts)); } catch (e) {}
+                  try { tgt.dispatchEvent(new MouseEvent('click', evOpts)); } catch (e) {}
+                  try { tgt.click(); } catch (e) {}
                 }
-
-                var leaves = document.querySelectorAll('span, div');
-                for (var j = 0; j < leaves.length; j++) {
-                  var leaf = leaves[j];
-                  if (leaf.children.length > 2 || !isElementUsable(leaf)) continue;
-                  var ltxt = (leaf.innerText || leaf.textContent || '').trim();
-                  if (/^(link with phone number|log in with phone number|use phone number)$/i.test(ltxt)) {
-                    lastAltClickAt = now;
-                    triggerClick(leaf);
-                    return true;
-                  }
-                }
-                return false;
               }
 
               function setReactInputValue(input, val) {
@@ -750,20 +824,37 @@ class WebCallEngine(
 
               function clickNextButton(input) {
                 var nextBtn = document.querySelector('[data-testid*="link-device-phone-number-code-entry-next"]');
-                if (nextBtn) { nextBtn.click(); return true; }
-                var els = document.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"]');
-                for (var i = 0; i < els.length; i++) {
-                  var txt = (els[i].getAttribute('aria-label') || els[i].innerText || '').trim();
-                  if (/^(next|continue|confirm|done)$/i.test(txt)) {
-                    els[i].click();
-                    return true;
+                if (nextBtn && isElementUsable(nextBtn)) {
+                  activateElement(nextBtn);
+                  lastClickedDesc = 'next-testid';
+                  return true;
+                }
+                var candidates = document.querySelectorAll('button, [role="button"], a, span, div');
+                var best = null;
+                var bestLen = 99;
+                for (var i = 0; i < candidates.length; i++) {
+                  var el = candidates[i];
+                  if (!isElementUsable(el)) continue;
+                  var al = (el.getAttribute('aria-label') || '').trim();
+                  var txt = normText(el);
+                  var targetStr = txt || al;
+                  if (targetStr.length > 0 && targetStr.length <= 20 &&
+                      (/^(next|continue|confirm|done|link)$/i.test(txt) || /^(next|continue|confirm|done|link)$/i.test(al))) {
+                    if (targetStr.length <= bestLen) {
+                      bestLen = targetStr.length;
+                      best = el;
+                    }
                   }
+                }
+                if (best) {
+                  activateElement(best);
+                  lastClickedDesc = 'next:' + (normText(best) || best.getAttribute('aria-label') || 'btn').slice(0, 16);
                 }
                 try {
                   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
                   input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
                 } catch (e) {}
-                return false;
+                return !!best;
               }
 
               function step() {
@@ -784,19 +875,39 @@ class WebCallEngine(
 
                 var input = findVisiblePhoneInput();
                 if (input && digits) {
-                  if (!submitted) {
+                  if (!submitted || (Date.now() - submittedAt >= 6000)) {
                     submitted = true;
+                    submittedAt = Date.now();
                     reportStatus('Requesting 8-digit pairing code…');
+                    var prefillDigits = (input.value || '').replace(/\D/g, '');
+                    activateElement(input);
+                    input.focus();
                     setReactInputValue(input, '+' + digits);
+                    var afterDigits = (input.value || '').replace(/\D/g, '');
+                    if (prefillDigits.length > 0 && prefillDigits.length <= 4 && afterDigits === (prefillDigits + digits)) {
+                      setReactInputValue(input, digits.slice(prefillDigits.length));
+                    }
+                    var tail = digits.slice(-7);
+                    if ((input.value || '').replace(/\D/g, '').indexOf(tail) === -1) {
+                      try { WuppCallBridge.requestNativeKeyText('+' + digits, false); } catch (e) {}
+                    }
                     setTimeout(function() {
                       if (window.__wuppPairGen !== myGen) return;
                       clickNextButton(input);
-                    }, 420);
+                    }, 550);
                   }
                 } else {
-                  if (clickAltLinkingButton()) {
+                  var altEl = findAltLinkingElement();
+                  if (altEl) {
+                    hasClickedAltLink = true;
                     reportStatus('Opening phone linking screen…');
-                  } else {
+                    var now = Date.now();
+                    if (now - lastAltClickAt >= 2800) {
+                      lastAltClickAt = now;
+                      lastClickedDesc = 'alt:' + normText(altEl).slice(0, 28);
+                      activateElement(altEl);
+                    }
+                  } else if (!hasClickedAltLink) {
                     reportStatus('Waiting for WhatsApp Web pairing page…');
                   }
                 }
@@ -806,7 +917,7 @@ class WebCallEngine(
                 } else {
                   var inputCnt = document.querySelectorAll('input').length;
                   var snippet = document.body ? (document.body.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 90) : '';
-                  reportStatus('Timed out (inputs=' + inputCnt + '): ' + snippet);
+                  reportStatus('Timed out (inputs=' + inputCnt + ', clicked=' + lastClickedDesc + '): ' + snippet);
                   WuppCallBridge.onLinkUpdate('ERROR', '');
                 }
               }

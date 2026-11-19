@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.7] - 2026-11-20
+
+### 🛠️ Fixes
+- 📞 **Calls Pairing:** Fixed clicking `"Link with phone number instead."` using native touchscreen events and stabilized pairing status updates.
+
 ## [0.3.5-pre.6] - 2026-11-19
 
 ### 🛠️ Fixes

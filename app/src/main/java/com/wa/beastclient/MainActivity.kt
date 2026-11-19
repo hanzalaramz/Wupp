@@ -152,14 +152,21 @@ class MainActivity : FragmentActivity() {
                 val motionScheme = MaterialTheme.motionScheme
                 val shouldHostWarmWebView = setupDone &&
                     bridgeStatus.isLoggedIn &&
-                    !stealth.offlineMode &&
-                    ((stealth.callingLinked && stealth.callBackendMode != CallBackendMode.OFF) ||
-                        linkState != WebLinkState.UNINITIALIZED)
+                    !stealth.offlineMode
                 var warmHostContainer by remember { mutableStateOf<FrameLayout?>(null) }
 
-                LaunchedEffect(shouldHostWarmWebView, callUiState.phase, warmHostContainer) {
+                LaunchedEffect(
+                    shouldHostWarmWebView,
+                    callUiState.phase,
+                    warmHostContainer,
+                    linkState,
+                    stealth.callBackendMode,
+                    stealth.callingLinked
+                ) {
                     val container = warmHostContainer ?: return@LaunchedEffect
-                    if (shouldHostWarmWebView && callUiState.phase == CallPhase.IDLE) {
+                    val activeEngineRequested = (stealth.callingLinked && stealth.callBackendMode != CallBackendMode.OFF) ||
+                        linkState != WebLinkState.UNINITIALIZED
+                    if (shouldHostWarmWebView && callUiState.phase == CallPhase.IDLE && activeEngineRequested) {
                         CallStateManager.attachWebViewHost(container, showVideoSurface = false)
                     }
                 }
