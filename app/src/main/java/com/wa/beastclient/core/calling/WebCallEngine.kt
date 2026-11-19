@@ -622,11 +622,24 @@ class WebCallEngine(
               var attempts = 0;
               var submitted = false;
               var lastStatus = '';
+              var lastAltClickAt = 0;
 
               function reportStatus(msg) {
                 if (msg && msg !== lastStatus) {
                   lastStatus = msg;
                   try { WuppCallBridge.onPairingStatus(msg); } catch (e) {}
+                }
+              }
+
+              function isElementUsable(el) {
+                if (!el || el.disabled) return false;
+                try {
+                  var cs = window.getComputedStyle(el);
+                  if (!cs || cs.display === 'none' || cs.visibility === 'hidden') return false;
+                  var r = el.getBoundingClientRect();
+                  return r.width > 10 && r.height > 10;
+                } catch (e) {
+                  return true;
                 }
               }
 
@@ -650,29 +663,62 @@ class WebCallEngine(
                   'input[aria-label*="phone" i]',
                   'input[aria-label*="number" i]',
                   'input[type="tel"]',
-                  '[data-testid*="phone-number"] input',
-                  'form input[type="text"]',
-                  'input[inputmode="tel"]'
+                  'input[inputmode="tel"]',
+                  '[data-testid*="phone"] input',
+                  'input[type="text"]',
+                  'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"])'
                 ];
                 for (var s = 0; s < selectors.length; s++) {
-                  var el = document.querySelector(selectors[s]);
-                  if (el && !el.disabled && el.offsetParent !== null) return el;
+                  var list = document.querySelectorAll(selectors[s]);
+                  for (var i = 0; i < list.length; i++) {
+                    var el = list[i];
+                    var ph = (el.getAttribute('placeholder') || el.getAttribute('aria-label') || '').toLowerCase();
+                    if (ph.indexOf('search') !== -1 || ph.indexOf('country') !== -1) continue;
+                    if (isElementUsable(el)) return el;
+                  }
                 }
                 return null;
               }
 
+              function triggerClick(el) {
+                var target = (el.closest && el.closest('button,[role="button"],a')) || el;
+                try { target.focus(); } catch (e) {}
+                target.click();
+              }
+
               function clickAltLinkingButton() {
+                var now = Date.now();
+                if (now - lastAltClickAt < 2600) return false;
+
                 var testEl = document.querySelector('[data-testid*="link-device-qrcode-alt-linking"], [data-testid*="alt-linking"]');
-                if (testEl) { testEl.click(); return true; }
-                var els = document.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], a, span, div');
-                for (var i = 0; i < els.length; i++) {
-                  var el = els[i];
-                  if (el.children.length > 2) continue;
+                if (testEl && isElementUsable(testEl)) {
+                  lastAltClickAt = now;
+                  triggerClick(testEl);
+                  return true;
+                }
+
+                var interactive = document.querySelectorAll('button, [role="button"], a');
+                for (var i = 0; i < interactive.length; i++) {
+                  var el = interactive[i];
+                  if (!isElementUsable(el)) continue;
                   var al = (el.getAttribute('aria-label') || '').trim();
                   var txt = (el.innerText || el.textContent || '').trim();
-                  if (/link with phone number|log in with phone number|use phone number/i.test(al) ||
-                      /^(link with phone number|log in with phone number)$/i.test(txt)) {
-                    el.click();
+                  if (/link with phone|log in with phone|use phone number/i.test(al) ||
+                      /link with phone|log in with phone|use phone number/i.test(txt)) {
+                    lastAltClickAt = now;
+                    triggerClick(el);
+                    return true;
+                  }
+                }
+
+                var leaves = document.querySelectorAll('span, div');
+                for (var j = 0; j < leaves.length; j++) {
+                  var leaf = leaves[j];
+                  if (leaf.children.length > 2 || !isElementUsable(leaf)) continue;
+                  var ltxt = (leaf.innerText || leaf.textContent || '').trim();
+                  if (/^(link with phone number|log in with phone number|use phone number)$/i.test(ltxt)) {
+                    lastAltClickAt = now;
+                    triggerClick(leaf);
                     return true;
                   }
                 }
@@ -758,7 +804,9 @@ class WebCallEngine(
                 if (attempts < 45) {
                   setTimeout(step, 650);
                 } else {
-                  reportStatus('Timed out waiting for WhatsApp Web — tap Retry');
+                  var inputCnt = document.querySelectorAll('input').length;
+                  var snippet = document.body ? (document.body.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 90) : '';
+                  reportStatus('Timed out (inputs=' + inputCnt + '): ' + snippet);
                   WuppCallBridge.onLinkUpdate('ERROR', '');
                 }
               }

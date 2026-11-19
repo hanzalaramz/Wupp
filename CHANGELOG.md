@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.6] - 2026-11-19
+
+### 🛠️ Fixes
+- 📞 **Calls Pairing:** Fixed phone number input detection and button clicking during 8-digit WhatsApp Web pairing.
+
 ## [0.3.5-pre.5] - 2026-11-19
 
 ### 🛠️ Fixes
