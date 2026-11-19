@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.3.4-pre.1] - 2026-11-19
+## [0.3.4] - 2026-11-19
 
 ### ✨ Features
 - ↪️ **Forward Messages (#81):** Forward texts, media, documents, and stickers to up to 5 chats or groups from the long-press bar.
