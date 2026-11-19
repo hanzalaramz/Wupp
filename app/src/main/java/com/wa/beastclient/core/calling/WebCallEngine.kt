@@ -33,6 +33,7 @@ class WebCallEngine(
 ) {
     interface Listener {
         fun onLinkStateChanged(state: WebLinkState, pairingCode: String = "")
+        fun onPairingStatusChanged(status: String) {}
         fun onWebCallEvent(
             state: String,
             callerHint: String,
@@ -52,6 +53,8 @@ class WebCallEngine(
     private var videoOverlayCssActive = false
     private var lastTeardownMs = 0L
     private var pendingWarmRunnable: Runnable? = null
+    @Volatile
+    private var pendingPairingPhoneDigits: String = ""
 
     val isAttachedAndLoaded: Boolean
         get() = webView != null
@@ -78,7 +81,7 @@ class WebCallEngine(
                     )
                 )
             }
-            wv.alpha = if (showVideoSurface) 1f else 0f
+            wv.alpha = if (showVideoSurface) 1f else 0.01f
             wv.isClickable = showVideoSurface
             wv.isFocusable = false
             wv.isFocusableInTouchMode = false
@@ -132,7 +135,7 @@ class WebCallEngine(
         mainHandler.post {
             videoOverlayCssActive = active
             val wv = webView ?: return@post
-            wv.alpha = if (active) 1f else 0f
+            wv.alpha = if (active) 1f else 0.01f
             val js = if (active) JS_ENABLE_VIDEO_CSS else JS_DISABLE_VIDEO_CSS
             wv.evaluateJavascript(js, null)
         }
@@ -147,13 +150,24 @@ class WebCallEngine(
     }
 
     fun requestPhonePairingCode(phoneDigits: String) {
+        val cleanDigits = phoneDigits.filter { it.isDigit() }
+        pendingPairingPhoneDigits = cleanDigits
         mainHandler.post {
             val wv = ensureCreatedLocked() ?: return@post
             setHighPriorityRenderer(true)
-            val safeDigits = JSONObject.quote(phoneDigits.filter { it.isDigit() })
-            val js = JS_REQUEST_PAIRING_CODE_TEMPLATE.replace("__PHONE_DIGITS__", safeDigits)
-            wv.evaluateJavascript(js, null)
+            listener.onPairingStatusChanged("Loading WhatsApp Web engine…")
+            val currentUrl = wv.url.orEmpty()
+            if (currentUrl.startsWith("https://web.whatsapp.com") && cleanDigits.isNotEmpty()) {
+                injectPairingAutomation(wv, cleanDigits)
+            }
         }
+    }
+
+    private fun injectPairingAutomation(wv: WebView, cleanDigits: String) {
+        val safeDigits = JSONObject.quote(cleanDigits)
+        wv.evaluateJavascript(JS_INSTALL_PASSIVE_OBSERVER, null)
+        val js = JS_REQUEST_PAIRING_CODE_TEMPLATE.replace("__PHONE_DIGITS__", safeDigits)
+        wv.evaluateJavascript(js, null)
     }
 
     fun dialContactInWeb(phoneDigits: String, fallbackName: String, isVideo: Boolean) {
@@ -231,6 +245,7 @@ class WebCallEngine(
     }
 
     fun teardownImmediate(clearSessionData: Boolean = false) {
+        pendingPairingPhoneDigits = ""
         mainHandler.post {
             pendingWarmRunnable?.let { mainHandler.removeCallbacks(it) }
             pendingWarmRunnable = null
@@ -287,7 +302,7 @@ class WebCallEngine(
         }.getOrNull() ?: return null
 
         wv.setBackgroundColor(Color.TRANSPARENT)
-        wv.alpha = if (videoOverlayCssActive) 1f else 0f
+        wv.alpha = if (videoOverlayCssActive) 1f else 0.01f
         wv.isClickable = false
         wv.isFocusable = false
         wv.isFocusableInTouchMode = false
@@ -324,9 +339,16 @@ class WebCallEngine(
         wv.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
+                val loadedUrl = url.orEmpty()
+                if (!loadedUrl.startsWith("https://web.whatsapp.com")) return
                 view?.evaluateJavascript(JS_INSTALL_PASSIVE_OBSERVER, null)
                 if (videoOverlayCssActive) {
                     view?.evaluateJavascript(JS_ENABLE_VIDEO_CSS, null)
+                }
+                val digits = pendingPairingPhoneDigits
+                if (digits.isNotEmpty() && view != null) {
+                    setHighPriorityRenderer(true)
+                    injectPairingAutomation(view, digits)
                 }
             }
         }
@@ -384,7 +406,15 @@ class WebCallEngine(
                 "ERROR" -> WebLinkState.ERROR
                 else -> WebLinkState.LOADING
             }
+            if (parsed == WebLinkState.AUTHENTICATED || parsed == WebLinkState.PAIRING_CODE_READY || parsed == WebLinkState.ERROR) {
+                pendingPairingPhoneDigits = ""
+            }
             mainHandler.post { listener.onLinkStateChanged(parsed, code.trim()) }
+        }
+
+        @JavascriptInterface
+        fun onPairingStatus(status: String) {
+            mainHandler.post { listener.onPairingStatusChanged(status.trim()) }
         }
 
         @JavascriptInterface
@@ -435,25 +465,48 @@ class WebCallEngine(
                 return null;
               }
               function readPairingCode() {
-                var container = document.querySelector('[data-link-code]') || document.querySelector('[aria-label*="Enter code" i]') || document.querySelector('[data-ref]');
-                var raw = container ? (container.getAttribute('data-link-code') || textOf(container)) : '';
-                var compact = raw.replace(/[^A-Z0-9-]/gi, '').toUpperCase();
-                var m = compact.match(/([A-Z0-9]{4}-?[A-Z0-9]{4})/);
-                if (m && m[1] && !/LINK|CODE|WHAT/.test(m[1])) {
-                  var c = m[1].replace(/-/g, '');
-                  return c.slice(0, 4) + '-' + c.slice(4, 8);
+                var attrEl = document.querySelector('[data-link-code]');
+                if (attrEl) {
+                  var rawAttr = (attrEl.getAttribute('data-link-code') || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+                  if (/^[A-Z0-9]{8}$/.test(rawAttr)) {
+                    return rawAttr.slice(0, 4) + '-' + rawAttr.slice(4, 8);
+                  }
                 }
-                var spans = document.querySelectorAll('span[dir="auto"], div[dir="ltr"] span');
-                var joined = '';
-                for (var j = 0; j < spans.length; j++) {
-                  var t = textOf(spans[j]);
-                  if (/^[A-Z0-9]{1}$/.test(t)) joined += t;
+                var boxes = document.querySelectorAll('[data-testid*="link-device-phone-number-code"], [aria-details*="link-device-phone-number-code"], [aria-label*="Enter code" i], [aria-label*="pairing code" i], [data-ref]');
+                for (var b = 0; b < boxes.length; b++) {
+                  var raw = textOf(boxes[b]).replace(/[^A-Z0-9-]/gi, '').toUpperCase();
+                  var m = raw.match(/([A-Z0-9]{4}-?[A-Z0-9]{4})/);
+                  if (m && m[1] && !/LINK|CODE|WHAT|PHON|NUMB/.test(m[1])) {
+                    var c = m[1].replace(/-/g, '');
+                    if (c.length === 8) return c.slice(0, 4) + '-' + c.slice(4, 8);
+                  }
                 }
-                if (joined.length === 8) {
-                  return joined.slice(0, 4) + '-' + joined.slice(4, 8);
+                var singleEls = document.querySelectorAll('span, div, strong, b');
+                var bucket = [];
+                var keys = [];
+                for (var j = 0; j < singleEls.length; j++) {
+                  var el = singleEls[j];
+                  if (el.children.length > 0) continue;
+                  var t = textOf(el).toUpperCase();
+                  if (!/^[A-Z0-9]{1}$/.test(t)) continue;
+                  var parent = (el.parentElement && el.parentElement.parentElement) || el.parentElement;
+                  if (!parent) continue;
+                  var idx = keys.indexOf(parent);
+                  if (idx === -1) {
+                    idx = keys.length;
+                    keys.push(parent);
+                    bucket.push('');
+                  }
+                  bucket[idx] += t;
+                }
+                for (var k = 0; k < bucket.length; k++) {
+                  if (/^[A-Z0-9]{8}$/.test(bucket[k])) {
+                    return bucket[k].slice(0, 4) + '-' + bucket[k].slice(4, 8);
+                  }
                 }
                 return '';
               }
+              window.__wuppReadPairingCode = readPairingCode;
 
               function inspectDom() {
                 var authenticated = !!(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list-search"]') || document.querySelector('[aria-label*="Search input" i]'));
@@ -564,31 +617,153 @@ class WebCallEngine(
         private val JS_REQUEST_PAIRING_CODE_TEMPLATE = """
             (function() {
               var digits = __PHONE_DIGITS__;
-              function clickByRe(re) {
-                var els = document.querySelectorAll('button,[role="button"],span[role="button"]');
+              var myGen = (window.__wuppPairGen || 0) + 1;
+              window.__wuppPairGen = myGen;
+              var attempts = 0;
+              var submitted = false;
+              var lastStatus = '';
+
+              function reportStatus(msg) {
+                if (msg && msg !== lastStatus) {
+                  lastStatus = msg;
+                  try { WuppCallBridge.onPairingStatus(msg); } catch (e) {}
+                }
+              }
+
+              function readCodeFallback() {
+                if (typeof window.__wuppReadPairingCode === 'function') {
+                  var fromObs = window.__wuppReadPairingCode();
+                  if (fromObs) return fromObs;
+                }
+                var attrEl = document.querySelector('[data-link-code]');
+                if (attrEl) {
+                  var rawAttr = (attrEl.getAttribute('data-link-code') || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+                  if (/^[A-Z0-9]{8}$/.test(rawAttr)) {
+                    return rawAttr.slice(0, 4) + '-' + rawAttr.slice(4, 8);
+                  }
+                }
+                return '';
+              }
+
+              function findVisiblePhoneInput() {
+                var selectors = [
+                  'input[aria-label*="phone" i]',
+                  'input[aria-label*="number" i]',
+                  'input[type="tel"]',
+                  '[data-testid*="phone-number"] input',
+                  'form input[type="text"]',
+                  'input[inputmode="tel"]'
+                ];
+                for (var s = 0; s < selectors.length; s++) {
+                  var el = document.querySelector(selectors[s]);
+                  if (el && !el.disabled && el.offsetParent !== null) return el;
+                }
+                return null;
+              }
+
+              function clickAltLinkingButton() {
+                var testEl = document.querySelector('[data-testid*="link-device-qrcode-alt-linking"], [data-testid*="alt-linking"]');
+                if (testEl) { testEl.click(); return true; }
+                var els = document.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], a, span, div');
                 for (var i = 0; i < els.length; i++) {
-                  var txt = (els[i].getAttribute('aria-label') || els[i].innerText || '').trim();
-                  if (re.test(txt)) { els[i].click(); return true; }
+                  var el = els[i];
+                  if (el.children.length > 2) continue;
+                  var al = (el.getAttribute('aria-label') || '').trim();
+                  var txt = (el.innerText || el.textContent || '').trim();
+                  if (/link with phone number|log in with phone number|use phone number/i.test(al) ||
+                      /^(link with phone number|log in with phone number)$/i.test(txt)) {
+                    el.click();
+                    return true;
+                  }
                 }
                 return false;
               }
-              function setNativeValue(input, val) {
-                var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                setter.call(input, val);
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-              }
-              clickByRe(/link with phone number/i);
-              setTimeout(function() {
-                var input = document.querySelector('input[type="tel"], input[aria-label*="phone" i]');
-                if (input && digits) {
-                  input.focus();
-                  setNativeValue(input, '+' + digits);
-                  setTimeout(function() {
-                    clickByRe(/^(next|continue)$/i);
-                  }, 350);
+
+              function setReactInputValue(input, val) {
+                input.focus();
+                try {
+                  var prevVal = input.value;
+                  var tracker = input._valueTracker;
+                  if (tracker) { tracker.setValue(''); }
+                  document.execCommand('selectAll', false, null);
+                  document.execCommand('insertText', false, val);
+                  if (input.value !== val) {
+                    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                    setter.call(input, val);
+                    if (tracker) { tracker.setValue(prevVal); }
+                    input.dispatchEvent(new InputEvent('input', { bubbles: true, data: val, inputType: 'insertText' }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                  }
+                } catch (e) {
+                  var setter2 = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                  setter2.call(input, val);
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                  input.dispatchEvent(new Event('change', { bubbles: true }));
                 }
-              }, 700);
+              }
+
+              function clickNextButton(input) {
+                var nextBtn = document.querySelector('[data-testid*="link-device-phone-number-code-entry-next"]');
+                if (nextBtn) { nextBtn.click(); return true; }
+                var els = document.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"]');
+                for (var i = 0; i < els.length; i++) {
+                  var txt = (els[i].getAttribute('aria-label') || els[i].innerText || '').trim();
+                  if (/^(next|continue|confirm|done)$/i.test(txt)) {
+                    els[i].click();
+                    return true;
+                  }
+                }
+                try {
+                  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                  input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                } catch (e) {}
+                return false;
+              }
+
+              function step() {
+                if (window.__wuppPairGen !== myGen) return;
+                attempts++;
+
+                var authenticated = !!(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list-search"]'));
+                if (authenticated) {
+                  WuppCallBridge.onLinkUpdate('AUTHENTICATED', '');
+                  return;
+                }
+
+                var code = readCodeFallback();
+                if (code) {
+                  WuppCallBridge.onLinkUpdate('PAIRING_CODE_READY', code);
+                  return;
+                }
+
+                var input = findVisiblePhoneInput();
+                if (input && digits) {
+                  if (!submitted) {
+                    submitted = true;
+                    reportStatus('Requesting 8-digit pairing code…');
+                    setReactInputValue(input, '+' + digits);
+                    setTimeout(function() {
+                      if (window.__wuppPairGen !== myGen) return;
+                      clickNextButton(input);
+                    }, 420);
+                  }
+                } else {
+                  if (clickAltLinkingButton()) {
+                    reportStatus('Opening phone linking screen…');
+                  } else {
+                    reportStatus('Waiting for WhatsApp Web pairing page…');
+                  }
+                }
+
+                if (attempts < 45) {
+                  setTimeout(step, 650);
+                } else {
+                  reportStatus('Timed out waiting for WhatsApp Web — tap Retry');
+                  WuppCallBridge.onLinkUpdate('ERROR', '');
+                }
+              }
+
+              setTimeout(step, 250);
             })();
         """.trimIndent()
 

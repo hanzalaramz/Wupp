@@ -43,6 +43,11 @@ object CallStateManager {
     private val _pairingCode = MutableStateFlow("")
     val pairingCode: StateFlow<String> = _pairingCode.asStateFlow()
 
+    private val _pairingStatus = MutableStateFlow("")
+    val pairingStatus: StateFlow<String> = _pairingStatus.asStateFlow()
+
+    @Volatile
+    private var pairingInProgress: Boolean = false
     @Volatile
     private var appContext: Context? = null
     @Volatile
@@ -79,8 +84,11 @@ object CallStateManager {
                         _linkState.value = state
                         if (pairingCode.isNotBlank()) {
                             _pairingCode.value = pairingCode
+                            _pairingStatus.value = ""
                         } else if (state == WebLinkState.AUTHENTICATED) {
+                            pairingInProgress = false
                             _pairingCode.value = ""
+                            _pairingStatus.value = ""
                             if (!StealthMatrixManager.config.value.callingLinked) {
                                 StealthMatrixManager.updateConfig { cfg ->
                                     val nextMode = if (cfg.callBackendMode == CallBackendMode.OFF) {
@@ -91,6 +99,14 @@ object CallStateManager {
                                     cfg.copy(callingLinked = true, callBackendMode = nextMode)
                                 }
                             }
+                        } else if (state == WebLinkState.ERROR) {
+                            pairingInProgress = false
+                        }
+                    }
+
+                    override fun onPairingStatusChanged(status: String) {
+                        if (status.isNotBlank()) {
+                            _pairingStatus.value = status
                         }
                     }
 
@@ -136,8 +152,20 @@ object CallStateManager {
     }
 
     fun onConfigChanged(config: GlobalStealthConfig) {
-        if (config.offlineMode || config.callBackendMode == CallBackendMode.OFF || !config.callingLinked) {
+        if (config.offlineMode || config.callBackendMode == CallBackendMode.OFF) {
+            pairingInProgress = false
+            _pairingStatus.value = ""
             if (_uiState.value.phase == CallPhase.IDLE) {
+                smartWarmDestroyJob?.cancel()
+                engine?.teardownImmediate(clearSessionData = false)
+            }
+            return
+        }
+        if (!config.callingLinked) {
+            if (pairingInProgress) {
+                smartWarmDestroyJob?.cancel()
+                engine?.ensureWarm(respectCooldown = false)
+            } else if (_uiState.value.phase == CallPhase.IDLE) {
                 smartWarmDestroyJob?.cancel()
                 engine?.teardownImmediate(clearSessionData = false)
             }
@@ -182,21 +210,18 @@ object CallStateManager {
 
     fun requestPhonePairingCode(phoneDigits: String) {
         appContext?.let { init(it) }
+        pairingInProgress = true
         _pairingCode.value = ""
-        engine?.ensureWarm(respectCooldown = false)
-        scope.launch {
-            var waited = 0L
-            while (waited < 6000L && _linkState.value == WebLinkState.LOADING) {
-                delay(250L)
-                waited += 250L
-            }
-            engine?.requestPhonePairingCode(phoneDigits)
-        }
+        _pairingStatus.value = "Loading WhatsApp Web engine…"
+        _linkState.value = WebLinkState.LOADING
+        engine?.requestPhonePairingCode(phoneDigits)
     }
 
     fun unlinkCallingEngine() {
         smartWarmDestroyJob?.cancel()
+        pairingInProgress = false
         _pairingCode.value = ""
+        _pairingStatus.value = ""
         StealthMatrixManager.updateConfig {
             it.copy(callingLinked = false, callBackendMode = CallBackendMode.OFF)
         }

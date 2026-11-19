@@ -107,6 +107,7 @@ fun CallingSetupCard(
     val context = LocalContext.current
     val linkState by CallStateManager.linkState.collectAsState()
     val pairingCode by CallStateManager.pairingCode.collectAsState()
+    val pairingStatus by CallStateManager.pairingStatus.collectAsState()
 
     val initialPhone = remember(ownJid) {
         ownJid.substringBefore("@").substringBefore(":").filter { it.isDigit() }
@@ -306,14 +307,20 @@ fun CallingSetupCard(
                             Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy", tint = colors.textPrimary)
                         }
                     }
-                } else if (linkState == WebLinkState.LOADING) {
+                } else if (linkState == WebLinkState.ERROR) {
+                    Text(
+                        text = pairingStatus.ifBlank { "Unable to generate pairing code — please try again." },
+                        color = colors.antiDeleteRed,
+                        fontSize = 12.5.sp
+                    )
+                } else if (linkState == WebLinkState.LOADING || pairingStatus.isNotBlank()) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = colors.brightGreen)
                         Text(
-                            text = "Initializing WhatsApp Web engine…",
+                            text = pairingStatus.ifBlank { "Initializing WhatsApp Web engine…" },
                             color = colors.textSecondary,
                             fontSize = 12.5.sp
                         )
@@ -328,9 +335,8 @@ fun CallingSetupCard(
                             selectedUnlinkedMode
                         }
                         selectedUnlinkedMode = modeToApply
-                        StealthMatrixManager.updateConfig { it.copy(callBackendMode = modeToApply) }
-                        CallStateManager.onConfigChanged(StealthMatrixManager.config.value)
                         CallStateManager.requestPhonePairingCode(phoneInput)
+                        StealthMatrixManager.updateConfig { it.copy(callBackendMode = modeToApply) }
                     },
                     enabled = phoneInput.length >= 7,
                     colors = ButtonDefaults.buttonColors(containerColor = colors.brightGreen),

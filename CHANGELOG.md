@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.5] - 2026-11-19
+
+### 🛠️ Fixes
+- 📞 **Calls Pairing:** Fixed the 8-digit pairing code setup getting stuck while initializing the calling engine.
+
 ## [0.3.5-pre.4] - 2026-11-19
 
 ### ✨ Features
