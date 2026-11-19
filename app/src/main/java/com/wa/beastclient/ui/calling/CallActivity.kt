@@ -10,6 +10,7 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -99,19 +100,6 @@ import com.wa.beastclient.ui.theme.WhatsAppTheme
 class CallActivity : ComponentActivity() {
 
     private var inPipModeState by mutableStateOf(false)
-    private var pendingAnswerAudioOnly: Boolean? = null
-
-    private val callPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { grants ->
-        val micGranted = grants[Manifest.permission.RECORD_AUDIO] == true ||
-            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        val audioOnly = pendingAnswerAudioOnly
-        pendingAnswerAudioOnly = null
-        if (micGranted && audioOnly != null) {
-            CallStateManager.answerIncomingCall(audioOnly = audioOnly)
-        }
-    }
 
     override fun attachBaseContext(newBase: android.content.Context) {
         super.attachBaseContext(LocaleHelper.wrapContext(newBase))
@@ -137,6 +125,58 @@ class CallActivity : ComponentActivity() {
         setContent {
             val stealth by StealthMatrixManager.config.collectAsState()
             val callState by CallStateManager.uiState.collectAsState()
+            var pendingAnswerAudioOnly by remember { mutableStateOf<Boolean?>(null) }
+            var pendingUpgradeToVideo by remember { mutableStateOf(false) }
+
+            val callPermissionLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestMultiplePermissions()
+            ) { grants ->
+                val micGranted = grants[Manifest.permission.RECORD_AUDIO] == true ||
+                    ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                val camGranted = grants[Manifest.permission.CAMERA] == true ||
+                    ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                val audioOnly = pendingAnswerAudioOnly
+                val wantUpgrade = pendingUpgradeToVideo
+                pendingAnswerAudioOnly = null
+                pendingUpgradeToVideo = false
+                if (micGranted && audioOnly != null) {
+                    CallStateManager.answerIncomingCall(audioOnly = audioOnly)
+                } else if (camGranted && wantUpgrade) {
+                    CallStateManager.upgradeToVideo()
+                }
+            }
+
+            fun requestPermsAndAnswer(audioOnly: Boolean, needsCamera: Boolean) {
+                val needed = mutableListOf<String>()
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    needed.add(Manifest.permission.RECORD_AUDIO)
+                }
+                if (needsCamera && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                    needed.add(Manifest.permission.CAMERA)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    needed.add(Manifest.permission.BLUETOOTH_CONNECT)
+                }
+                if (needed.isEmpty()) {
+                    CallStateManager.answerIncomingCall(audioOnly)
+                } else {
+                    pendingAnswerAudioOnly = audioOnly
+                    pendingUpgradeToVideo = false
+                    callPermissionLauncher.launch(needed.toTypedArray())
+                }
+            }
+
+            fun requestCameraThenUpgrade() {
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                    CallStateManager.upgradeToVideo()
+                } else {
+                    pendingAnswerAudioOnly = null
+                    pendingUpgradeToVideo = true
+                    callPermissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
+                }
+            }
 
             LaunchedEffect(callState.phase) {
                 if (callState.phase == CallPhase.IDLE) {
@@ -204,35 +244,6 @@ class CallActivity : ComponentActivity() {
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         inPipModeState = isInPictureInPictureMode
-    }
-
-    private fun requestPermsAndAnswer(audioOnly: Boolean, needsCamera: Boolean) {
-        val needed = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.RECORD_AUDIO)
-        }
-        if (needsCamera && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.CAMERA)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
-        ) {
-            needed.add(Manifest.permission.BLUETOOTH_CONNECT)
-        }
-        if (needed.isEmpty()) {
-            CallStateManager.answerIncomingCall(audioOnly)
-        } else {
-            pendingAnswerAudioOnly = audioOnly
-            callPermissionLauncher.launch(needed.toTypedArray())
-        }
-    }
-
-    private fun requestCameraThenUpgrade() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            CallStateManager.upgradeToVideo()
-        } else {
-            callPermissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
-        }
     }
 }
 
