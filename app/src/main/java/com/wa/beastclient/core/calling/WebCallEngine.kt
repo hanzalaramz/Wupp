@@ -17,6 +17,7 @@ import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -53,6 +54,7 @@ class WebCallEngine(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var webView: WuppWebView? = null
     private var hostContainer: ViewGroup? = null
+    private var backgroundHostContainer: ViewGroup? = null
     private var allowTouchThrough = false
     private var videoOverlayCssActive = false
     private var lastTeardownMs = 0L
@@ -67,10 +69,18 @@ class WebCallEngine(
      * Ensures the hidden WebView is created, hardened, and attached into [container]
      * at full layout size (never 1x1dp, never GONE) so Chromium reports authentic viewport telemetry.
      */
-    fun attachToContainer(container: ViewGroup, showVideoSurface: Boolean) {
+    fun attachToContainer(
+        container: ViewGroup,
+        showVideoSurface: Boolean,
+        showPairingSurface: Boolean = false
+    ) {
         mainHandler.post {
             hostContainer = container
-            allowTouchThrough = showVideoSurface
+            if (!showVideoSurface && !showPairingSurface) {
+                backgroundHostContainer = container
+            }
+            val visible = showVideoSurface || showPairingSurface
+            allowTouchThrough = visible
             val wv = ensureCreatedLocked() ?: return@post
             val currentParent = wv.parent as? ViewGroup
             if (currentParent != null && currentParent !== container) {
@@ -85,13 +95,13 @@ class WebCallEngine(
                     )
                 )
             }
-            wv.alpha = if (showVideoSurface) 1f else 0.01f
-            wv.isClickable = showVideoSurface
+            wv.isClickable = visible
             wv.isFocusable = true
             wv.isFocusableInTouchMode = true
             wv.onResume()
             wv.resumeTimers()
             setVideoCssActive(showVideoSurface)
+            wv.alpha = if (visible) 1f else 0.01f
         }
     }
 
@@ -100,9 +110,16 @@ class WebCallEngine(
             if (hostContainer === container) {
                 hostContainer = null
             }
+            if (backgroundHostContainer === container) {
+                backgroundHostContainer = null
+            }
             val wv = webView ?: return@post
             if (wv.parent === container) {
                 container.removeView(wv)
+                val bg = backgroundHostContainer
+                if (bg != null && bg !== container && bg.isAttachedToWindow) {
+                    attachToContainer(bg, showVideoSurface = false, showPairingSurface = false)
+                }
             }
         }
     }
@@ -139,7 +156,7 @@ class WebCallEngine(
         mainHandler.post {
             videoOverlayCssActive = active
             val wv = webView ?: return@post
-            wv.alpha = if (active) 1f else 0.01f
+            wv.alpha = if (active || allowTouchThrough) 1f else 0.01f
             val js = if (active) JS_ENABLE_VIDEO_CSS else JS_DISABLE_VIDEO_CSS
             wv.evaluateJavascript(js, null)
         }
@@ -381,7 +398,15 @@ class WebCallEngine(
         runCatching { wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_WAIVED, false) }
 
         wv.addJavascriptInterface(WuppCallJsBridge(), "WuppCallBridge")
+        wv.setDownloadListener { _, _, _, _, _ -> }
         wv.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val url = request?.url ?: return false
+                val schemeOk = url.scheme.equals("https", ignoreCase = true)
+                val hostOk = url.host?.lowercase() == "web.whatsapp.com"
+                return !(schemeOk && hostOk)
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 val loadedUrl = url.orEmpty()
@@ -749,8 +774,11 @@ class WebCallEngine(
               }
 
               function findAltLinkingElement() {
+                function isBlockedBannerText(s) {
+                  return /download|get the app|windows|mac|microsoft/i.test(s || '');
+                }
                 var testEl = document.querySelector('[data-testid*="link-device-qrcode-alt-linking"], [data-testid*="alt-linking"]');
-                if (testEl && isElementUsable(testEl)) return testEl;
+                if (testEl && isElementUsable(testEl) && !isBlockedBannerText(normText(testEl))) return testEl;
 
                 var candidates = document.querySelectorAll('button, [role="button"], a, span, div');
                 var best = null;
@@ -758,8 +786,11 @@ class WebCallEngine(
                 for (var i = 0; i < candidates.length; i++) {
                   var el = candidates[i];
                   if (!isElementUsable(el)) continue;
+                  var href = el.getAttribute ? (el.getAttribute('href') || '') : '';
+                  if (href && href !== '#' && href.indexOf('web.whatsapp.com') === -1) continue;
                   var al = (el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
                   var txt = normText(el);
+                  if (isBlockedBannerText(al) || isBlockedBannerText(txt)) continue;
                   var labelMatch = al.length >= 10 && al.length <= 65 &&
                     /link with phone number|log in with phone number|use phone number|phone number instead/i.test(al);
                   var textMatch = txt.length >= 10 && txt.length <= 65 &&
@@ -777,25 +808,47 @@ class WebCallEngine(
 
               function activateElement(el) {
                 if (!el) return;
-                try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
+                function invokeReactOnClick(node) {
+                  try {
+                    var keys = Object.keys(node);
+                    for (var k = 0; k < keys.length; k++) {
+                      if (keys[k].indexOf('__reactProps$') === 0) {
+                        var rp = node[keys[k]];
+                        if (rp && typeof rp.onClick === 'function') {
+                          rp.onClick({
+                            type: 'click',
+                            target: node,
+                            currentTarget: node,
+                            preventDefault: function() {},
+                            stopPropagation: function() {},
+                            nativeEvent: new MouseEvent('click', { bubbles: true, cancelable: true })
+                          });
+                        }
+                      }
+                    }
+                  } catch (e) {}
+                }
+
                 var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
                 var cx = r ? (r.left + r.width / 2) : 0;
                 var cy = r ? (r.top + r.height / 2) : 0;
-                if (cx > 0 && cy > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
-                  try { WuppCallBridge.requestNativeTap(cx / window.innerWidth, cy / window.innerHeight); } catch (e) {}
-                }
-                var targets = [el];
-                var parentBtn = el.closest ? el.closest('button,[role="button"],a') : null;
-                if (parentBtn && parentBtn !== el) targets.push(parentBtn);
-                for (var t = 0; t < targets.length; t++) {
-                  var tgt = targets[t];
+                var cur = el;
+                var depth = 0;
+                while (cur && depth < 4) {
+                  var cTxt = normText(cur);
+                  var href = cur.getAttribute ? (cur.getAttribute('href') || '') : '';
+                  if (/download|get the app|windows|mac|microsoft/i.test(cTxt) || cTxt.length > 90) break;
+                  if (href && href !== '#' && href.indexOf('web.whatsapp.com') === -1) break;
                   var evOpts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy };
-                  try { tgt.dispatchEvent(new PointerEvent('pointerdown', evOpts)); } catch (e) {}
-                  try { tgt.dispatchEvent(new MouseEvent('mousedown', evOpts)); } catch (e) {}
-                  try { tgt.dispatchEvent(new PointerEvent('pointerup', evOpts)); } catch (e) {}
-                  try { tgt.dispatchEvent(new MouseEvent('mouseup', evOpts)); } catch (e) {}
-                  try { tgt.dispatchEvent(new MouseEvent('click', evOpts)); } catch (e) {}
-                  try { tgt.click(); } catch (e) {}
+                  try { cur.dispatchEvent(new PointerEvent('pointerdown', evOpts)); } catch (e) {}
+                  try { cur.dispatchEvent(new MouseEvent('mousedown', evOpts)); } catch (e) {}
+                  try { cur.dispatchEvent(new PointerEvent('pointerup', evOpts)); } catch (e) {}
+                  try { cur.dispatchEvent(new MouseEvent('mouseup', evOpts)); } catch (e) {}
+                  try { cur.dispatchEvent(new MouseEvent('click', evOpts)); } catch (e) {}
+                  try { cur.click(); } catch (e) {}
+                  invokeReactOnClick(cur);
+                  cur = cur.parentElement;
+                  depth++;
                 }
               }
 
@@ -819,6 +872,24 @@ class WebCallEngine(
                   setter2.call(input, val);
                   input.dispatchEvent(new Event('input', { bubbles: true }));
                   input.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                if ((input.value || '').indexOf(val) === -1) {
+                  try {
+                    var keys = Object.keys(input);
+                    for (var k = 0; k < keys.length; k++) {
+                      if (keys[k].indexOf('__reactProps$') === 0) {
+                        var rp = input[keys[k]];
+                        if (rp && typeof rp.onChange === 'function') {
+                          rp.onChange({
+                            target: input,
+                            currentTarget: input,
+                            preventDefault: function() {},
+                            stopPropagation: function() {}
+                          });
+                        }
+                      }
+                    }
+                  } catch (e) {}
                 }
               }
 
@@ -878,7 +949,7 @@ class WebCallEngine(
                   if (!submitted || (Date.now() - submittedAt >= 6000)) {
                     submitted = true;
                     submittedAt = Date.now();
-                    reportStatus('Requesting 8-digit pairing code…');
+                    reportStatus('Requesting 8-digit pairing code… (' + attempts + ')');
                     var prefillDigits = (input.value || '').replace(/\D/g, '');
                     activateElement(input);
                     input.focus();
@@ -900,7 +971,7 @@ class WebCallEngine(
                   var altEl = findAltLinkingElement();
                   if (altEl) {
                     hasClickedAltLink = true;
-                    reportStatus('Opening phone linking screen…');
+                    reportStatus('Opening phone linking screen… (' + attempts + ')');
                     var now = Date.now();
                     if (now - lastAltClickAt >= 2800) {
                       lastAltClickAt = now;
@@ -908,7 +979,9 @@ class WebCallEngine(
                       activateElement(altEl);
                     }
                   } else if (!hasClickedAltLink) {
-                    reportStatus('Waiting for WhatsApp Web pairing page…');
+                    reportStatus('Waiting for WhatsApp Web pairing page… (' + attempts + ')');
+                  } else {
+                    reportStatus('Opening phone linking screen… (' + attempts + ')');
                   }
                 }
 

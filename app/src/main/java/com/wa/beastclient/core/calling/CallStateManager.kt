@@ -59,6 +59,7 @@ object CallStateManager {
     private var dialTimeoutJob: Job? = null
     private var durationTickerJob: Job? = null
     private var pendingDialRunnable: Job? = null
+    private var pairingWatchdogJob: Job? = null
     private var appInForeground: Boolean = false
     private var lastWebCallState: String = "IDLE"
 
@@ -83,9 +84,11 @@ object CallStateManager {
                     override fun onLinkStateChanged(state: WebLinkState, pairingCode: String) {
                         _linkState.value = state
                         if (pairingCode.isNotBlank()) {
+                            pairingWatchdogJob?.cancel()
                             _pairingCode.value = pairingCode
                             _pairingStatus.value = ""
                         } else if (state == WebLinkState.AUTHENTICATED) {
+                            pairingWatchdogJob?.cancel()
                             pairingInProgress = false
                             _pairingCode.value = ""
                             _pairingStatus.value = ""
@@ -100,6 +103,7 @@ object CallStateManager {
                                 }
                             }
                         } else if (state == WebLinkState.ERROR) {
+                            pairingWatchdogJob?.cancel()
                             pairingInProgress = false
                         }
                     }
@@ -144,15 +148,25 @@ object CallStateManager {
 
     fun attachWebViewHost(container: ViewGroup, showVideoSurface: Boolean) {
         init(container.context)
-        engine?.attachToContainer(container, showVideoSurface)
+        engine?.attachToContainer(container, showVideoSurface = showVideoSurface, showPairingSurface = false)
     }
 
     fun detachWebViewHost(container: ViewGroup) {
         engine?.detachIfHostedBy(container)
     }
 
+    fun attachPairingPreviewHost(container: ViewGroup) {
+        init(container.context)
+        engine?.attachToContainer(container, showVideoSurface = false, showPairingSurface = true)
+    }
+
+    fun detachPairingPreviewHost(container: ViewGroup) {
+        engine?.detachIfHostedBy(container)
+    }
+
     fun onConfigChanged(config: GlobalStealthConfig) {
         if (config.offlineMode || config.callBackendMode == CallBackendMode.OFF) {
+            pairingWatchdogJob?.cancel()
             pairingInProgress = false
             _pairingStatus.value = ""
             if (_uiState.value.phase == CallPhase.IDLE) {
@@ -210,15 +224,25 @@ object CallStateManager {
 
     fun requestPhonePairingCode(phoneDigits: String) {
         appContext?.let { init(it) }
+        pairingWatchdogJob?.cancel()
         pairingInProgress = true
         _pairingCode.value = ""
         _pairingStatus.value = "Loading WhatsApp Web engine…"
         _linkState.value = WebLinkState.LOADING
         engine?.requestPhonePairingCode(phoneDigits)
+        pairingWatchdogJob = scope.launch {
+            delay(35_000L)
+            if (pairingInProgress && _pairingCode.value.isBlank() && _linkState.value != WebLinkState.AUTHENTICATED) {
+                pairingInProgress = false
+                _pairingStatus.value = "Pairing timed out — open Live Pairing Screen or tap Retry"
+                _linkState.value = WebLinkState.ERROR
+            }
+        }
     }
 
     fun unlinkCallingEngine() {
         smartWarmDestroyJob?.cancel()
+        pairingWatchdogJob?.cancel()
         pairingInProgress = false
         _pairingCode.value = ""
         _pairingStatus.value = ""

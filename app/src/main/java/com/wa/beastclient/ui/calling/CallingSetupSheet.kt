@@ -3,6 +3,7 @@ package com.wa.beastclient.ui.calling
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -38,6 +40,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -53,6 +56,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.wa.beastclient.core.calling.CallStateManager
@@ -128,9 +132,16 @@ fun CallingSetupCard(
     val orderedModes = remember {
         listOf(CallBackendMode.ALWAYS_READY, CallBackendMode.SMART_WARM, CallBackendMode.OFF)
     }
+    var showLivePreview by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         CallStateManager.init(context)
+    }
+
+    LaunchedEffect(isLinked) {
+        if (isLinked) {
+            showLivePreview = false
+        }
     }
 
     Surface(
@@ -347,6 +358,48 @@ fun CallingSetupCard(
                         color = Color(0xFF0A1418),
                         fontWeight = FontWeight.SemiBold
                     )
+                }
+
+                if (linkState != WebLinkState.UNINITIALIZED || pairingStatus.isNotBlank()) {
+                    OutlinedButton(
+                        onClick = { showLivePreview = !showLivePreview },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = if (showLivePreview) "Hide Live Pairing Screen" else "Show Live Pairing Screen",
+                            color = colors.textPrimary
+                        )
+                    }
+                }
+
+                if (showLivePreview) {
+                    var previewHost by remember { mutableStateOf<FrameLayout?>(null) }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(360.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .border(1.dp, colors.textSecondary.copy(alpha = 0.25f), RoundedCornerShape(16.dp))
+                            .background(Color.White)
+                    ) {
+                        AndroidView(
+                            factory = { ctx ->
+                                FrameLayout(ctx).also { container ->
+                                    previewHost = container
+                                    CallStateManager.attachPairingPreviewHost(container)
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    DisposableEffect(previewHost) {
+                        val container = previewHost
+                        onDispose {
+                            if (container != null) {
+                                CallStateManager.detachPairingPreviewHost(container)
+                            }
+                        }
+                    }
                 }
             } else {
                 OutlinedButton(

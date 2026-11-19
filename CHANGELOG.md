@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.8] - 2026-11-20
+
+### 🛠️ Fixes
+- 📞 **Calls Pairing:** Blocked unintended WhatsApp Desktop app downloads during pairing, added a 35s timeout guard, and added a Live Pairing Screen toggle.
+
 ## [0.3.5-pre.7] - 2026-11-20
 
 ### 🛠️ Fixes
