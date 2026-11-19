@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.9] - 2026-11-20
+
+### 🛠️ Fixes
+- 📞 **Calls Pairing:** Fixed phone-linking button matching so it never clicks `"Terms & Privacy Policy"`, and fixed the blank white Live Pairing Screen by opening it in an interactive dialog without losing the WebView.
+
 ## [0.3.5-pre.8] - 2026-11-20
 
 ### 🛠️ Fixes

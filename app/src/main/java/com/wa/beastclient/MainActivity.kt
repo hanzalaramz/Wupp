@@ -99,6 +99,7 @@ class MainActivity : FragmentActivity() {
             val bridgeStatus by vm.bridgeStatus.collectAsState()
             val callUiState by CallStateManager.uiState.collectAsState()
             val linkState by CallStateManager.linkState.collectAsState()
+            val pairingPreviewActive by CallStateManager.pairingPreviewActive.collectAsState()
             val updateState by vm.updateState.collectAsState()
             val showUpdatePrompt by vm.showUpdatePrompt.collectAsState()
             var setupDone by remember { mutableStateOf(initialSetupDone) }
@@ -161,12 +162,17 @@ class MainActivity : FragmentActivity() {
                     warmHostContainer,
                     linkState,
                     stealth.callBackendMode,
-                    stealth.callingLinked
+                    stealth.callingLinked,
+                    pairingPreviewActive
                 ) {
                     val container = warmHostContainer ?: return@LaunchedEffect
                     val activeEngineRequested = (stealth.callingLinked && stealth.callBackendMode != CallBackendMode.OFF) ||
                         linkState != WebLinkState.UNINITIALIZED
-                    if (shouldHostWarmWebView && callUiState.phase == CallPhase.IDLE && activeEngineRequested) {
+                    if (shouldHostWarmWebView &&
+                        callUiState.phase == CallPhase.IDLE &&
+                        activeEngineRequested &&
+                        !pairingPreviewActive
+                    ) {
                         CallStateManager.attachWebViewHost(container, showVideoSurface = false)
                     }
                 }

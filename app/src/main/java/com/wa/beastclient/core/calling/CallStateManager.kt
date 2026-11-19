@@ -46,6 +46,9 @@ object CallStateManager {
     private val _pairingStatus = MutableStateFlow("")
     val pairingStatus: StateFlow<String> = _pairingStatus.asStateFlow()
 
+    private val _pairingPreviewActive = MutableStateFlow(false)
+    val pairingPreviewActive: StateFlow<Boolean> = _pairingPreviewActive.asStateFlow()
+
     @Volatile
     private var pairingInProgress: Boolean = false
     @Volatile
@@ -90,6 +93,7 @@ object CallStateManager {
                         } else if (state == WebLinkState.AUTHENTICATED) {
                             pairingWatchdogJob?.cancel()
                             pairingInProgress = false
+                            _pairingPreviewActive.value = false
                             _pairingCode.value = ""
                             _pairingStatus.value = ""
                             if (!StealthMatrixManager.config.value.callingLinked) {
@@ -157,10 +161,13 @@ object CallStateManager {
 
     fun attachPairingPreviewHost(container: ViewGroup) {
         init(container.context)
+        _pairingPreviewActive.value = true
+        engine?.ensureWarm(respectCooldown = false)
         engine?.attachToContainer(container, showVideoSurface = false, showPairingSurface = true)
     }
 
     fun detachPairingPreviewHost(container: ViewGroup) {
+        _pairingPreviewActive.value = false
         engine?.detachIfHostedBy(container)
     }
 

@@ -95,6 +95,7 @@ class WebCallEngine(
                     )
                 )
             }
+            wv.setBackgroundColor(if (visible) Color.WHITE else Color.TRANSPARENT)
             wv.isClickable = visible
             wv.isFocusable = true
             wv.isFocusableInTouchMode = true
@@ -102,6 +103,25 @@ class WebCallEngine(
             wv.resumeTimers()
             setVideoCssActive(showVideoSurface)
             wv.alpha = if (visible) 1f else 0.01f
+            wv.requestLayout()
+            wv.invalidate()
+            if (showPairingSurface) {
+                wv.postDelayed({
+                    runCatching {
+                        wv.evaluateJavascript(
+                            """
+                            (function() {
+                              var t = document.querySelector('input:not([type="hidden"]), [data-link-code], canvas, [role="button"]');
+                              if (t && t.scrollIntoView) {
+                                t.scrollIntoView({ block: 'center', inline: 'center' });
+                              }
+                            })();
+                            """.trimIndent(),
+                            null
+                        )
+                    }
+                }, 250L)
+            }
         }
     }
 
@@ -361,11 +381,12 @@ class WebCallEngine(
             return existing
         }
 
-        val wv = runCatching { WuppWebView(appContext) }.getOrNull() ?: return null
+        val viewContext = hostContainer?.context ?: backgroundHostContainer?.context ?: appContext
+        val wv = runCatching { WuppWebView(viewContext) }.getOrNull() ?: return null
 
-        wv.setBackgroundColor(Color.TRANSPARENT)
-        wv.alpha = if (videoOverlayCssActive) 1f else 0.01f
-        wv.isClickable = false
+        wv.setBackgroundColor(if (allowTouchThrough) Color.WHITE else Color.TRANSPARENT)
+        wv.alpha = if (allowTouchThrough || videoOverlayCssActive) 1f else 0.01f
+        wv.isClickable = allowTouchThrough
         wv.isFocusable = true
         wv.isFocusableInTouchMode = true
 
@@ -377,7 +398,9 @@ class WebCallEngine(
         settings.mediaPlaybackRequiresUserGesture = false
         settings.useWideViewPort = true
         settings.loadWithOverviewMode = true
-        settings.setSupportZoom(false)
+        settings.setSupportZoom(true)
+        settings.builtInZoomControls = true
+        settings.displayZoomControls = false
         settings.builtInZoomControls = false
         settings.displayZoomControls = false
         @Suppress("DEPRECATION")
@@ -708,6 +731,7 @@ class WebCallEngine(
               var submittedAt = 0;
               var lastStatus = '';
               var lastAltClickAt = 0;
+              var altClickCount = 0;
               var hasClickedAltLink = false;
               var lastClickedDesc = 'none';
 
@@ -720,6 +744,10 @@ class WebCallEngine(
 
               function normText(el) {
                 return ((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
+              }
+
+              function isBlockedText(s) {
+                return /terms|privacy|policy|download|get the app|windows|mac|microsoft|help/i.test(s || '');
               }
 
               function isElementUsable(el) {
@@ -774,48 +802,52 @@ class WebCallEngine(
               }
 
               function findAltLinkingElement() {
-                function isBlockedBannerText(s) {
-                  return /download|get the app|windows|mac|microsoft/i.test(s || '');
-                }
-                var testEl = document.querySelector('[data-testid*="link-device-qrcode-alt-linking"], [data-testid*="alt-linking"]');
-                if (testEl && isElementUsable(testEl) && !isBlockedBannerText(normText(testEl))) return testEl;
-
-                var candidates = document.querySelectorAll('button, [role="button"], a, span, div');
-                var best = null;
-                var bestLen = 9999;
-                for (var i = 0; i < candidates.length; i++) {
-                  var el = candidates[i];
-                  if (!isElementUsable(el)) continue;
-                  var href = el.getAttribute ? (el.getAttribute('href') || '') : '';
-                  if (href && href !== '#' && href.indexOf('web.whatsapp.com') === -1) continue;
-                  var al = (el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-                  var txt = normText(el);
-                  if (isBlockedBannerText(al) || isBlockedBannerText(txt)) continue;
-                  var labelMatch = al.length >= 10 && al.length <= 65 &&
-                    /link with phone number|log in with phone number|use phone number|phone number instead/i.test(al);
-                  var textMatch = txt.length >= 10 && txt.length <= 65 &&
-                    /link with phone number|log in with phone number|use phone number|phone number instead/i.test(txt);
-                  if (labelMatch || textMatch) {
-                    var len = txt ? txt.length : al.length;
-                    if (len <= bestLen) {
-                      bestLen = len;
-                      best = el;
+                var phoneRe = /link with phone number|log in with phone number|use phone number|phone number instead/i;
+                if (document.body && document.createTreeWalker) {
+                  var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                  var node;
+                  while ((node = walker.nextNode())) {
+                    var t = (node.nodeValue || '').replace(/\s+/g, ' ').trim();
+                    if (t.length < 12 || t.length > 60) continue;
+                    if (isBlockedText(t)) continue;
+                    if (!phoneRe.test(t)) continue;
+                    var el = node.parentElement;
+                    if (!el) continue;
+                    var cur = el;
+                    var bestClickable = el;
+                    var depth = 0;
+                    while (cur && cur !== document.body && depth < 5) {
+                      var cTxt = normText(cur);
+                      if (cTxt.length > 65 || isBlockedText(cTxt)) break;
+                      var href = cur.getAttribute ? (cur.getAttribute('href') || '') : '';
+                      if (href && href !== '#' && href.indexOf('web.whatsapp.com') === -1) break;
+                      bestClickable = cur;
+                      var role = cur.getAttribute ? (cur.getAttribute('role') || '') : '';
+                      var tag = (cur.tagName || '').toLowerCase();
+                      if (role === 'button' || tag === 'button' || tag === 'a' || cur.hasAttribute('tabindex')) {
+                        return cur;
+                      }
+                      cur = cur.parentElement;
+                      depth++;
                     }
+                    return bestClickable;
                   }
                 }
-                return best;
+                return null;
               }
 
-              function activateElement(el) {
-                if (!el) return;
-                function invokeReactOnClick(node) {
+              function invokeSingleReactHandler(nodes) {
+                for (var n = 0; n < nodes.length; n++) {
+                  var node = nodes[n];
+                  if (!node) continue;
                   try {
                     var keys = Object.keys(node);
                     for (var k = 0; k < keys.length; k++) {
                       if (keys[k].indexOf('__reactProps$') === 0) {
                         var rp = node[keys[k]];
-                        if (rp && typeof rp.onClick === 'function') {
-                          rp.onClick({
+                        var fn = rp && (rp.onClick || rp.onPress || rp.onPointerUp);
+                        if (typeof fn === 'function') {
+                          fn({
                             type: 'click',
                             target: node,
                             currentTarget: node,
@@ -823,32 +855,63 @@ class WebCallEngine(
                             stopPropagation: function() {},
                             nativeEvent: new MouseEvent('click', { bubbles: true, cancelable: true })
                           });
+                          return true;
+                        }
+                      }
+                      if (keys[k].indexOf('__reactFiber$') === 0) {
+                        var fb = node[keys[k]];
+                        var mp = fb && fb.memoizedProps;
+                        var ffn = mp && (mp.onClick || mp.onPress);
+                        if (typeof ffn === 'function') {
+                          ffn({
+                            type: 'click',
+                            target: node,
+                            currentTarget: node,
+                            preventDefault: function() {},
+                            stopPropagation: function() {},
+                            nativeEvent: new MouseEvent('click', { bubbles: true, cancelable: true })
+                          });
+                          return true;
                         }
                       }
                     }
                   } catch (e) {}
                 }
+                return false;
+              }
 
-                var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-                var cx = r ? (r.left + r.width / 2) : 0;
-                var cy = r ? (r.top + r.height / 2) : 0;
-                var cur = el;
-                var depth = 0;
-                while (cur && depth < 4) {
-                  var cTxt = normText(cur);
-                  var href = cur.getAttribute ? (cur.getAttribute('href') || '') : '';
-                  if (/download|get the app|windows|mac|microsoft/i.test(cTxt) || cTxt.length > 90) break;
-                  if (href && href !== '#' && href.indexOf('web.whatsapp.com') === -1) break;
-                  var evOpts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy };
-                  try { cur.dispatchEvent(new PointerEvent('pointerdown', evOpts)); } catch (e) {}
-                  try { cur.dispatchEvent(new MouseEvent('mousedown', evOpts)); } catch (e) {}
-                  try { cur.dispatchEvent(new PointerEvent('pointerup', evOpts)); } catch (e) {}
-                  try { cur.dispatchEvent(new MouseEvent('mouseup', evOpts)); } catch (e) {}
-                  try { cur.dispatchEvent(new MouseEvent('click', evOpts)); } catch (e) {}
-                  try { cur.click(); } catch (e) {}
-                  invokeReactOnClick(cur);
-                  cur = cur.parentElement;
-                  depth++;
+              function activateElement(el, attemptNum) {
+                if (!el) return;
+                var tgt = (el.closest && el.closest('[role="button"],button,a,[tabindex]')) || el;
+                var tgtTxt = normText(tgt);
+                if (tgtTxt.length > 75 || isBlockedText(tgtTxt)) {
+                  tgt = el;
+                }
+                try {
+                  if (tgt.scrollIntoView) {
+                    tgt.scrollIntoView({ block: 'center', inline: 'center' });
+                  }
+                } catch (e) {}
+                try { tgt.focus(); } catch (e) {}
+                var r = tgt.getBoundingClientRect ? tgt.getBoundingClientRect() : null;
+                var cx = (r && r.width > 0) ? (r.left + r.width / 2) : 200;
+                var cy = (r && r.height > 0) ? (r.top + r.height / 2) : 200;
+                var evOpts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 1 };
+                try { tgt.dispatchEvent(new PointerEvent('pointerdown', evOpts)); } catch (e) {}
+                try { tgt.dispatchEvent(new MouseEvent('mousedown', evOpts)); } catch (e) {}
+                try { tgt.dispatchEvent(new PointerEvent('pointerup', evOpts)); } catch (e) {}
+                try { tgt.dispatchEvent(new MouseEvent('mouseup', evOpts)); } catch (e) {}
+                try { tgt.click(); } catch (e) {
+                  try { tgt.dispatchEvent(new MouseEvent('click', evOpts)); } catch (e2) {}
+                }
+                if ((attemptNum || 1) >= 2) {
+                  invokeSingleReactHandler([tgt, el, tgt.parentElement]);
+                  try {
+                    tgt.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+                    tgt.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+                    tgt.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, cancelable: true }));
+                    tgt.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, cancelable: true }));
+                  } catch (e) {}
                 }
               }
 
@@ -975,8 +1038,9 @@ class WebCallEngine(
                     var now = Date.now();
                     if (now - lastAltClickAt >= 2800) {
                       lastAltClickAt = now;
-                      lastClickedDesc = 'alt:' + normText(altEl).slice(0, 28);
-                      activateElement(altEl);
+                      altClickCount++;
+                      lastClickedDesc = 'alt:' + (altEl.tagName || '') + ':' + normText(altEl).slice(0, 28);
+                      activateElement(altEl, altClickCount);
                     }
                   } else if (!hasClickedAltLink) {
                     reportStatus('Waiting for WhatsApp Web pairing page… (' + attempts + ')');
