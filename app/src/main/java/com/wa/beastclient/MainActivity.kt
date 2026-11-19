@@ -3,6 +3,7 @@ package com.wa.beastclient
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.widget.FrameLayout
 import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.activity.compose.BackHandler
 import androidx.fragment.app.FragmentActivity
@@ -30,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -43,11 +45,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.wa.beastclient.core.calling.CallPhase
+import com.wa.beastclient.core.calling.CallStateManager
+import com.wa.beastclient.core.calling.WebLinkState
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.core.update.WuppUpdater
 import com.wa.beastclient.domain.security.AppLockManager
+import com.wa.beastclient.domain.stealth.CallBackendMode
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.MainViewModel
 import com.wa.beastclient.ui.components.AppLockOverlay
@@ -79,6 +86,7 @@ class MainActivity : FragmentActivity() {
 
         val setupPrefs = getSharedPreferences("wupp_setup_prefs", Context.MODE_PRIVATE)
         val initialSetupDone = setupPrefs.getBoolean("setup_completed_v1", false)
+        CallStateManager.init(applicationContext)
         if (initialSetupDone) {
             WaRealtimeService.ensureStarted(this)
         }
@@ -89,6 +97,8 @@ class MainActivity : FragmentActivity() {
             val appLockConfig by vm.appLockConfig.collectAsState()
             val isAppLocked by vm.isAppLocked.collectAsState()
             val bridgeStatus by vm.bridgeStatus.collectAsState()
+            val callUiState by CallStateManager.uiState.collectAsState()
+            val linkState by CallStateManager.linkState.collectAsState()
             val updateState by vm.updateState.collectAsState()
             val showUpdatePrompt by vm.showUpdatePrompt.collectAsState()
             var setupDone by remember { mutableStateOf(initialSetupDone) }
@@ -98,6 +108,10 @@ class MainActivity : FragmentActivity() {
 
             LaunchedEffect(appLockConfig) {
                 AppLockManager.applyWindowSecureFlag(this@MainActivity, appLockConfig)
+            }
+
+            LaunchedEffect(stealth.offlineMode, stealth.callBackendMode, stealth.callingLinked) {
+                CallStateManager.onConfigChanged(stealth)
             }
 
             LaunchedEffect(requestedChatJid, setupDone, bridgeStatus.isLoggedIn, isAppLocked) {
@@ -136,8 +150,44 @@ class MainActivity : FragmentActivity() {
             ) {
                 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
                 val motionScheme = MaterialTheme.motionScheme
+                val shouldHostWarmWebView = setupDone &&
+                    bridgeStatus.isLoggedIn &&
+                    !stealth.offlineMode &&
+                    ((stealth.callingLinked && stealth.callBackendMode != CallBackendMode.OFF) ||
+                        linkState != WebLinkState.UNINITIALIZED)
+                var warmHostContainer by remember { mutableStateOf<FrameLayout?>(null) }
 
-                if (!setupDone) {
+                LaunchedEffect(shouldHostWarmWebView, callUiState.phase, warmHostContainer) {
+                    val container = warmHostContainer ?: return@LaunchedEffect
+                    if (shouldHostWarmWebView && callUiState.phase == CallPhase.IDLE) {
+                        CallStateManager.attachWebViewHost(container, showVideoSurface = false)
+                    }
+                }
+
+                Box(modifier = Modifier.fillMaxSize()) {
+                    if (shouldHostWarmWebView) {
+                        AndroidView(
+                            factory = { ctx ->
+                                FrameLayout(ctx).apply {
+                                    isClickable = false
+                                    isFocusable = false
+                                    importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                                    warmHostContainer = this
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        DisposableEffect(warmHostContainer) {
+                            val container = warmHostContainer
+                            onDispose {
+                                if (container != null) {
+                                    CallStateManager.detachWebViewHost(container)
+                                }
+                            }
+                        }
+                    }
+
+                    if (!setupDone) {
                     FirstInstallSetupScreen(
                         onCompleteSetup = {
                             setupPrefs.edit().putBoolean("setup_completed_v1", true).apply()
@@ -185,6 +235,7 @@ class MainActivity : FragmentActivity() {
                     val groupsListState = rememberLazyListState()
                     val updatesListState = rememberLazyListState()
                     val communitiesListState = rememberLazyListState()
+                    val callsListState = rememberLazyListState()
                     val toolsListState = rememberLazyListState()
 
                     @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -276,6 +327,7 @@ class MainActivity : FragmentActivity() {
                                         groupsListState = groupsListState,
                                         updatesListState = updatesListState,
                                         communitiesListState = communitiesListState,
+                                        callsListState = callsListState,
                                         toolsListState = toolsListState
                                     )
                                 } else {
@@ -305,6 +357,7 @@ class MainActivity : FragmentActivity() {
                 if (setupDone && isAppLocked) {
                     AppLockOverlay(config = appLockConfig)
                 }
+                }
             }
         }
     }
@@ -325,6 +378,7 @@ class MainActivity : FragmentActivity() {
         super.onStart()
         AppLockManager.onAppForegrounded()
         WaRealtimeService.isUiForeground = true
+        CallStateManager.onAppForegroundChanged(true)
         val setupDone = getSharedPreferences("wupp_setup_prefs", Context.MODE_PRIVATE)
             .getBoolean("setup_completed_v1", false)
         if (setupDone) {
@@ -339,6 +393,7 @@ class MainActivity : FragmentActivity() {
         super.onStop()
         AppLockManager.onAppBackgrounded()
         WaRealtimeService.isUiForeground = false
+        CallStateManager.onAppForegroundChanged(false)
         WuppUpdater.onAppBackgrounded()
     }
 }

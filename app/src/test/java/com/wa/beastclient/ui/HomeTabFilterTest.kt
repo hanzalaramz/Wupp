@@ -47,18 +47,24 @@ class HomeTabFilterTest {
     @Test
     fun homeTabPagerMapping_handlesUnifiedAndSeparatedLayouts() {
         val unified = resolveHomeTabOrder(separateGroupsAndChats = false)
-        assertEquals(listOf(0, 1, 2, 3), unified)
+        assertEquals(listOf(0, 1, 2, 5, 3), unified)
         assertEquals(1, resolvePagerIndexForTab(unified, 1))
         assertEquals(0, resolvePagerIndexForTab(unified, 4))
+        assertEquals(3, resolvePagerIndexForTab(unified, 5))
+        assertEquals(4, resolvePagerIndexForTab(unified, 3))
         assertEquals(2, resolveTabIdForPagerIndex(unified, 2))
+        assertEquals(5, resolveTabIdForPagerIndex(unified, 3))
         assertEquals(0, resolveTabIdForPagerIndex(unified, 99))
 
         val separated = resolveHomeTabOrder(separateGroupsAndChats = true)
-        assertEquals(listOf(0, 4, 1, 2, 3), separated)
+        assertEquals(listOf(0, 4, 1, 2, 5, 3), separated)
         assertEquals(1, resolvePagerIndexForTab(separated, 4))
         assertEquals(2, resolvePagerIndexForTab(separated, 1))
+        assertEquals(4, resolvePagerIndexForTab(separated, 5))
+        assertEquals(5, resolvePagerIndexForTab(separated, 3))
         assertEquals(4, resolveTabIdForPagerIndex(separated, 1))
-        assertEquals(3, resolveTabIdForPagerIndex(separated, 4))
+        assertEquals(5, resolveTabIdForPagerIndex(separated, 4))
+        assertEquals(3, resolveTabIdForPagerIndex(separated, 5))
     }
 
     @Test

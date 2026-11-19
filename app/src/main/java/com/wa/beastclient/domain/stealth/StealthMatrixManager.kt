@@ -28,6 +28,17 @@ enum class AutoDownloadNetwork(val label: String) {
     ROAMING("When roaming")
 }
 
+enum class CallBackendMode(val storageKey: String, val title: String, val subtitle: String) {
+    OFF("OFF", "Off (Official WhatsApp Handoff)", "0 MB RAM · Opens or declines calls without background WebView"),
+    SMART_WARM("SMART_WARM", "Smart Warm (Battery Saver)", "Warms engine while using Wupp + 10m after backgrounding, then 0 MB idle"),
+    ALWAYS_READY("ALWAYS_READY", "Always Ready (Recommended)", "Keeps calling engine connected 24/7 for instant incoming & outgoing calls");
+
+    companion object {
+        fun fromStorageKey(raw: String?): CallBackendMode =
+            entries.firstOrNull { it.storageKey.equals(raw, ignoreCase = true) } ?: OFF
+    }
+}
+
 data class ChatWallpaperOverride(
     val uri: String = "",
     val dim: Float = 0.28f,
@@ -82,7 +93,9 @@ data class GlobalStealthConfig(
     val mediaVisibilityInGallery: Boolean = true,
     val hiddenGalleryJids: Set<String> = emptySet(),
     val visibleGalleryJids: Set<String> = emptySet(),
-    val primaryLastSeenEpochMs: Long = System.currentTimeMillis()
+    val primaryLastSeenEpochMs: Long = System.currentTimeMillis(),
+    val callBackendMode: CallBackendMode = CallBackendMode.OFF,
+    val callingLinked: Boolean = false
 )
 
 data class EffectiveChatPrivacy(
@@ -162,6 +175,8 @@ object StealthMatrixManager {
     private const val KEY_HIDDEN_GALLERY_JIDS = "hidden_gallery_jids"
     private const val KEY_VISIBLE_GALLERY_JIDS = "visible_gallery_jids"
     private const val KEY_PRIMARY_HEARTBEAT_MS = "primary_last_seen_ms"
+    private const val KEY_CALL_BACKEND_MODE = "call_backend_mode"
+    private const val KEY_CALLING_LINKED = "calling_webview_linked"
 
     private const val FOURTEEN_DAYS_MS = 14L * 24L * 60L * 60L * 1000L
     private const val WARNING_THRESHOLD_DAYS = 10
@@ -250,7 +265,9 @@ object StealthMatrixManager {
                 mediaVisibilityInGallery = prefs.getBoolean(KEY_MEDIA_VISIBILITY, true),
                 hiddenGalleryJids = prefs.getStringSet(KEY_HIDDEN_GALLERY_JIDS, emptySet())?.toSet() ?: emptySet(),
                 visibleGalleryJids = prefs.getStringSet(KEY_VISIBLE_GALLERY_JIDS, emptySet())?.toSet() ?: emptySet(),
-                primaryLastSeenEpochMs = prefs.getLong(KEY_PRIMARY_HEARTBEAT_MS, now)
+                primaryLastSeenEpochMs = prefs.getLong(KEY_PRIMARY_HEARTBEAT_MS, now),
+                callBackendMode = CallBackendMode.fromStorageKey(prefs.getString(KEY_CALL_BACKEND_MODE, null)),
+                callingLinked = prefs.getBoolean(KEY_CALLING_LINKED, false)
             )
             initialized = true
         }
@@ -307,6 +324,8 @@ object StealthMatrixManager {
                 .putStringSet(KEY_HIDDEN_GALLERY_JIDS, updated.hiddenGalleryJids.toSet())
                 .putStringSet(KEY_VISIBLE_GALLERY_JIDS, updated.visibleGalleryJids.toSet())
                 .putLong(KEY_PRIMARY_HEARTBEAT_MS, updated.primaryLastSeenEpochMs)
+                .putString(KEY_CALL_BACKEND_MODE, updated.callBackendMode.storageKey)
+                .putBoolean(KEY_CALLING_LINKED, updated.callingLinked)
                 .apply()
         }
     }

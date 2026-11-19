@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -267,6 +268,7 @@ fun WuppGlassNavBar(
     groupsLabel: String = "Groups",
     updatesLabel: String = "Updates",
     communitiesLabel: String = "Communities",
+    callsLabel: String = "Calls",
     settingsLabel: String = "Settings",
     modifier: Modifier = Modifier
 ) {
@@ -279,6 +281,7 @@ fun WuppGlassNavBar(
         groupsLabel,
         updatesLabel,
         communitiesLabel,
+        callsLabel,
         settingsLabel
     ) {
         buildList {
@@ -288,12 +291,14 @@ fun WuppGlassNavBar(
             }
             add(GlassNavTab(1, updatesLabel, drawableRes = R.drawable.vec_ic_status))
             add(GlassNavTab(2, communitiesLabel, drawableRes = R.drawable.vec_ic_avatar_community))
+            add(GlassNavTab(5, callsLabel, imageVector = Icons.Rounded.Call))
             add(GlassNavTab(3, settingsLabel, imageVector = Icons.Rounded.Shield))
         }
     }
     val fiveTabs = tabs.size >= 5
-    val labelFontSize = if (fiveTabs) 9.5.sp else 10.5.sp
-    val classicLabelFontSize = if (fiveTabs) 9.5.sp else 11.sp
+    val sixTabs = tabs.size >= 6
+    val labelFontSize = if (sixTabs) 8.8.sp else if (fiveTabs) 9.5.sp else 10.5.sp
+    val classicLabelFontSize = if (sixTabs) 8.8.sp else if (fiveTabs) 9.5.sp else 11.sp
 
     if (classicMode) {
         androidx.compose.material3.Surface(
@@ -307,7 +312,7 @@ fun WuppGlassNavBar(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(64.dp)
-                        .padding(horizontal = if (fiveTabs) 2.dp else 6.dp),
+                        .padding(horizontal = if (sixTabs) 1.dp else if (fiveTabs) 2.dp else 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     tabs.forEach { tab ->
@@ -324,7 +329,7 @@ fun WuppGlassNavBar(
                                 modifier = Modifier
                                     .clip(CircleShape)
                                     .background(if (selected) colors.pillActiveBg else Color.Transparent)
-                                    .padding(horizontal = if (fiveTabs) 12.dp else 16.dp, vertical = 5.dp),
+                                    .padding(horizontal = if (sixTabs) 10.dp else if (fiveTabs) 12.dp else 16.dp, vertical = 5.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 if (tab.drawableRes != null) {
@@ -487,7 +492,7 @@ fun WuppGlassNavBar(
                 )
             )
             .navigationBarsPadding()
-            .padding(horizontal = if (fiveTabs) 10.dp else 14.dp, vertical = 10.dp)
+            .padding(horizontal = if (sixTabs) 6.dp else if (fiveTabs) 10.dp else 14.dp, vertical = 10.dp)
     ) {
         BoxWithConstraints(
             modifier = Modifier

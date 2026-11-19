@@ -184,6 +184,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val allContacts: StateFlow<List<ContactEntity>> = dao.observeContacts()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
+    val callLogs: StateFlow<List<MessageEntity>> = dao.observeCallLogs()
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
     val recentStickers: StateFlow<List<MessageEntity>> = dao.observeRecentStickers()
         .map { list ->
             list.filter { !it.localMediaPath.isNullOrBlank() && File(it.localMediaPath).exists() }

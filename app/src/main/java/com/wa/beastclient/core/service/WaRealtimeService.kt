@@ -27,6 +27,7 @@ import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import com.wa.beastclient.MainActivity
 import com.wa.beastclient.R
+import com.wa.beastclient.core.calling.CallStateManager
 import com.wa.beastclient.data.db.ChatEntity
 import com.wa.beastclient.data.db.ContactEntity
 import com.wa.beastclient.data.db.GroupReceiptEntity
@@ -207,6 +208,7 @@ class WaRealtimeService : Service() {
         dao = WaUiDatabase.getInstance(applicationContext).waDao()
         EagerMediaVault.ensureDirectories(applicationContext)
         StealthMatrixManager.init(applicationContext)
+        CallStateManager.init(applicationContext)
         SoundPoolManager.init(applicationContext)
 
         serviceScope.launch {
@@ -644,6 +646,14 @@ class WaRealtimeService : Service() {
             "CHAT_META_UPDATE" -> handleChatMetaUpdate(json)
             "PROFILE_UPDATE" -> handleProfileUpdate(json)
             "STICKER_ACTION" -> handleStickerAction(json)
+            "CALL_INCOMING" -> handleGoCallIncoming(json)
+            "CALL_TERMINATED" -> CallStateManager.onGoCallTerminated(
+                callId = json.optString("callId"),
+                reason = json.optString("reason")
+            )
+            "CALL_ACCEPTED_ELSEWHERE" -> CallStateManager.onGoCallAcceptedElsewhere(
+                callId = json.optString("callId")
+            )
             "BRIDGE_LOG" -> {
                 val lvl = json.optString("level", "INFO")
                 val mod = json.optString("module", "Go")
@@ -1685,6 +1695,42 @@ class WaRealtimeService : Service() {
         }
     }
 
+    private suspend fun handleGoCallIncoming(json: JSONObject) {
+        val callId = json.optString("callId")
+        val fromJid = stripJidDevice(json.optString("fromJid"))
+        val rawCallerJid = stripJidDevice(json.optString("callerJid"))
+        val rawAltJid = stripJidDevice(json.optString("callerAltJid"))
+        val callerJid = canonicalizeAndMergeAlias(rawCallerJid, rawAltJid).ifBlank { rawCallerJid }
+        val chatJid = stripJidDevice(json.optString("chatJid")).ifBlank { callerJid }
+        val isVideo = json.optBoolean("isVideo", false)
+        val isGroup = json.optBoolean("isGroup", false)
+        val isNotice = json.optBoolean("isNotice", false)
+
+        val peerChat = dao.getChat(chatJid) ?: dao.getChat(callerJid)
+        val callerChat = dao.getChat(callerJid) ?: dao.getChat(rawAltJid)
+        val resolvedName = listOfNotNull(
+            peerChat?.name?.takeIf { it.isNotBlank() && !isNumericOrPhoneString(it) },
+            callerChat?.name?.takeIf { it.isNotBlank() && !isNumericOrPhoneString(it) },
+            pushnameCache[callerJid],
+            pushnameCache[chatJid],
+            peerChat?.name?.takeIf { it.isNotBlank() },
+            callerChat?.name?.takeIf { it.isNotBlank() }
+        ).firstOrNull().orEmpty()
+        val avatarPath = peerChat?.avatarPath ?: callerChat?.avatarPath
+
+        CallStateManager.onGoIncomingCall(
+            callId = callId,
+            fromJid = fromJid,
+            callerJid = callerJid,
+            callerAltJid = rawAltJid,
+            peerName = resolvedName,
+            peerAvatarPath = avatarPath,
+            isVideo = isVideo,
+            isGroup = isGroup,
+            isNotice = isNotice
+        )
+    }
+
     private fun handleStickerAction(json: JSONObject) {
         val sha = json.optString("fileEncSha256").takeIf { it.isNotBlank() }
         val isFav = json.optBoolean("isFavorite", false)
@@ -2092,6 +2138,7 @@ class WaRealtimeService : Service() {
             val appCtx = context.applicationContext
             StealthMatrixManager.init(appCtx)
             StealthMatrixManager.updateConfig { it.copy(offlineMode = enabled) }
+            CallStateManager.onConfigChanged(StealthMatrixManager.config.value)
             val svc = instance
             val loggedIn = _bridgeStatus.value.isLoggedIn || runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)
             if (enabled) {
@@ -2187,6 +2234,17 @@ class WaRealtimeService : Service() {
             if (jidsCsv.isBlank()) return "{}"
             return runCatching { Whatsbridge.resolveParticipantNamesJson(jidsCsv) }
                 .getOrDefault("{}")
+        }
+
+        fun rejectCallViaGoBridge(callFromJid: String, callId: String) {
+            if (callFromJid.isBlank() || callId.isBlank()) return
+            companionScope.launch {
+                runCatching {
+                    Whatsbridge::class.java
+                        .getMethod("rejectCall", String::class.java, String::class.java)
+                        .invoke(null, callFromJid, callId)
+                }
+            }
         }
 
         fun getGroupParticipants(groupJid: String): List<String> {

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.4] - 2026-11-19
+
+### ✨ Features
+- 📞 **Calls Tab & Calling (Beta):** Added a Calls tab with one-time 8-digit device linking, Always Ready mode, and native-style voice and video calls.
+
 ## [0.3.5-pre.3] - 2026-11-19
 
 ### 🛠️ Fixes

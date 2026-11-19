@@ -17,6 +17,7 @@
     <string name="nav_groups">Groups</string>
     <string name="nav_updates">Updates</string>
     <string name="nav_communities">Communities</string>
+    <string name="nav_calls">Calls</string>
     <string name="nav_settings">Settings</string>
     <string name="home_search_placeholder">Search chats or contacts…</string>
     <string name="home_archived_chats">Archived</string>

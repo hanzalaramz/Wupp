@@ -3079,62 +3079,209 @@ func handleWhatsmeowEvent(rawEvt any) {
 	case *events.CallOffer:
 		mu.Lock()
 		cCli := client
+		cCtx := baseCtx
 		mu.Unlock()
-		chatJID := evt.GroupJID
-		if chatJID.IsEmpty() {
-			chatJID = evt.From
+		isVideo := false
+		if evt.Data != nil {
+			_, isVideo = evt.Data.GetOptionalChildByTag("video")
 		}
-		if chatJID.IsEmpty() {
-			chatJID = evt.CallCreator
+		emitIncomingCallSignal(cCli, cCtx, evt.BasicCallMeta, isVideo, false, true)
+
+	case *events.CallOfferNotice:
+		mu.Lock()
+		cCli := client
+		cCtx := baseCtx
+		mu.Unlock()
+		isVideo := strings.EqualFold(evt.Media, "video")
+		isNoticeGroup := strings.EqualFold(evt.Type, "group") || !evt.GroupJID.IsEmpty()
+		emitIncomingCallSignal(cCli, cCtx, evt.BasicCallMeta, isVideo, isNoticeGroup, false)
+
+	case *events.CallAccept:
+		tsMs := evt.Timestamp.UnixMilli()
+		if tsMs <= 0 {
+			tsMs = time.Now().UnixMilli()
 		}
-		if !chatJID.IsEmpty() {
-			isVideo := false
-			if evt.Data != nil {
-				_, isVideo = evt.Data.GetOptionalChildByTag("video")
-			}
-			title := "Voice call"
-			if isVideo {
-				title = "Video call"
-			}
-			tsMs := evt.Timestamp.UnixMilli()
-			if tsMs <= 0 {
-				tsMs = time.Now().UnixMilli()
-			}
-			callID := evt.CallID
-			if callID == "" {
-				callID = fmt.Sprintf("call_%d", tsMs)
-			} else {
-				callID = "call_" + callID
-			}
-			normChat := normalizeUserJID(cCli, chatJID.String())
-			normSender := normalizeUserJID(cCli, evt.CallCreator.String())
-			if normSender == "" {
-				normSender = normChat
-			}
-			emitJSON("MESSAGE_UPSERT", map[string]any{
-				"id":                callID,
-				"chatJid":           normChat,
-				"senderJid":         normSender,
-				"senderName":        "",
-				"isFromMe":          false,
-				"isGroup":           chatJID.Server == types.GroupServer,
-				"timestamp":         tsMs,
-				"body":              title + "|Incoming call",
-				"msgType":           "CALL",
-				"mimeType":          "",
-				"durationSec":       0,
-				"fileSize":          0,
-				"isViewOnce":        false,
-				"viewOnceState":     "NONE",
-				"isEphemeral":       false,
-				"ephemeralDuration": 0,
-				"quotedId":          "",
-				"quotedSender":      "",
-				"quotedBody":        "",
-				"mentionsCsv":       "",
-			})
+		emitJSON("CALL_ACCEPTED_ELSEWHERE", map[string]any{
+			"callId":    evt.CallID,
+			"fromJid":   evt.From.ToNonAD().String(),
+			"timestamp": tsMs,
+		})
+
+	case *events.CallTerminate:
+		tsMs := evt.Timestamp.UnixMilli()
+		if tsMs <= 0 {
+			tsMs = time.Now().UnixMilli()
+		}
+		emitJSON("CALL_TERMINATED", map[string]any{
+			"callId":    evt.CallID,
+			"fromJid":   evt.From.ToNonAD().String(),
+			"reason":    evt.Reason,
+			"timestamp": tsMs,
+		})
+
+	case *events.CallReject:
+		tsMs := evt.Timestamp.UnixMilli()
+		if tsMs <= 0 {
+			tsMs = time.Now().UnixMilli()
+		}
+		emitJSON("CALL_TERMINATED", map[string]any{
+			"callId":    evt.CallID,
+			"fromJid":   evt.From.ToNonAD().String(),
+			"reason":    "rejected",
+			"timestamp": tsMs,
+		})
+	}
+}
+
+func resolveIncomingCallFields(
+	cli *whatsmeow.Client,
+	ctx context.Context,
+	meta types.BasicCallMeta,
+	forceGroup bool,
+) (chatJID types.JID, normChat string, normSender string, altSender string, isGroup bool, tsMs int64) {
+	chatJID = meta.GroupJID
+	if chatJID.IsEmpty() {
+		chatJID = meta.From
+	}
+	if chatJID.IsEmpty() {
+		chatJID = meta.CallCreator
+	}
+	tsMs = meta.Timestamp.UnixMilli()
+	if tsMs <= 0 {
+		tsMs = time.Now().UnixMilli()
+	}
+	if chatJID.IsEmpty() {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	isGroup = forceGroup || chatJID.Server == types.GroupServer || !meta.GroupJID.IsEmpty()
+	if isGroup {
+		normChat = chatJID.ToNonAD().String()
+	} else {
+		canonChat, _ := canonicalizeDMChatJID(ctx, cli, chatJID)
+		normChat = canonChat.String()
+		if normChat == "" {
+			normChat = normalizeUserJID(cli, chatJID.String())
 		}
 	}
+	creator := meta.CallCreator
+	if creator.IsEmpty() {
+		creator = meta.From
+	}
+	if !meta.CallCreator.IsEmpty() && !meta.CallCreatorAlt.IsEmpty() && cli != nil && cli.Store != nil && cli.Store.LIDs != nil {
+		switch {
+		case meta.CallCreator.Server == types.HiddenUserServer && meta.CallCreatorAlt.Server == types.DefaultUserServer:
+			_ = cli.Store.LIDs.PutLIDMapping(ctx, meta.CallCreator.ToNonAD(), meta.CallCreatorAlt.ToNonAD())
+		case meta.CallCreatorAlt.Server == types.HiddenUserServer && meta.CallCreator.Server == types.DefaultUserServer:
+			_ = cli.Store.LIDs.PutLIDMapping(ctx, meta.CallCreatorAlt.ToNonAD(), meta.CallCreator.ToNonAD())
+		}
+	}
+	canonSender, altSenderJID := canonicalizeDMChatJID(ctx, cli, creator)
+	normSender = canonSender.String()
+	if normSender == "" {
+		normSender = normalizeUserJID(cli, creator.String())
+	}
+	altSender = altSenderJID.String()
+	if altSender == "" && !meta.CallCreatorAlt.IsEmpty() {
+		altSender = meta.CallCreatorAlt.ToNonAD().String()
+	}
+	if normSender == "" {
+		normSender = normChat
+	}
+	return
+}
+
+func emitIncomingCallSignal(
+	cli *whatsmeow.Client,
+	ctx context.Context,
+	meta types.BasicCallMeta,
+	isVideo bool,
+	isNoticeGroup bool,
+	emitChatBubble bool,
+) {
+	chatJID, normChat, normSender, altSender, isGroup, tsMs := resolveIncomingCallFields(cli, ctx, meta, isNoticeGroup)
+	if chatJID.IsEmpty() || normChat == "" {
+		return
+	}
+	fromJID := meta.From.ToNonAD().String()
+	if fromJID == "" {
+		fromJID = normSender
+	}
+	emitJSON("CALL_INCOMING", map[string]any{
+		"callId":       meta.CallID,
+		"fromJid":      fromJID,
+		"callerJid":    normSender,
+		"callerAltJid": altSender,
+		"chatJid":      normChat,
+		"isVideo":      isVideo,
+		"isGroup":      isGroup,
+		"isNotice":     !emitChatBubble,
+		"timestamp":    tsMs,
+	})
+	if !emitChatBubble {
+		return
+	}
+	title := "Voice call"
+	if isVideo {
+		title = "Video call"
+	}
+	callID := meta.CallID
+	if callID == "" {
+		callID = fmt.Sprintf("call_%d", tsMs)
+	} else {
+		callID = "call_" + callID
+	}
+	emitJSON("MESSAGE_UPSERT", map[string]any{
+		"id":                callID,
+		"chatJid":           normChat,
+		"senderJid":         normSender,
+		"senderName":        "",
+		"isFromMe":          false,
+		"isGroup":           isGroup,
+		"timestamp":         tsMs,
+		"body":              title + "|Incoming call",
+		"msgType":           "CALL",
+		"mimeType":          "",
+		"durationSec":       0,
+		"fileSize":          0,
+		"isViewOnce":        false,
+		"viewOnceState":     "NONE",
+		"isEphemeral":       false,
+		"ephemeralDuration": 0,
+		"quotedId":          "",
+		"quotedSender":      "",
+		"quotedBody":        "",
+		"mentionsCsv":       "",
+	})
+}
+
+// RejectCall declines an incoming 1:1 call on WhatsApp using whatsmeow signaling.
+func RejectCall(callFromJid string, callId string) error {
+	mu.Lock()
+	cli := client
+	ctx := baseCtx
+	mu.Unlock()
+	if cli == nil {
+		return errors.New("client not initialized")
+	}
+	if !cli.IsConnected() {
+		return errors.New("client not connected")
+	}
+	fromJID, err := types.ParseJID(strings.TrimSpace(callFromJid))
+	if err != nil || fromJID.IsEmpty() {
+		return fmt.Errorf("invalid caller JID: %q", callFromJid)
+	}
+	if strings.TrimSpace(callId) == "" {
+		return errors.New("callId must not be empty")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	return cli.RejectCall(reqCtx, fromJID.ToNonAD(), callId)
 }
 
 func handlePictureUpdate(evt *events.Picture) {

@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -182,14 +183,21 @@ import com.airbnb.lottie.compose.LottieCompositionSpec
 import com.airbnb.lottie.compose.LottieConstants
 import com.airbnb.lottie.compose.rememberLottieComposition
 import com.wa.beastclient.R
+import com.wa.beastclient.core.calling.CallStateManager
+import com.wa.beastclient.core.calling.extractDialablePhoneDigits
+import com.wa.beastclient.core.calling.isColdCallBlocked
+import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.data.db.ChatEntity
 import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.data.media.OutboundQualityMode
 import com.wa.beastclient.domain.security.AppLockManager
+import com.wa.beastclient.domain.stealth.CallBackendMode
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.MainViewModel
 import com.wa.beastclient.ui.QuotedSenderMeta
 import com.wa.beastclient.ui.ResolvedParticipantUi
+import com.wa.beastclient.ui.calling.ActiveCallFloatingBar
+import com.wa.beastclient.ui.calling.CallingSetupDialog
 import com.wa.beastclient.ui.components.AnimatedStickerImage
 import com.wa.beastclient.ui.components.ChatEmojiPickerDock
 import com.wa.beastclient.ui.components.ChatMediaVisibilitySelector
@@ -230,6 +238,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -286,9 +295,122 @@ fun ChatScreen(
         }
     }
     val isRecordingVoice by viewModel.isRecordingVoice.collectAsState()
+    val bridgeStatus by viewModel.bridgeStatus.collectAsState()
     val downloadingMediaIds by viewModel.downloadingMediaIds.collectAsState()
     val failedMediaIds by viewModel.failedMediaIds.collectAsState()
     val pagedItems = remember(chatJid) { viewModel.pagedMessages(chatJid) }.collectAsLazyPagingItems()
+    var showCallingSetupDialog by remember(chatJid) { mutableStateOf(false) }
+    var pendingSetupOfficialFallbackDigits by remember(chatJid) { mutableStateOf("") }
+    var pendingColdCallVideo by remember(chatJid) { mutableStateOf<Boolean?>(null) }
+    var pendingPermissionCallIsVideo by remember(chatJid) { mutableStateOf<Boolean?>(null) }
+
+    val resolvePhoneDigitsForChat: suspend () -> String = {
+        withContext(Dispatchers.IO) {
+            val direct = extractDialablePhoneDigits(chatJid)
+            if (direct.isNotEmpty()) {
+                direct
+            } else {
+                val rawJson = WaRealtimeService.resolveParticipantNamesJson(chatJid)
+                val entry = runCatching { JSONObject(rawJson).optJSONObject(chatJid) }.getOrNull()
+                val altJid = entry?.optString("altJid").orEmpty()
+                val resolvedPhone = entry?.optString("phone").orEmpty()
+                extractDialablePhoneDigits(chatJid, altJid, resolvedPhone)
+            }
+        }
+    }
+
+    val launchOutgoingCallFlow: (Boolean) -> Unit = { isVideo ->
+        val displayTitle = chat?.name?.ifBlank { chatJid.substringBefore("@") }
+            ?: chatJid.substringBefore("@")
+        val isGroup = chatJid.endsWith("@g.us")
+        scope.launch {
+            val digits = if (isGroup) "" else resolvePhoneDigitsForChat()
+            if (stealthConfig.offlineMode) {
+                Toast.makeText(context, "Disable Offline Mode to place calls", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            if (stealthConfig.callBackendMode == CallBackendMode.OFF || !stealthConfig.callingLinked) {
+                pendingSetupOfficialFallbackDigits = digits
+                showCallingSetupDialog = true
+                return@launch
+            }
+            if (!isGroup && digits.isEmpty()) {
+                Toast.makeText(context, "Unable to resolve contact phone number for calling", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            CallStateManager.startOutgoingCall(
+                context = context,
+                peerJid = chatJid,
+                peerName = displayTitle,
+                peerAvatarPath = chat?.avatarPath,
+                phoneDigits = digits,
+                isVideo = isVideo,
+                isGroup = isGroup
+            )
+        }
+    }
+
+    val proceedWithGuardsAndCall: (Boolean) -> Unit = { isVideo ->
+        runWithOutboundGuard {
+            if (isColdCallBlocked(contact?.isSaved == true, pagedItems.itemCount, chatJid.endsWith("@g.us"))) {
+                pendingColdCallVideo = isVideo
+            } else {
+                launchOutgoingCallFlow(isVideo)
+            }
+        }
+    }
+
+    val callPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val requestedVideo = pendingPermissionCallIsVideo ?: false
+        pendingPermissionCallIsVideo = null
+        val micGranted = grants[Manifest.permission.RECORD_AUDIO] == true ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val camGranted = !requestedVideo || grants[Manifest.permission.CAMERA] == true ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        if (micGranted && camGranted) {
+            proceedWithGuardsAndCall(requestedVideo)
+        } else {
+            Toast.makeText(
+                context,
+                if (requestedVideo) "Microphone & camera permissions are required for video calls"
+                else "Microphone permission is required for voice calls",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    val initiateCall: (Boolean) -> Unit = { isVideo ->
+        if (stealthConfig.offlineMode) {
+            Toast.makeText(context, "Disable Offline Mode to place calls", Toast.LENGTH_SHORT).show()
+        } else if (stealthConfig.callBackendMode == CallBackendMode.OFF || !stealthConfig.callingLinked) {
+            scope.launch {
+                pendingSetupOfficialFallbackDigits = if (chatJid.endsWith("@g.us")) "" else resolvePhoneDigitsForChat()
+                showCallingSetupDialog = true
+            }
+        } else {
+            val missing = buildList {
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    add(Manifest.permission.RECORD_AUDIO)
+                }
+                if (isVideo && ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                    add(Manifest.permission.CAMERA)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    add(Manifest.permission.BLUETOOTH_CONNECT)
+                }
+            }
+            if (missing.isEmpty()) {
+                proceedWithGuardsAndCall(isVideo)
+            } else {
+                pendingPermissionCallIsVideo = isVideo
+                callPermissionLauncher.launch(missing.toTypedArray())
+            }
+        }
+    }
     val listState = remember(chatJid) { LazyListState() }
     var scrollToBottomPending by remember(chatJid) { mutableStateOf(false) }
     var highlightedMessageId by remember(chatJid) { mutableStateOf<String?>(null) }
@@ -974,16 +1096,12 @@ fun ChatScreen(
                             }
                         } else {
                             IconButton(
-                                onClick = {
-                                    Toast.makeText(context, "Calls require official WhatsApp app", Toast.LENGTH_SHORT).show()
-                                }
+                                onClick = { initiateCall(true) }
                             ) {
                                 Icon(Icons.Rounded.Videocam, "Video call", tint = colors.textPrimary)
                             }
                             IconButton(
-                                onClick = {
-                                    Toast.makeText(context, "Calls require official WhatsApp app", Toast.LENGTH_SHORT).show()
-                                }
+                                onClick = { initiateCall(false) }
                             ) {
                                 Icon(Icons.Rounded.Call, "Voice call", tint = colors.textPrimary)
                             }
@@ -1157,6 +1275,7 @@ fun ChatScreen(
                 .navigationBarsPadding()
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
+                ActiveCallFloatingBar()
                 // Error 463 Ban Guard Banner on unsaved first-contact chats (not channels or admin-only groups)
                 if (!isChannel && !isGroupAnnounceLocked && !canSendOutbound) {
                     Row(
@@ -2467,6 +2586,51 @@ fun ChatScreen(
                 ) {
                     Text("Cancel", color = colors.textSecondary)
                 }
+            }
+        )
+    }
+
+    pendingColdCallVideo?.let { targetIsVideo ->
+        AlertDialog(
+            onDismissRequest = { pendingColdCallVideo = null },
+            containerColor = colors.elevatedBar,
+            titleContentColor = colors.textPrimary,
+            textContentColor = colors.textSecondary,
+            title = { Text("Cold-Call Safety Warning", fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    "This number isn't saved in your contacts and has zero prior chat history. Placing unsolicited calls to unsaved accounts increases WhatsApp spam/ban risk.",
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingColdCallVideo = null
+                        launchOutgoingCallFlow(targetIsVideo)
+                    }
+                ) {
+                    Text("Place Call Anyway", color = colors.antiDeleteRed, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { pendingColdCallVideo = null }
+                ) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
+            }
+        )
+    }
+
+    if (showCallingSetupDialog) {
+        CallingSetupDialog(
+            ownJid = bridgeStatus.ownJid,
+            stealth = stealthConfig,
+            onDismiss = { showCallingSetupDialog = false },
+            onCallViaOfficialApp = {
+                showCallingSetupDialog = false
+                CallStateManager.openOfficialWhatsApp(context, pendingSetupOfficialFallbackDigits)
             }
         )
     }

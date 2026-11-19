@@ -2,10 +2,12 @@ package com.wa.beastclient.ui.screens
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -53,18 +55,24 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.CallMade
+import androidx.compose.material.icons.automirrored.rounded.CallMissed
+import androidx.compose.material.icons.automirrored.rounded.CallReceived
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.BugReport
+import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Check
@@ -104,6 +112,7 @@ import androidx.compose.material.icons.rounded.TextFields
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Unarchive
 import androidx.compose.material.icons.rounded.Vibration
+import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.ViewAgenda
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Warning
@@ -181,6 +190,8 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 import com.wa.beastclient.BuildConfig
 import com.wa.beastclient.R
+import com.wa.beastclient.core.calling.CallStateManager
+import com.wa.beastclient.core.calling.extractDialablePhoneDigits
 import com.wa.beastclient.core.service.OwnProfileUi
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.core.update.UpdateUiState
@@ -192,8 +203,13 @@ import com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
 import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.domain.security.AppLockMode
 import com.wa.beastclient.domain.stealth.AutoDownloadNetwork
+import com.wa.beastclient.domain.stealth.CallBackendMode
+import com.wa.beastclient.domain.stealth.GlobalStealthConfig
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.HomeFilterChip
+import com.wa.beastclient.ui.calling.ActiveCallFloatingBar
+import com.wa.beastclient.ui.calling.CallingSetupCard
+import com.wa.beastclient.ui.calling.CallingSetupDialog
 import com.wa.beastclient.ui.components.AppLanguageDialog
 import com.wa.beastclient.ui.components.AppLockConfigDialog
 import com.wa.beastclient.ui.components.AutoDownloadNetworkDialog
@@ -252,14 +268,17 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 /** Returns the bottom-bar tab IDs in swipeable left-to-right order. */
 internal fun resolveHomeTabOrder(separateGroupsAndChats: Boolean): List<Int> =
-    if (separateGroupsAndChats) listOf(0, 4, 1, 2, 3) else listOf(0, 1, 2, 3)
+    if (separateGroupsAndChats) listOf(0, 4, 1, 2, 5, 3) else listOf(0, 1, 2, 5, 3)
 
 internal fun resolvePagerIndexForTab(tabOrder: List<Int>, tabId: Int): Int =
     tabOrder.indexOf(tabId).let { if (it >= 0) it else 0 }
@@ -279,6 +298,7 @@ fun HomeScreen(
     groupsListState: LazyListState = rememberLazyListState(),
     updatesListState: LazyListState = rememberLazyListState(),
     communitiesListState: LazyListState = rememberLazyListState(),
+    callsListState: LazyListState = rememberLazyListState(),
     toolsListState: LazyListState = rememberLazyListState()
 ) {
     val colors = LocalWaColors.current
@@ -303,6 +323,7 @@ fun HomeScreen(
     val bridgeStatus by viewModel.bridgeStatus.collectAsState()
     val heartbeat by viewModel.heartbeatStatus.collectAsState()
     val statuses by viewModel.statuses.collectAsState()
+    val callLogs by viewModel.callLogs.collectAsState()
     val downloadingMediaIds by viewModel.downloadingMediaIds.collectAsState()
     val failedMediaIds by viewModel.failedMediaIds.collectAsState()
     val voVault by viewModel.viewOnceVault.collectAsState()
@@ -365,6 +386,98 @@ fun HomeScreen(
         if (peekChat != null) lastPeekChat = peekChat
     }
     val haptics = LocalHapticFeedback.current
+    val homeScope = rememberCoroutineScope()
+    var showHomeCallingSetupDialog by remember { mutableStateOf(false) }
+    var pendingHomeCall by remember { mutableStateOf<PendingHomeCallRequest?>(null) }
+
+    val startResolvedHomeCall: (PendingHomeCallRequest) -> Unit = { req ->
+        val isGroup = req.peerJid.endsWith("@g.us")
+        homeScope.launch {
+            val digits = if (isGroup) "" else withContext(Dispatchers.IO) {
+                val direct = extractDialablePhoneDigits(req.peerJid)
+                if (direct.isNotEmpty()) {
+                    direct
+                } else {
+                    val rawJson = WaRealtimeService.resolveParticipantNamesJson(req.peerJid)
+                    val entry = runCatching { JSONObject(rawJson).optJSONObject(req.peerJid) }.getOrNull()
+                    val altJid = entry?.optString("altJid").orEmpty()
+                    val resolvedPhone = entry?.optString("phone").orEmpty()
+                    extractDialablePhoneDigits(req.peerJid, altJid, resolvedPhone)
+                }
+            }
+            if (stealth.offlineMode) {
+                Toast.makeText(context, "Disable Offline Mode to place calls", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            if (stealth.callBackendMode == CallBackendMode.OFF || !stealth.callingLinked) {
+                showHomeCallingSetupDialog = true
+                return@launch
+            }
+            if (!isGroup && digits.isEmpty()) {
+                Toast.makeText(context, "Unable to resolve contact phone number for calling", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            CallStateManager.startOutgoingCall(
+                context = context,
+                peerJid = req.peerJid,
+                peerName = req.peerName,
+                peerAvatarPath = req.avatarPath,
+                phoneDigits = digits,
+                isVideo = req.isVideo,
+                isGroup = isGroup
+            )
+        }
+    }
+
+    val homeCallPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val req = pendingHomeCall ?: return@rememberLauncherForActivityResult
+        pendingHomeCall = null
+        val micGranted = grants[Manifest.permission.RECORD_AUDIO] == true ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val camGranted = !req.isVideo || grants[Manifest.permission.CAMERA] == true ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        if (micGranted && camGranted) {
+            startResolvedHomeCall(req)
+        } else {
+            Toast.makeText(
+                context,
+                if (req.isVideo) "Microphone & camera permissions are required for video calls"
+                else "Microphone permission is required for voice calls",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    val launchHomeCall: (String, String, String?, Boolean) -> Unit = { peerJid, peerName, avatarPath, isVideo ->
+        if (stealth.offlineMode) {
+            Toast.makeText(context, "Disable Offline Mode to place calls", Toast.LENGTH_SHORT).show()
+        } else if (stealth.callBackendMode == CallBackendMode.OFF || !stealth.callingLinked) {
+            showHomeCallingSetupDialog = true
+        } else {
+            val missing = buildList {
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    add(Manifest.permission.RECORD_AUDIO)
+                }
+                if (isVideo && ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                    add(Manifest.permission.CAMERA)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    add(Manifest.permission.BLUETOOTH_CONNECT)
+                }
+            }
+            val request = PendingHomeCallRequest(peerJid, peerName, avatarPath, isVideo)
+            if (missing.isEmpty()) {
+                startResolvedHomeCall(request)
+            } else {
+                pendingHomeCall = request
+                homeCallPermissionLauncher.launch(missing.toTypedArray())
+            }
+        }
+    }
 
     val hostActivity = remember(context) { context.findFragmentActivity() }
     val lockedDeviceAuthLauncher = rememberLauncherForActivityResult(
@@ -678,6 +791,7 @@ fun HomeScreen(
                                     4 -> stringResource(R.string.nav_groups)
                                     1 -> stringResource(R.string.nav_updates)
                                     2 -> stringResource(R.string.nav_communities)
+                                    5 -> stringResource(R.string.nav_calls)
                                     else -> stringResource(R.string.nav_settings)
                                 },
                                 fontSize = 25.sp,
@@ -696,7 +810,7 @@ fun HomeScreen(
                                     modifier = Modifier.size(22.dp)
                                 )
                             }
-                        } else if (currentTab == 1 || currentTab == 2) {
+                        } else if (currentTab == 1 || currentTab == 2 || currentTab == 5) {
                             IconButton(onClick = {
                                 searchExpanded = !searchExpanded
                                 if (!searchExpanded) viewModel.updateHomeSearch("")
@@ -825,6 +939,7 @@ fun HomeScreen(
                 groupsLabel = stringResource(R.string.nav_groups),
                 updatesLabel = stringResource(R.string.nav_updates),
                 communitiesLabel = stringResource(R.string.nav_communities),
+                callsLabel = stringResource(R.string.nav_calls),
                 settingsLabel = stringResource(R.string.nav_settings)
             )
         },
@@ -964,13 +1079,17 @@ fun HomeScreen(
                 }
             }
 
-            HorizontalPager(
-                state = pagerState,
-                beyondViewportPageCount = 1,
-                userScrollEnabled = selectedChatJids.isEmpty() && peekChat == null,
-                key = { pageIndex -> resolveTabIdForPagerIndex(tabOrder, pageIndex) },
-                modifier = Modifier.fillMaxSize()
-            ) { pageIndex ->
+            Column(modifier = Modifier.fillMaxSize()) {
+                ActiveCallFloatingBar()
+                HorizontalPager(
+                    state = pagerState,
+                    beyondViewportPageCount = 1,
+                    userScrollEnabled = selectedChatJids.isEmpty() && peekChat == null,
+                    key = { pageIndex -> resolveTabIdForPagerIndex(tabOrder, pageIndex) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) { pageIndex ->
                 when (resolveTabIdForPagerIndex(tabOrder, pageIndex)) {
                     0, 4 -> {
                         val tabIndex = resolveTabIdForPagerIndex(tabOrder, pageIndex)
@@ -1046,6 +1165,21 @@ fun HomeScreen(
                         onOpenGroup = onOpenChat
                     )
 
+                    5 -> CallsTab(
+                        ownJid = bridgeStatus.ownJid,
+                        stealth = stealth,
+                        callLogs = callLogs,
+                        allChats = allChats,
+                        allContacts = allContacts,
+                        searchQuery = searchQuery,
+                        listState = callsListState,
+                        bottomPadding = contentBottomPad,
+                        showSeconds = showSeconds,
+                        onOpenChat = onOpenChat,
+                        onStartCall = launchHomeCall,
+                        onOpenCallingSettings = { showHomeCallingSetupDialog = true }
+                    )
+
                     else -> ToolsVaultTab(
                         viewModel = viewModel,
                         listState = toolsListState,
@@ -1053,6 +1187,7 @@ fun HomeScreen(
                         onOpenFeedback = { activeFeedbackType = it }
                     )
                 }
+            }
             }
         }
     }
@@ -1108,10 +1243,14 @@ fun HomeScreen(
                 onOpenContactInfo(jid)
             },
             onAudioCall = {
-                Toast.makeText(context, "Calls require official WhatsApp app", Toast.LENGTH_SHORT).show()
+                val safeTitle = target.name.ifBlank { target.jid.substringBefore("@") }
+                quickContactTarget = null
+                launchHomeCall(target.jid, safeTitle, target.avatarPath, false)
             },
             onVideoCall = {
-                Toast.makeText(context, "Calls require official WhatsApp app", Toast.LENGTH_SHORT).show()
+                val safeTitle = target.name.ifBlank { target.jid.substringBefore("@") }
+                quickContactTarget = null
+                launchHomeCall(target.jid, safeTitle, target.avatarPath, true)
             },
             onRequestFullAvatar = { viewModel.requestFullProfilePicture(target.jid) },
             onSaveAvatar = {
@@ -1397,6 +1536,441 @@ fun HomeScreen(
                 }
             }
         )
+    }
+
+    if (showHomeCallingSetupDialog) {
+        CallingSetupDialog(
+            ownJid = bridgeStatus.ownJid,
+            stealth = stealth,
+            onDismiss = { showHomeCallingSetupDialog = false }
+        )
+    }
+}
+
+private data class PendingHomeCallRequest(
+    val peerJid: String,
+    val peerName: String,
+    val avatarPath: String?,
+    val isVideo: Boolean
+)
+
+@Composable
+private fun CallsTab(
+    ownJid: String,
+    stealth: GlobalStealthConfig,
+    callLogs: List<MessageEntity>,
+    allChats: List<ChatEntity>,
+    allContacts: List<ContactEntity>,
+    searchQuery: String,
+    listState: LazyListState,
+    bottomPadding: Dp,
+    showSeconds: Boolean,
+    onOpenChat: (String) -> Unit,
+    onStartCall: (peerJid: String, peerName: String, avatarPath: String?, isVideo: Boolean) -> Unit,
+    onOpenCallingSettings: () -> Unit
+) {
+    val colors = LocalWaColors.current
+    val use24Hour = LocalWuppUse24Hour.current
+    val isCallingReady = stealth.callingLinked && stealth.callBackendMode != CallBackendMode.OFF
+
+    AnimatedContent(
+        targetState = isCallingReady,
+        transitionSpec = {
+            fadeIn(animationSpec = tween(durationMillis = 220)) togetherWith
+                fadeOut(animationSpec = tween(durationMillis = 160))
+        },
+        label = "calls_tab_setup_or_list"
+    ) { ready ->
+        if (!ready) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(
+                        start = 16.dp,
+                        top = 14.dp,
+                        end = 16.dp,
+                        bottom = bottomPadding + 18.dp
+                    ),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                CallingSetupCard(
+                    ownJid = ownJid,
+                    stealth = stealth,
+                    showCloseButton = false,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            return@AnimatedContent
+        }
+
+        val chatLookup = remember(allChats) {
+            val map = HashMap<String, ChatEntity>(allChats.size * 2)
+            for (ch in allChats) {
+                map[ch.jid] = ch
+                val bare = ch.jid.substringBefore("@").substringBefore(":")
+                if (bare.isNotBlank() && bare !in map) {
+                    map[bare] = ch
+                }
+            }
+            map
+        }
+        val contactLookup = remember(allContacts) {
+            val map = HashMap<String, ContactEntity>(allContacts.size * 2)
+            for (c in allContacts) {
+                map[c.jid] = c
+                val bare = c.jid.substringBefore("@").substringBefore(":")
+                if (bare.isNotBlank() && bare !in map) {
+                    map[bare] = c
+                }
+            }
+            map
+        }
+
+        val normalizedQuery = searchQuery.trim().lowercase()
+        val queryDigits = remember(searchQuery) { searchQuery.filter { it.isDigit() } }
+
+        val filteredLogs = remember(callLogs, chatLookup, contactLookup, normalizedQuery, queryDigits) {
+            if (normalizedQuery.isEmpty()) callLogs
+            else callLogs.filter { log ->
+                val bare = log.chatJid.substringBefore("@").substringBefore(":")
+                val peerName = chatLookup[log.chatJid]?.name?.ifBlank { null }
+                    ?: chatLookup[bare]?.name?.ifBlank { null }
+                    ?: contactLookup[log.chatJid]?.name?.ifBlank { null }
+                    ?: contactLookup[bare]?.name?.ifBlank { null }
+                    ?: log.senderName.ifBlank { bare }
+                peerName.lowercase().contains(normalizedQuery) ||
+                    log.chatJid.lowercase().contains(normalizedQuery) ||
+                    (queryDigits.length >= 3 && bare.contains(queryDigits))
+            }
+        }
+
+        val callableContacts = remember(allChats, allContacts, normalizedQuery, queryDigits) {
+            val byJid = LinkedHashMap<String, ChatEntity>(allContacts.size + allChats.size)
+            for (c in allContacts) {
+                if (c.jid.endsWith("@g.us") || c.jid.endsWith("@newsletter") ||
+                    c.jid == "status@broadcast" || c.jid.endsWith("@broadcast")
+                ) continue
+                byJid[c.jid] = ChatEntity(
+                    jid = c.jid,
+                    name = c.name,
+                    avatarPath = c.avatarPath,
+                    aboutText = c.aboutText,
+                    isFavorite = c.isSaved
+                )
+            }
+            for (ch in allChats) {
+                if (ch.isGroup || ch.isCommunityParent || ch.jid.endsWith("@newsletter") ||
+                    ch.jid == "status@broadcast" || ch.jid.endsWith("@broadcast") ||
+                    ch.isPhantomEmptyDm()
+                ) continue
+                val existing = byJid[ch.jid]
+                if (existing == null) {
+                    byJid[ch.jid] = ch
+                } else {
+                    val bare = ch.jid.substringBefore("@")
+                    val existingReal = existing.name.isNotBlank() && existing.name != bare && existing.name != ch.jid && !existing.name.startsWith("+")
+                    val chReal = ch.name.isNotBlank() && ch.name != bare && ch.name != ch.jid && !ch.name.startsWith("+")
+                    byJid[ch.jid] = existing.copy(
+                        name = when {
+                            existingReal && !chReal -> existing.name
+                            chReal -> ch.name
+                            else -> ch.name.ifBlank { existing.name }
+                        },
+                        avatarPath = ch.avatarPath?.takeIf { it.isNotBlank() } ?: existing.avatarPath,
+                        aboutText = ch.aboutText.ifBlank { existing.aboutText },
+                        lastMessageTimestamp = maxOf(existing.lastMessageTimestamp, ch.lastMessageTimestamp)
+                    )
+                }
+            }
+            val sorted = byJid.values.sortedWith(
+                compareByDescending<ChatEntity> { it.isFavorite }
+                    .thenByDescending { it.lastMessageTimestamp > 0L }
+                    .thenBy { it.name.lowercase() }
+            )
+            val narrowed = if (normalizedQuery.isEmpty()) sorted else sorted.filter { peer ->
+                peer.name.lowercase().contains(normalizedQuery) ||
+                    peer.jid.lowercase().contains(normalizedQuery) ||
+                    (queryDigits.length >= 3 && peer.jid.substringBefore("@").contains(queryDigits))
+            }
+            narrowed.take(80)
+        }
+
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 8.dp, bottom = bottomPadding + 18.dp)
+        ) {
+            item(key = "calls_mode_banner") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(
+                            if (stealth.offlineMode) colors.warningAmber.copy(alpha = 0.14f)
+                            else colors.elevatedBar
+                        )
+                        .border(
+                            0.8.dp,
+                            if (stealth.offlineMode) colors.warningAmber.copy(alpha = 0.45f)
+                            else colors.divider,
+                            RoundedCornerShape(16.dp)
+                        )
+                        .clickable { onOpenCallingSettings() }
+                        .padding(horizontal = 14.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (stealth.offlineMode) colors.warningAmber.copy(alpha = 0.2f)
+                                else colors.brightGreen.copy(alpha = 0.15f)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (stealth.offlineMode) Icons.Rounded.Flight else Icons.Rounded.Call,
+                            contentDescription = null,
+                            tint = if (stealth.offlineMode) colors.warningAmber else colors.brightGreen,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (stealth.offlineMode) "Calling Paused (Offline Mode)" else "In-App Calling Ready",
+                            color = colors.textPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = if (stealth.offlineMode) {
+                                "Turn off Offline Mode to place or receive calls"
+                            } else {
+                                "${stealth.callBackendMode.title} · Change in Settings"
+                            },
+                            color = colors.textSecondary,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Mode",
+                        color = colors.brightGreen,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            item(key = "calls_recent_header") {
+                Text(
+                    text = "Recent Calls",
+                    color = colors.textSecondary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                )
+            }
+
+            if (filteredLogs.isEmpty()) {
+                item(key = "calls_recent_empty") {
+                    Text(
+                        text = if (normalizedQuery.isNotEmpty()) {
+                            "No matching call history"
+                        } else {
+                            "No recent calls yet — tap any contact below to start a call."
+                        },
+                        color = colors.textSecondary,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
+                }
+            } else {
+                items(items = filteredLogs, key = { "call_log_${it.id}" }) { log ->
+                    val bare = log.chatJid.substringBefore("@").substringBefore(":")
+                    val chatMatch = chatLookup[log.chatJid] ?: chatLookup[bare]
+                    val contactMatch = contactLookup[log.chatJid] ?: contactLookup[bare]
+                    val displayName = chatMatch?.name?.ifBlank { null }
+                        ?: contactMatch?.name?.ifBlank { null }
+                        ?: log.senderName.ifBlank { bare }
+                    val avatarPath = chatMatch?.avatarPath?.takeIf { it.isNotBlank() } ?: contactMatch?.avatarPath
+                    val isGroup = log.chatJid.endsWith("@g.us")
+
+                    val parts = log.body.split("|", limit = 2)
+                    val callTitle = parts.getOrNull(0)?.ifBlank { "Voice call" } ?: "Voice call"
+                    val callSubtitle = parts.getOrNull(1)?.ifBlank {
+                        when {
+                            log.durationSec in 1..59 -> "${log.durationSec} sec"
+                            log.durationSec >= 60 -> "${(log.durationSec + 30) / 60} min"
+                            else -> "No answer"
+                        }
+                    } ?: "No answer"
+                    val isVideoCall = callTitle.contains("Video", ignoreCase = true)
+                    val isMissed = !log.isFromMe && (
+                        callSubtitle.contains("No answer", ignoreCase = true) ||
+                            callSubtitle.contains("Missed", ignoreCase = true) ||
+                            callSubtitle.contains("Declined", ignoreCase = true)
+                        )
+                    val directionIcon = when {
+                        isMissed -> Icons.AutoMirrored.Rounded.CallMissed
+                        log.isFromMe -> Icons.AutoMirrored.Rounded.CallMade
+                        else -> Icons.AutoMirrored.Rounded.CallReceived
+                    }
+                    val statusTint = if (isMissed) colors.antiDeleteRed else colors.brightGreen
+                    val formattedTime = formatMessageClock(
+                        log.timestamp,
+                        includeSeconds = showSeconds,
+                        use24Hour = use24Hour
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpenChat(log.chatJid) }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        WhatsAppAvatar(
+                            jid = log.chatJid,
+                            avatarPath = avatarPath,
+                            isGroup = isGroup,
+                            size = 46.dp
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = displayName,
+                                color = if (isMissed) colors.antiDeleteRed else colors.textPrimary,
+                                fontSize = 15.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = directionIcon,
+                                    contentDescription = null,
+                                    tint = statusTint,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Text(
+                                    text = "$callSubtitle · $formattedTime",
+                                    color = colors.textSecondary,
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = { onStartCall(log.chatJid, displayName, avatarPath, false) }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Call,
+                                contentDescription = "Voice call",
+                                tint = if (isVideoCall) colors.textSecondary else colors.brightGreen
+                            )
+                        }
+                        IconButton(
+                            onClick = { onStartCall(log.chatJid, displayName, avatarPath, true) }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Videocam,
+                                contentDescription = "Video call",
+                                tint = if (isVideoCall) colors.brightGreen else colors.textSecondary
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (callableContacts.isNotEmpty()) {
+                item(key = "calls_contacts_header") {
+                    Text(
+                        text = "Call a Contact",
+                        color = colors.textSecondary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(
+                            start = 16.dp,
+                            end = 16.dp,
+                            top = 16.dp,
+                            bottom = 8.dp
+                        )
+                    )
+                }
+
+                items(items = callableContacts, key = { "call_contact_${it.jid}" }) { peer ->
+                    val displayName = peer.name.ifBlank { peer.jid.substringBefore("@") }
+                    val subtitle = peer.aboutText.ifBlank {
+                        peer.jid.substringBefore("@").substringBefore(":")
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onStartCall(peer.jid, displayName, peer.avatarPath, false) }
+                            .padding(horizontal = 16.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        WhatsAppAvatar(
+                            jid = peer.jid,
+                            avatarPath = peer.avatarPath,
+                            isGroup = false,
+                            size = 44.dp
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = displayName,
+                                color = colors.textPrimary,
+                                fontSize = 15.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (subtitle.isNotBlank()) {
+                                Text(
+                                    text = subtitle,
+                                    color = colors.textSecondary,
+                                    fontSize = 12.5.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = { onStartCall(peer.jid, displayName, peer.avatarPath, false) }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Call,
+                                contentDescription = "Voice call",
+                                tint = colors.brightGreen
+                            )
+                        }
+                        IconButton(
+                            onClick = { onStartCall(peer.jid, displayName, peer.avatarPath, true) }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Videocam,
+                                contentDescription = "Video call",
+                                tint = colors.textSecondary
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -3488,6 +4062,7 @@ private fun ToolsVaultTab(
     var showLanguageDialog by remember { mutableStateOf(false) }
     var showClockFormatDialog by remember { mutableStateOf(false) }
     var showHideNotifGuide by remember { mutableStateOf(false) }
+    var showCallingSetupDialog by remember { mutableStateOf(false) }
     var isSyncNotifHidden by remember {
         mutableStateOf(WaRealtimeService.isRealtimeStatusNotificationHidden(context))
     }
@@ -3647,6 +4222,51 @@ private fun ToolsVaultTab(
                         viewModel.updateGlobalStealth { c -> c.copy(hideTypingRecording = it) }
                     }
                 )
+            }
+        }
+
+        item(key = "patch_section_calling") {
+            ExpressiveSegmentedGroup(title = "Voice & Video Calling (Beta)") {
+                val linkBadge = if (stealth.callingLinked) "Linked" else "Unlinked"
+                val statusSummary = when {
+                    stealth.offlineMode -> "Paused while Offline Mode is enabled"
+                    !stealth.callingLinked -> "Link a companion session once via 8-digit code"
+                    else -> "Active backend: ${stealth.callBackendMode.title}"
+                }
+                ExpressiveSegmentedActionRow(
+                    icon = Icons.Rounded.Call,
+                    title = "In-App Calling Setup & Mode",
+                    subtitle = statusSummary,
+                    badgeText = linkBadge,
+                    position = ExpressiveSegmentPosition.TOP,
+                    onClick = { showCallingSetupDialog = true }
+                )
+                val orderedModes = listOf(CallBackendMode.ALWAYS_READY, CallBackendMode.SMART_WARM, CallBackendMode.OFF)
+                orderedModes.forEachIndexed { index, mode ->
+                    val pos = if (index == orderedModes.lastIndex) {
+                        ExpressiveSegmentPosition.BOTTOM
+                    } else {
+                        ExpressiveSegmentPosition.MIDDLE
+                    }
+                    val selected = stealth.callBackendMode == mode
+                    ExpressiveSegmentedSwitchRow(
+                        icon = Icons.Rounded.Call,
+                        title = mode.title,
+                        subtitle = mode.subtitle,
+                        checked = selected,
+                        position = pos,
+                        onCheckedChange = { checked ->
+                            if (checked) {
+                                viewModel.updateGlobalStealth { c -> c.copy(callBackendMode = mode) }
+                                if (mode != CallBackendMode.OFF && !stealth.callingLinked) {
+                                    showCallingSetupDialog = true
+                                }
+                            } else if (selected && mode != CallBackendMode.OFF) {
+                                viewModel.updateGlobalStealth { c -> c.copy(callBackendMode = CallBackendMode.OFF) }
+                            }
+                        }
+                    )
+                }
             }
         }
 
@@ -4456,6 +5076,14 @@ private fun ToolsVaultTab(
                     Text("Cancel", color = colors.textSecondary)
                 }
             }
+        )
+    }
+
+    if (showCallingSetupDialog) {
+        CallingSetupDialog(
+            ownJid = bridgeStatus.ownJid,
+            stealth = stealth,
+            onDismiss = { showCallingSetupDialog = false }
         )
     }
 }

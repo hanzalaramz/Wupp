@@ -321,6 +321,9 @@ interface WaDao {
     @Query("SELECT * FROM messages WHERE chat_jid = :chatJid AND timestamp > :afterTimestamp ORDER BY timestamp ASC LIMIT 1")
     suspend fun getNextNewerMessage(chatJid: String, afterTimestamp: Long): MessageEntity?
 
+    @Query("SELECT * FROM messages WHERE msg_type = 'CALL' ORDER BY timestamp DESC LIMIT :limit")
+    fun observeCallLogs(limit: Int = 200): Flow<List<MessageEntity>>
+
     @Query("UPDATE chats SET avatar_path = :avatarPath WHERE jid = :jid")
     suspend fun updateChatAvatar(jid: String, avatarPath: String)
 
