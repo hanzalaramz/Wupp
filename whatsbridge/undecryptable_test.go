@@ -1,11 +1,16 @@
 package whatsbridge
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/proto/waWeb"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
@@ -251,4 +256,239 @@ func TestCancelPendingUndecryptableStopsTimer(t *testing.T) {
 	if _, ok := retryCounts.Load(testID); ok {
 		t.Fatal("expected retryCounts entry to be deleted")
 	}
+}
+
+func TestIsStatusMessageInfo(t *testing.T) {
+	if isStatusMessageInfo(nil) {
+		t.Fatal("expected nil MessageInfo to return false")
+	}
+	if !isStatusMessageInfo(&types.MessageInfo{MessageSource: types.MessageSource{Chat: types.StatusBroadcastJID}}) {
+		t.Fatal("expected status@broadcast to be treated as status")
+	}
+	nlJID := types.NewJID("120363012345678901", types.NewsletterServer)
+	if !isStatusMessageInfo(&types.MessageInfo{MessageSource: types.MessageSource{Chat: nlJID}, IsNewsletterStatus: true}) {
+		t.Fatal("expected IsNewsletterStatus to be treated as status")
+	}
+	dmJID := types.NewJID("15551234567", types.DefaultUserServer)
+	if isStatusMessageInfo(&types.MessageInfo{MessageSource: types.MessageSource{Chat: dmJID}}) {
+		t.Fatal("expected normal DM not to be treated as status")
+	}
+}
+
+func TestUnwrapAndExtractStatusWrappers(t *testing.T) {
+	img := &waE2E.ImageMessage{Caption: proto.String("Sunset")}
+	cases := []struct {
+		name string
+		msg  *waE2E.Message
+	}{
+		{
+			name: "status mention wrapper",
+			msg: &waE2E.Message{
+				StatusMentionMessage: &waE2E.FutureProofMessage{
+					Message: &waE2E.Message{ImageMessage: img},
+				},
+			},
+		},
+		{
+			name: "group status wrapper v2",
+			msg: &waE2E.Message{
+				GroupStatusMessageV2: &waE2E.FutureProofMessage{
+					Message: &waE2E.Message{ImageMessage: img},
+				},
+			},
+		},
+		{
+			name: "status add yours wrapper",
+			msg: &waE2E.Message{
+				StatusAddYours: &waE2E.FutureProofMessage{
+					Message: &waE2E.Message{ImageMessage: img},
+				},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inner, _, _, _, _ := unwrapMessageContainer(tc.msg)
+			if inner == nil || inner.GetImageMessage() != img {
+				t.Fatalf("expected unwrapped ImageMessage, got %v", inner)
+			}
+		})
+	}
+
+	body, msgType, _, _, _, _ := extractMessageContent(&waE2E.Message{
+		StatusQuotedMessage: &waE2E.StatusQuotedMessage{
+			Text: proto.String("Nice view!"),
+		},
+	})
+	if msgType != "TEXT" || body != "Nice view!" {
+		t.Fatalf("got (%q, %q), want (Nice view!, TEXT)", body, msgType)
+	}
+}
+
+func TestParseStatusWebMessageFallbacks(t *testing.T) {
+	cli := &whatsmeow.Client{
+		Store: &store.Device{
+			ID:  &types.JID{User: "15550001111", Server: types.DefaultUserServer},
+			LID: types.NewJID("999000111", types.HiddenUserServer),
+		},
+	}
+	senderStr := "15559876543@s.whatsapp.net"
+	webMsg := &waWeb.WebMessageInfo{
+		Key: &waCommon.MessageKey{
+			ID:        proto.String("st-msg-1"),
+			FromMe:    proto.Bool(false),
+			RemoteJID: proto.String(senderStr),
+		},
+		MessageTimestamp: proto.Uint64(1730000000),
+		Message: &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String("Hello status")},
+		},
+	}
+
+	parsed, err := parseStatusWebMessage(cli, types.StatusBroadcastJID, webMsg)
+	if err != nil || parsed == nil {
+		t.Fatalf("parseStatusWebMessage failed: parsed=%v err=%v", parsed, err)
+	}
+	if parsed.Info.Chat != types.StatusBroadcastJID {
+		t.Fatalf("got chat=%v, want %v", parsed.Info.Chat, types.StatusBroadcastJID)
+	}
+	if parsed.Info.Sender.String() != senderStr {
+		t.Fatalf("got sender=%v, want %s", parsed.Info.Sender, senderStr)
+	}
+}
+
+func TestScheduleAndCancelStatusRecovery(t *testing.T) {
+	const msgID = "status-recovery-test-1"
+	t.Cleanup(func() {
+		clearPendingStatusRecoveries(true)
+	})
+
+	sender := types.NewJID("15557654321", types.DefaultUserServer)
+	scheduleStatusRecovery(&events.UndecryptableMessage{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:   types.StatusBroadcastJID,
+				Sender: sender,
+			},
+			ID:        msgID,
+			Timestamp: time.Now(),
+		},
+		IsUnavailable: true,
+	})
+
+	if _, ok := pendingStatusRecovery.Load(msgID); !ok {
+		t.Fatal("expected undecryptable status@broadcast event to queue background recovery")
+	}
+
+	cancelPendingUndecryptable(msgID)
+	if _, ok := pendingStatusRecovery.Load(msgID); ok {
+		t.Fatal("expected cancelPendingUndecryptable to clear pending status recovery")
+	}
+}
+
+func TestStatusRecoveryAntiBurstGuards(t *testing.T) {
+	t.Cleanup(func() {
+		clearPendingStatusRecoveries(true)
+	})
+
+	clearPendingStatusRecoveries(true)
+	baseNow := time.Now().UnixMilli()
+
+	// 1. Reconnect settle guard blocks peer resends within 15s of connect.
+	statusRecoveryMu.Lock()
+	statusLastConnectMs = baseNow - 5_000
+	statusRecoveryMu.Unlock()
+	if ok, _, reason := reserveStatusRecoveryBudget(baseNow); ok || reason != "reconnect_settling" {
+		t.Fatalf("expected reconnect_settling block, got ok=%v reason=%q", ok, reason)
+	}
+
+	// Once settled (>= 15s), sliding-window budget allows up to statusRecoveryWindowMax requests.
+	statusRecoveryMu.Lock()
+	statusLastConnectMs = baseNow - 30_000
+	statusRecoveryMu.Unlock()
+	for i := 0; i < statusRecoveryWindowMax; i++ {
+		ok, _, reason := reserveStatusRecoveryBudget(baseNow + int64(i)*4_000)
+		if !ok {
+			t.Fatalf("expected request #%d to succeed, blocked by %q", i+1, reason)
+		}
+	}
+	if ok, _, reason := reserveStatusRecoveryBudget(baseNow + 30_000); ok || reason != "window_budget_exhausted" {
+		t.Fatalf("expected window_budget_exhausted after cap, got ok=%v reason=%q", ok, reason)
+	}
+
+	// 2. Reconnect flush cooldown prevents repeated reconnect bursts within 10m.
+	clearPendingStatusRecoveries(true)
+	if !shouldFlushStatusOnReconnect(baseNow) {
+		t.Fatal("expected initial reconnect flush to be allowed")
+	}
+	if shouldFlushStatusOnReconnect(baseNow + 60_000) {
+		t.Fatal("expected reconnect flush within 10m cooldown to be blocked")
+	}
+	if !shouldFlushStatusOnReconnect(baseNow + int64(statusReconnectFlushCooldown/time.Millisecond) + 1) {
+		t.Fatal("expected reconnect flush after 10m cooldown to be allowed")
+	}
+
+	// 3. Consecutive error backoff locks recovery after 2 send errors until 10m passes.
+	clearPendingStatusRecoveries(true)
+	recordStatusRecoveryOutcome(baseNow, errors.New("offline"))
+	recordStatusRecoveryOutcome(baseNow+100, errors.New("timeout"))
+	if ok, _, reason := reserveStatusRecoveryBudget(baseNow + 5_000); ok || reason != "error_backoff" {
+		t.Fatalf("expected error_backoff after 2 consecutive failures, got ok=%v reason=%q", ok, reason)
+	}
+	recordStatusRecoveryOutcome(baseNow+10_000, nil)
+	if ok, _, reason := reserveStatusRecoveryBudget(baseNow + 15_000); !ok {
+		t.Fatalf("expected success to reset error backoff, got reason=%q", reason)
+	}
+
+	// 4. Resolved status IDs are never re-queued for peer recovery.
+	clearPendingStatusRecoveries(true)
+	const resolvedID = "already-resolved-status-1"
+	resolvedStatusIDs.Store(resolvedID, baseNow)
+	scheduleStatusRecovery(&events.UndecryptableMessage{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: types.StatusBroadcastJID, Sender: types.NewJID("15550009999", types.DefaultUserServer)},
+			ID:            resolvedID,
+			Timestamp:     time.UnixMilli(baseNow),
+		},
+	})
+	if _, ok := pendingStatusRecovery.Load(resolvedID); ok {
+		t.Fatal("expected resolved status ID not to schedule duplicate recovery")
+	}
+}
+
+func TestResolveGroupParticipantJID(t *testing.T) {
+	lid := types.NewJID("249182736451234", types.HiddenUserServer)
+	pn := types.NewJID("15551234567", types.DefaultUserServer)
+
+	t.Run("prefers PhoneNumber when primary JID is LID", func(t *testing.T) {
+		got := resolveGroupParticipantJID(nil, nil, types.GroupParticipant{
+			JID:         lid,
+			LID:         lid,
+			PhoneNumber: pn,
+		})
+		if got != pn {
+			t.Fatalf("got %v, want %v", got, pn)
+		}
+	})
+
+	t.Run("strips device suffix from PN primary JID", func(t *testing.T) {
+		pnWithDevice := types.JID{User: "15551234567", Server: types.DefaultUserServer, Device: 4}
+		got := resolveGroupParticipantJID(nil, nil, types.GroupParticipant{
+			JID: pnWithDevice,
+		})
+		if got != pn {
+			t.Fatalf("got %v, want %v", got, pn)
+		}
+	})
+
+	t.Run("falls back to non-AD LID when PhoneNumber absent", func(t *testing.T) {
+		lidWithDevice := types.JID{User: "249182736451234", Server: types.HiddenUserServer, Device: 2}
+		got := resolveGroupParticipantJID(nil, nil, types.GroupParticipant{
+			JID: lidWithDevice,
+		})
+		if got != lid {
+			t.Fatalf("got %v, want %v", got, lid)
+		}
+	})
 }

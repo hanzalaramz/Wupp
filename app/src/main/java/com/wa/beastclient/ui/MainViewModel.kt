@@ -2,6 +2,7 @@ package com.wa.beastclient.ui
 
 import android.app.Application
 import android.content.Intent
+import android.media.MediaMetadataRetriever
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
@@ -1113,44 +1114,65 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun startVoiceRecording(hasRecordPermission: Boolean) {
-        SoundPoolManager.playPttStart()
-        val isOpusSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-        val ext = if (isOpusSupported) "ogg" else "m4a"
-        val target = File(EagerMediaVault.mediaDir(appContext), "ptt_rec_${System.currentTimeMillis()}.$ext")
-        activeRecordingFile = target
-        recordingStartMs = System.currentTimeMillis()
-        _isRecordingVoice.value = true
+        if (!hasRecordPermission) {
+            showToast("Microphone permission required to record voice notes")
+            return
+        }
+        val mediaDir = EagerMediaVault.mediaDir(appContext)
+        val ts = System.currentTimeMillis()
+        var startedRecorder: MediaRecorder? = null
+        var startedFile: File? = null
 
-        if (hasRecordPermission) {
-            runCatching {
-                val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        for ((idx, profile) in buildVoiceRecorderProfiles(Build.VERSION.SDK_INT).withIndex()) {
+            val candidate = File(mediaDir, "ptt_rec_${ts}_$idx.${profile.ext}")
+            val rec = runCatching {
+                val instance = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     MediaRecorder(appContext)
                 } else {
                     @Suppress("DEPRECATION")
                     MediaRecorder()
                 }
-                rec.apply {
+                instance.apply {
                     setAudioSource(MediaRecorder.AudioSource.MIC)
-                    if (isOpusSupported) {
+                    if (profile.isOggOpus && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         setOutputFormat(MediaRecorder.OutputFormat.OGG)
                         setAudioEncoder(MediaRecorder.AudioEncoder.OPUS)
-                        setAudioSamplingRate(16000)
-                        setAudioEncodingBitRate(32000)
                     } else {
                         setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                         setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                        setAudioSamplingRate(16000)
-                        setAudioEncodingBitRate(64000)
                     }
-                    setOutputFile(target.absolutePath)
+                    setAudioChannels(1)
+                    setAudioSamplingRate(profile.sampleRateHz)
+                    setAudioEncodingBitRate(profile.bitRate)
+                    setOutputFile(candidate.absolutePath)
                     prepare()
                     start()
                 }
-                activeRecorder = rec
+                instance
             }.onFailure {
-                activeRecorder = null
+                runCatching { candidate.delete() }
+            }.getOrNull()
+
+            if (rec != null) {
+                startedRecorder = rec
+                startedFile = candidate
+                break
             }
         }
+
+        if (startedRecorder == null || startedFile == null) {
+            activeRecorder = null
+            activeRecordingFile = null
+            _isRecordingVoice.value = false
+            showToast("Unable to access microphone to record audio")
+            return
+        }
+
+        SoundPoolManager.playPttStart()
+        activeRecorder = startedRecorder
+        activeRecordingFile = startedFile
+        recordingStartMs = System.currentTimeMillis()
+        _isRecordingVoice.value = true
     }
 
     fun cancelVoiceRecording() {
@@ -1164,41 +1186,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun stopAndSendVoiceRecording(chatJid: String) {
-        SoundPoolManager.playPttEnd()
         val rec = activeRecorder
         activeRecorder = null
-        if (rec != null) {
-            runCatching { rec.stop() }
-            runCatching { rec.release() }
-        }
-        val elapsedSec = (((System.currentTimeMillis() - recordingStartMs) / 1000L).toInt()).coerceIn(1, 300)
         val file = activeRecordingFile
         activeRecordingFile = null
         _isRecordingVoice.value = false
 
+        val elapsedMs = (System.currentTimeMillis() - recordingStartMs).coerceAtLeast(0L)
+        val stopSucceeded = if (rec != null) {
+            val ok = runCatching { rec.stop() }.isSuccess
+            runCatching { rec.release() }
+            ok
+        } else {
+            false
+        }
+
+        if (!stopSucceeded || elapsedMs < 600L || file == null || !file.exists() || file.length() <= 1024L) {
+            runCatching { file?.delete() }
+            showToast(
+                if (elapsedMs < 600L) "Hold longer to record a voice message"
+                else "Voice recording failed — please try again"
+            )
+            return
+        }
+
+        SoundPoolManager.playPttEnd()
+        val elapsedSec = ((elapsedMs + 500L) / 1000L).toInt().coerceIn(1, 300)
+
         viewModelScope.launch {
-            val audioFile = if (file != null && file.exists() && file.length() > 1024L) {
-                file
-            } else {
-                // Clean synthesized voice note fallback when mic is muted or permission declined
-                File(EagerMediaVault.mediaDir(appContext), "ptt_voice_${System.currentTimeMillis()}.wav").also { wav ->
-                    EagerMediaVault.generateSpeechCadenceWav(wav, durationSec = elapsedSec.coerceAtLeast(3))
-                }
+            val validatedDurationSec = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                probeValidRecordedAudioDurationSec(file, elapsedSec)
             }
-            val mime = when (audioFile.extension.lowercase()) {
-                "ogg" -> "audio/ogg; codecs=opus"
-                "wav" -> "audio/wav"
-                else -> "audio/mp4"
+            if (validatedDurationSec <= 0) {
+                runCatching { file.delete() }
+                showToast("Recorded voice file was unreadable — please try again")
+                return@launch
             }
+
+            val dispatch = resolveOutboundAudioDispatch(file.extension)
             WaRealtimeService.sendMediaMessage(
                 context = appContext,
                 chatJid = chatJid,
-                sourceFile = audioFile,
-                mimeType = mime,
+                sourceFile = file,
+                mimeType = dispatch.mimeType,
                 caption = "",
                 qualityMode = OutboundQualityMode.STANDARD,
-                isVoiceNote = true,
-                durationSec = elapsedSec.coerceAtLeast(2)
+                isVoiceNote = dispatch.isVoiceNote,
+                durationSec = validatedDurationSec
             ).onFailure { err ->
                 showToast(err.message ?: "Voice send failed")
             }
@@ -1495,3 +1529,81 @@ data class QuotedSenderMeta(
     val senderName: String = "",
     val isFromMe: Boolean = false
 )
+
+internal data class VoiceRecorderProfile(
+    val isOggOpus: Boolean,
+    val sampleRateHz: Int,
+    val bitRate: Int,
+    val ext: String
+)
+
+internal data class OutboundAudioDispatch(
+    val mimeType: String,
+    val isVoiceNote: Boolean
+)
+
+internal fun buildVoiceRecorderProfiles(sdkInt: Int): List<VoiceRecorderProfile> =
+    if (sdkInt >= Build.VERSION_CODES.Q) {
+        listOf(
+            VoiceRecorderProfile(isOggOpus = true, sampleRateHz = 48_000, bitRate = 32_000, ext = "ogg"),
+            VoiceRecorderProfile(isOggOpus = true, sampleRateHz = 16_000, bitRate = 24_000, ext = "ogg"),
+            VoiceRecorderProfile(isOggOpus = false, sampleRateHz = 44_100, bitRate = 64_000, ext = "m4a")
+        )
+    } else {
+        listOf(
+            VoiceRecorderProfile(isOggOpus = false, sampleRateHz = 44_100, bitRate = 64_000, ext = "m4a")
+        )
+    }
+
+internal fun resolveOutboundAudioDispatch(extension: String): OutboundAudioDispatch {
+    val cleanExt = extension.trim().lowercase()
+    return if (cleanExt == "ogg" || cleanExt == "opus") {
+        OutboundAudioDispatch(mimeType = "audio/ogg; codecs=opus", isVoiceNote = true)
+    } else {
+        // Send AAC/M4A as standard audio instead of PTT=true so WhatsApp's Opus PTT player never fails to open it.
+        OutboundAudioDispatch(mimeType = "audio/mp4", isVoiceNote = false)
+    }
+}
+
+internal fun hasValidAudioContainerHeader(extension: String, headerBytes: ByteArray): Boolean {
+    val cleanExt = extension.trim().lowercase()
+    return when (cleanExt) {
+        "ogg", "opus" -> {
+            headerBytes.size >= 4 &&
+                headerBytes[0] == 'O'.code.toByte() &&
+                headerBytes[1] == 'g'.code.toByte() &&
+                headerBytes[2] == 'g'.code.toByte() &&
+                headerBytes[3] == 'S'.code.toByte()
+        }
+        "m4a", "mp4" -> {
+            headerBytes.size >= 8 &&
+                headerBytes[4] == 'f'.code.toByte() &&
+                headerBytes[5] == 't'.code.toByte() &&
+                headerBytes[6] == 'y'.code.toByte() &&
+                headerBytes[7] == 'p'.code.toByte()
+        }
+        else -> headerBytes.size >= 8
+    }
+}
+
+private fun probeValidRecordedAudioDurationSec(file: File, fallbackElapsedSec: Int): Int {
+    if (!file.exists() || file.length() <= 1024L) return 0
+    val header = ByteArray(16)
+    val readLen = runCatching {
+        file.inputStream().use { input -> input.read(header).coerceAtLeast(0) }
+    }.getOrDefault(0)
+    if (!hasValidAudioContainerHeader(file.extension, header.copyOf(readLen))) return 0
+
+    val retriever = MediaMetadataRetriever()
+    val durationMs = try {
+        retriever.setDataSource(file.absolutePath)
+        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+    } catch (_: Throwable) {
+        -1L
+    } finally {
+        runCatching { retriever.release() }
+    }
+    if (durationMs < 0L) return 0
+    if (durationMs == 0L) return fallbackElapsedSec.coerceIn(1, 300)
+    return ((durationMs + 500L) / 1000L).toInt().coerceIn(1, 300)
+}

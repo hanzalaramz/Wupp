@@ -582,7 +582,11 @@ fun ChatScreen(
     val micPermLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
-        viewModel.toggleVoiceRecording(chatJid, granted)
+        if (granted) {
+            viewModel.toggleVoiceRecording(chatJid, true)
+        } else {
+            Toast.makeText(context, "Microphone permission required to record voice notes", Toast.LENGTH_SHORT).show()
+        }
     }
 
     LaunchedEffect(inChatQuery, showSearchInChat) {

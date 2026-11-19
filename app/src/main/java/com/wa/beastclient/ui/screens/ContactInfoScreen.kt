@@ -97,6 +97,7 @@ import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.data.db.WaUiDatabase
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.MainViewModel
+import com.wa.beastclient.ui.ResolvedParticipantUi
 import com.wa.beastclient.ui.components.ChatMediaVisibilitySelector
 import com.wa.beastclient.ui.components.FullScreenMediaViewer
 import com.wa.beastclient.ui.components.ProfilePhotoLightbox
@@ -104,6 +105,82 @@ import com.wa.beastclient.ui.components.WallpaperPickerDialog
 import com.wa.beastclient.ui.theme.LocalWaColors
 import java.io.File
 import java.util.Locale
+
+private data class MemberActionTarget(
+    val participantJid: String,
+    val chatJid: String,
+    val displayName: String,
+    val phone: String,
+    val avatarPath: String?
+)
+
+private fun stripMemberJidDevice(rawJid: String): String {
+    val trimmed = rawJid.trim()
+    val atIdx = trimmed.indexOf('@')
+    if (atIdx <= 0) return trimmed
+    val user = trimmed.substring(0, atIdx).substringBefore(':')
+    val server = trimmed.substring(atIdx + 1)
+    return if (user.isNotBlank() && server.isNotBlank()) "$user@$server" else trimmed
+}
+
+internal fun resolveMemberChatJid(
+    participantJid: String,
+    meta: ResolvedParticipantUi?
+): String {
+    val cleanPrimary = stripMemberJidDevice(participantJid)
+    if (cleanPrimary.endsWith("@s.whatsapp.net", ignoreCase = true)) {
+        return cleanPrimary
+    }
+    val cleanAlt = stripMemberJidDevice(meta?.altJid.orEmpty())
+    if (cleanAlt.endsWith("@s.whatsapp.net", ignoreCase = true)) {
+        return cleanAlt
+    }
+    val digits = meta?.phone.orEmpty().filter(Char::isDigit)
+    if (digits.length >= 7) {
+        return "$digits@s.whatsapp.net"
+    }
+    return cleanPrimary.ifBlank { participantJid.trim() }
+}
+
+internal fun resolveMemberDisplayPhone(
+    participantJid: String,
+    meta: ResolvedParticipantUi?
+): String {
+    val explicitPhone = meta?.phone?.trim().orEmpty()
+    if (explicitPhone.isNotBlank()) {
+        return explicitPhone
+    }
+    val cleanPrimary = stripMemberJidDevice(participantJid)
+    if (cleanPrimary.endsWith("@s.whatsapp.net", ignoreCase = true)) {
+        val user = cleanPrimary.substringBefore("@")
+        if (user.isNotBlank()) return "+$user"
+    }
+    val cleanAlt = stripMemberJidDevice(meta?.altJid.orEmpty())
+    if (cleanAlt.endsWith("@s.whatsapp.net", ignoreCase = true)) {
+        val user = cleanAlt.substringBefore("@")
+        if (user.isNotBlank()) return "+$user"
+    }
+    return ""
+}
+
+internal fun isGroupMemberAdmin(
+    participantJid: String,
+    resolvedChatJid: String,
+    meta: ResolvedParticipantUi?,
+    groupAdmins: Set<String>
+): Boolean {
+    if (groupAdmins.isEmpty()) return false
+    val candidates = buildList {
+        add(participantJid)
+        add(resolvedChatJid)
+        meta?.altJid?.takeIf { it.isNotBlank() }?.let(::add)
+    }.flatMap { jid ->
+        val clean = stripMemberJidDevice(jid)
+        val user = clean.substringBefore("@")
+        listOfNotNull(jid.takeIf { it.isNotBlank() }, clean.takeIf { it.isNotBlank() }, user.takeIf { it.isNotBlank() })
+    }
+    return candidates.any { it in groupAdmins }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -144,7 +221,7 @@ fun ContactInfoScreen(
     var showGhostPrivacySheet by remember { mutableStateOf(false) }
     var showMediaVisibilityDialog by remember { mutableStateOf(false) }
     var mediaViewerTarget by remember { mutableStateOf<MessageEntity?>(null) }
-    var activeMemberActionTarget by remember { mutableStateOf<Triple<String, String, String?>?>(null) }
+    var activeMemberActionTarget by remember { mutableStateOf<MemberActionTarget?>(null) }
 
     // Group participants & admin resolution
     var groupParticipants by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -154,7 +231,9 @@ fun ContactInfoScreen(
     val participantMeta by viewModel.participantMeta.collectAsState()
 
     val otherParticipants = remember(groupParticipants, participantMeta) {
-        groupParticipants.filter { participantMeta[it]?.isSelf != true }
+        groupParticipants
+            .filter { participantMeta[it]?.isSelf != true }
+            .distinctBy { resolveMemberChatJid(it, participantMeta[it]) }
     }
     val totalMembersCount = remember(otherParticipants) {
         (1 + otherParticipants.size).coerceAtLeast(1)
@@ -167,9 +246,13 @@ fun ContactInfoScreen(
             val q = memberSearchQuery.lowercase().trim()
             otherParticipants.filter { jid ->
                 val meta = participantMeta[jid]
+                val resolvedChatJid = resolveMemberChatJid(jid, meta)
                 val name = meta?.savedName?.ifBlank { meta.pushName }.orEmpty().lowercase()
-                val phone = meta?.phone.orEmpty().lowercase()
-                jid.lowercase().contains(q) || name.contains(q) || phone.contains(q)
+                val phone = resolveMemberDisplayPhone(jid, meta).lowercase()
+                jid.lowercase().contains(q) ||
+                    resolvedChatJid.lowercase().contains(q) ||
+                    name.contains(q) ||
+                    phone.contains(q)
             }
         }
     }
@@ -532,23 +615,30 @@ fun ContactInfoScreen(
                         // List of other group participants
                         items(filteredMembers, key = { it }) { participantJid ->
                             val meta = participantMeta[participantJid]
+                            val resolvedChatJid = resolveMemberChatJid(participantJid, meta)
+                            val pPhone = resolveMemberDisplayPhone(participantJid, meta)
                             val pName = meta?.savedName?.ifBlank { meta.pushName }?.takeIf { it.isNotBlank() }
-                                ?: participantJid.substringBefore("@")
-                            val pPhone = meta?.phone?.takeIf { it.isNotBlank() } ?: "+${participantJid.substringBefore("@")}"
-                            val isAdmin = groupAdmins.contains(participantJid) || groupAdmins.contains(participantJid.substringBefore("@"))
+                                ?: pPhone.ifBlank { participantJid.substringBefore("@") }
+                            val isAdmin = isGroupMemberAdmin(participantJid, resolvedChatJid, meta, groupAdmins)
 
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(colors.appSurface)
                                     .clickable {
-                                        activeMemberActionTarget = Triple(participantJid, pName, meta?.avatarPath)
+                                        activeMemberActionTarget = MemberActionTarget(
+                                            participantJid = participantJid,
+                                            chatJid = resolvedChatJid,
+                                            displayName = pName,
+                                            phone = pPhone,
+                                            avatarPath = meta?.avatarPath
+                                        )
                                     }
                                     .padding(horizontal = 16.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 WhatsAppAvatar(
-                                    jid = participantJid,
+                                    jid = resolvedChatJid,
                                     avatarPath = meta?.avatarPath,
                                     isGroup = false,
                                     size = 44.dp
@@ -564,7 +654,7 @@ fun ContactInfoScreen(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        text = pPhone,
+                                        text = pPhone.ifBlank { "Private WhatsApp ID" },
                                         color = colors.textSecondary,
                                         fontSize = 12.5.sp,
                                         maxLines = 1,
@@ -1000,7 +1090,14 @@ fun ContactInfoScreen(
     }
 
     // Member action modal sheet
-    activeMemberActionTarget?.let { (pJid, pName, pAvatar) ->
+    activeMemberActionTarget?.let { target ->
+        val liveMeta = participantMeta[target.participantJid] ?: participantMeta[target.chatJid]
+        val pChatJid = resolveMemberChatJid(target.participantJid, liveMeta).ifBlank { target.chatJid }
+        val pPhone = resolveMemberDisplayPhone(target.participantJid, liveMeta).ifBlank { target.phone }
+        val pName = liveMeta?.savedName?.ifBlank { liveMeta.pushName }?.takeIf { it.isNotBlank() }
+            ?: target.displayName
+        val pAvatar = liveMeta?.avatarPath?.takeIf { it.isNotBlank() } ?: target.avatarPath
+
         ModalBottomSheet(
             onDismissRequest = { activeMemberActionTarget = null },
             containerColor = colors.elevatedBar
@@ -1016,7 +1113,7 @@ fun ContactInfoScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     WhatsAppAvatar(
-                        jid = pJid,
+                        jid = pChatJid,
                         avatarPath = pAvatar,
                         isGroup = false,
                         size = 46.dp
@@ -1029,7 +1126,7 @@ fun ContactInfoScreen(
                             fontSize = 16.sp
                         )
                         Text(
-                            text = "+${pJid.substringBefore("@")}",
+                            text = pPhone.ifBlank { "Phone number hidden by privacy settings" },
                             color = colors.textSecondary,
                             fontSize = 13.sp
                         )
@@ -1041,7 +1138,7 @@ fun ContactInfoScreen(
                 TextButton(
                     onClick = {
                         activeMemberActionTarget = null
-                        onOpenChat(pJid)
+                        onOpenChat(pChatJid)
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -1055,22 +1152,24 @@ fun ContactInfoScreen(
                     }
                 }
 
-                TextButton(
-                    onClick = {
-                        activeMemberActionTarget = null
-                        val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cb.setPrimaryClip(ClipData.newPlainText("phone", "+${pJid.substringBefore("@")}"))
-                        Toast.makeText(context, "Phone number copied", Toast.LENGTH_SHORT).show()
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                if (pPhone.isNotBlank()) {
+                    TextButton(
+                        onClick = {
+                            activeMemberActionTarget = null
+                            val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cb.setPrimaryClip(ClipData.newPlainText("phone", pPhone))
+                            Toast.makeText(context, "Phone number copied", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(Icons.Rounded.ContentCopy, null, tint = colors.accentGreen)
-                        Text("Copy phone number", color = colors.textPrimary, fontSize = 15.sp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Rounded.ContentCopy, null, tint = colors.accentGreen)
+                            Text("Copy phone number", color = colors.textPrimary, fontSize = 15.sp)
+                        }
                     }
                 }
 

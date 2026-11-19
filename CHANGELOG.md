@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.1] - 2026-11-19
+
+### 🛠️ Fixes
+- 🎙️ **Voice Notes:** Fixed recorded voice messages failing to open in WhatsApp by enforcing valid `OGG/OPUS` mono audio and container checks.
+- 📱 **Status & Story Sync:** Unwrapped newer status formats, surfaced Channel stories in Status, fixed history/resend sender parsing, and added low-risk capped recovery for undecryptable statuses.
+- 👥 **Group Info Contacts (#82):** Resolved participant `PhoneNumber ↔ LID` mappings so selecting a group member shows and messages their real WhatsApp number instead of an `@lid`.
+
 ## [0.3.4] - 2026-11-19
 
 ### ✨ Features

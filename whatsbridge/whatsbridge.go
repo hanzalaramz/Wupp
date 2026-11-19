@@ -115,7 +115,16 @@ var (
 	verifyBulkLastMs       atomic.Int64
 	retryCounts            sync.Map
 	pendingUndecryptable   sync.Map
+	pendingStatusRecovery  sync.Map
+	resolvedStatusIDs      sync.Map
 	emittedStubIDs         sync.Map
+	statusRecoveryMu       sync.Mutex
+	statusLastConnectMs    int64
+	statusLastFlushMs      int64
+	statusLastSentMs       int64
+	statusBackoffUntilMs   int64
+	statusConsecErrs       int
+	statusSentWindowMs     []int64
 	seenMediaMap           sync.Map
 	mediaJobsById          sync.Map
 	mediaInFlight          sync.Map
@@ -182,6 +191,7 @@ func InitClient(filesDir string, callback NativeBridgeCallback) error {
 		baseCancel()
 	}
 	clearPendingUndecryptable()
+	clearPendingStatusRecoveries(true)
 	baseCtx, baseCancel = context.WithCancel(context.Background())
 	startWorkers()
 
@@ -568,6 +578,7 @@ func ConnectClient() error {
 
 func DisconnectClient() {
 	clearPendingUndecryptable()
+	clearPendingStatusRecoveries(false)
 	mu.Lock()
 	cli := client
 	mu.Unlock()
@@ -2177,6 +2188,34 @@ func SubscribeContactPresence(jidStr string) error {
 	return cli.SubscribePresence(ctx, jid)
 }
 
+func resolveGroupParticipantJID(ctx context.Context, cli *whatsmeow.Client, p types.GroupParticipant) types.JID {
+	primary := p.JID.ToNonAD()
+	pn := p.PhoneNumber.ToNonAD()
+	lid := p.LID.ToNonAD()
+	if pn.IsEmpty() && primary.Server == types.DefaultUserServer {
+		pn = primary
+	}
+	if lid.IsEmpty() && primary.Server == types.HiddenUserServer {
+		lid = primary
+	}
+	if cli != nil && cli.Store != nil && cli.Store.LIDs != nil && !lid.IsEmpty() && !pn.IsEmpty() {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		_ = cli.Store.LIDs.PutLIDMapping(ctx, lid, pn)
+	}
+	if !pn.IsEmpty() {
+		return pn
+	}
+	if !primary.IsEmpty() && cli != nil {
+		canon, _ := canonicalizeDMChatJID(ctx, cli, primary)
+		if !canon.IsEmpty() {
+			return canon
+		}
+	}
+	return primary
+}
+
 func GetGroupParticipantsJson(groupJid string) (string, error) {
 	mu.Lock()
 	cli := client
@@ -2194,8 +2233,17 @@ func GetGroupParticipantsJson(groupJid string) (string, error) {
 		return "[]", err
 	}
 	jids := make([]string, 0, len(info.Participants))
+	seen := make(map[string]bool, len(info.Participants))
 	for _, p := range info.Participants {
-		jids = append(jids, p.JID.String())
+		resolved := resolveGroupParticipantJID(ctx, cli, p)
+		if resolved.IsEmpty() {
+			continue
+		}
+		s := resolved.String()
+		if !seen[s] {
+			seen[s] = true
+			jids = append(jids, s)
+		}
 	}
 	b, _ := json.Marshal(jids)
 	return string(b), nil
@@ -2241,8 +2289,13 @@ func GetGroupInfoJson(groupJid string) (string, error) {
 		IsAnnounce: info.IsAnnounce,
 	}
 	for _, p := range info.Participants {
+		resolved := resolveGroupParticipantJID(ctx, cli, p)
+		jStr := resolved.String()
+		if jStr == "" {
+			jStr = p.JID.ToNonAD().String()
+		}
 		dto.Participants = append(dto.Participants, participantDto{
-			JID:          p.JID.String(),
+			JID:          jStr,
 			IsAdmin:      p.IsAdmin,
 			IsSuperAdmin: p.IsSuperAdmin,
 			DisplayName:  p.DisplayName,
@@ -2437,13 +2490,59 @@ func unwrapMessageContainer(m *waE2E.Message) (
 		case curr.GetBotInvokeMessage() != nil:
 			curr = curr.GetBotInvokeMessage().GetMessage()
 		case curr.GetLottieStickerMessage() != nil:
-			curr = curr.GetLottieStickerMessage().GetMessage()
+			if innerMsg := curr.GetLottieStickerMessage().GetMessage(); innerMsg != nil {
+				curr = innerMsg
+			} else {
+				return curr, isViewOnce, isEphemeral, ephemeralSec, isEdit
+			}
 		case curr.GetSpoilerMessage() != nil:
-			curr = curr.GetSpoilerMessage().GetMessage()
+			if innerMsg := curr.GetSpoilerMessage().GetMessage(); innerMsg != nil {
+				curr = innerMsg
+			} else {
+				return curr, isViewOnce, isEphemeral, ephemeralSec, isEdit
+			}
 		case curr.GetLimitSharingMessage() != nil:
-			curr = curr.GetLimitSharingMessage().GetMessage()
+			if innerMsg := curr.GetLimitSharingMessage().GetMessage(); innerMsg != nil {
+				curr = innerMsg
+			} else {
+				return curr, isViewOnce, isEphemeral, ephemeralSec, isEdit
+			}
 		case curr.GetBotForwardedMessage() != nil:
-			curr = curr.GetBotForwardedMessage().GetMessage()
+			if innerMsg := curr.GetBotForwardedMessage().GetMessage(); innerMsg != nil {
+				curr = innerMsg
+			} else {
+				return curr, isViewOnce, isEphemeral, ephemeralSec, isEdit
+			}
+		case curr.GetStatusMentionMessage() != nil:
+			if innerMsg := curr.GetStatusMentionMessage().GetMessage(); innerMsg != nil {
+				curr = innerMsg
+			} else {
+				return curr, isViewOnce, isEphemeral, ephemeralSec, isEdit
+			}
+		case curr.GetGroupStatusMentionMessage() != nil:
+			if innerMsg := curr.GetGroupStatusMentionMessage().GetMessage(); innerMsg != nil {
+				curr = innerMsg
+			} else {
+				return curr, isViewOnce, isEphemeral, ephemeralSec, isEdit
+			}
+		case curr.GetStatusAddYours() != nil:
+			if innerMsg := curr.GetStatusAddYours().GetMessage(); innerMsg != nil {
+				curr = innerMsg
+			} else {
+				return curr, isViewOnce, isEphemeral, ephemeralSec, isEdit
+			}
+		case curr.GetGroupStatusMessage() != nil:
+			if innerMsg := curr.GetGroupStatusMessage().GetMessage(); innerMsg != nil {
+				curr = innerMsg
+			} else {
+				return curr, isViewOnce, isEphemeral, ephemeralSec, isEdit
+			}
+		case curr.GetGroupStatusMessageV2() != nil:
+			if innerMsg := curr.GetGroupStatusMessageV2().GetMessage(); innerMsg != nil {
+				curr = innerMsg
+			} else {
+				return curr, isViewOnce, isEphemeral, ephemeralSec, isEdit
+			}
 		default:
 			ephemeralSec = extractEphemeralDuration(curr)
 			if ephemeralSec > 0 {
@@ -2499,6 +2598,9 @@ func handleWhatsmeowEvent(rawEvt any) {
 		})
 
 	case *events.Connected:
+		statusRecoveryMu.Lock()
+		statusLastConnectMs = time.Now().UnixMilli()
+		statusRecoveryMu.Unlock()
 		mu.Lock()
 		cli := client
 		ctx := baseCtx
@@ -2518,6 +2620,8 @@ func handleWhatsmeowEvent(rawEvt any) {
 		go func() {
 			time.Sleep(1200 * time.Millisecond)
 			SyncContactsAndAvatars("")
+			time.Sleep(statusReconnectSettleDelay)
+			flushPendingStatusRecoveries()
 		}()
 
 	case *events.Disconnected:
@@ -3029,6 +3133,30 @@ func handlePictureUpdate(evt *events.Picture) {
 	})
 }
 
+const (
+	maxStatusRecoveryPending     = 64
+	statusRecoveryDelay          = 25 * time.Second
+	statusReconnectSettleDelay   = 15 * time.Second
+	statusReconnectFlushCooldown = 10 * time.Minute
+	statusRecoveryWindow         = 10 * time.Minute
+	statusRecoveryWindowMax      = 6
+	statusRecoveryMinGap         = 3 * time.Second
+	statusRecoveryErrBackoff     = 10 * time.Minute
+	statusRecoveryMaxConsecErr   = 2
+	statusRecoveryMaxPerSync     = 3
+)
+
+type statusRecoveryEntry struct {
+	msgID     string
+	chat      types.JID
+	sender    types.JID
+	senderAlt types.JID
+	tsMs      int64
+	timerMu   sync.Mutex
+	timer     *time.Timer
+	requested atomic.Bool
+}
+
 func clearPendingUndecryptable() {
 	pendingUndecryptable.Range(func(key, value any) bool {
 		if t, ok := value.(*time.Timer); ok && t != nil {
@@ -3037,6 +3165,305 @@ func clearPendingUndecryptable() {
 		pendingUndecryptable.Delete(key)
 		return true
 	})
+}
+
+func clearPendingStatusRecoveries(deleteEntries bool) {
+	pendingStatusRecovery.Range(func(key, value any) bool {
+		if entry, ok := value.(*statusRecoveryEntry); ok && entry != nil {
+			entry.timerMu.Lock()
+			if entry.timer != nil {
+				entry.timer.Stop()
+				entry.timer = nil
+			}
+			entry.timerMu.Unlock()
+		}
+		if deleteEntries {
+			pendingStatusRecovery.Delete(key)
+		}
+		return true
+	})
+	if deleteEntries {
+		resolvedStatusIDs.Range(func(key, _ any) bool {
+			resolvedStatusIDs.Delete(key)
+			return true
+		})
+		statusRecoveryMu.Lock()
+		statusLastConnectMs = 0
+		statusLastFlushMs = 0
+		statusLastSentMs = 0
+		statusBackoffUntilMs = 0
+		statusConsecErrs = 0
+		statusSentWindowMs = nil
+		statusRecoveryMu.Unlock()
+	}
+}
+
+func cancelPendingStatusRecovery(msgID string) {
+	if msgID == "" {
+		return
+	}
+	if val, ok := pendingStatusRecovery.LoadAndDelete(msgID); ok {
+		if entry, ok := val.(*statusRecoveryEntry); ok && entry != nil {
+			entry.timerMu.Lock()
+			if entry.timer != nil {
+				entry.timer.Stop()
+				entry.timer = nil
+			}
+			entry.timerMu.Unlock()
+		}
+	}
+}
+
+func prunePendingStatusRecoveries(nowMs int64) {
+	cutoffMs := nowMs - int64((24*time.Hour)/time.Millisecond)
+	var oldestKey string
+	oldestTs := int64(0)
+	count := 0
+	pendingStatusRecovery.Range(func(key, value any) bool {
+		entry, ok := value.(*statusRecoveryEntry)
+		if !ok || entry == nil || entry.tsMs < cutoffMs {
+			cancelPendingStatusRecovery(fmt.Sprint(key))
+			return true
+		}
+		count++
+		if oldestTs == 0 || entry.tsMs < oldestTs {
+			oldestTs = entry.tsMs
+			oldestKey = entry.msgID
+		}
+		return true
+	})
+	if count >= maxStatusRecoveryPending && oldestKey != "" {
+		cancelPendingStatusRecovery(oldestKey)
+	}
+	resolvedStatusIDs.Range(func(key, value any) bool {
+		if ts, ok := value.(int64); !ok || ts < cutoffMs {
+			resolvedStatusIDs.Delete(key)
+		}
+		return true
+	})
+}
+
+func reserveStatusRecoveryBudget(nowMs int64) (allowed bool, waitMs int64, reason string) {
+	statusRecoveryMu.Lock()
+	defer statusRecoveryMu.Unlock()
+
+	if statusBackoffUntilMs > nowMs {
+		return false, 0, "error_backoff"
+	}
+	settleMs := int64(statusReconnectSettleDelay / time.Millisecond)
+	if statusLastConnectMs > 0 && nowMs-statusLastConnectMs < settleMs {
+		return false, 0, "reconnect_settling"
+	}
+	winCutoff := nowMs - int64(statusRecoveryWindow/time.Millisecond)
+	kept := statusSentWindowMs[:0]
+	for _, ts := range statusSentWindowMs {
+		if ts >= winCutoff {
+			kept = append(kept, ts)
+		}
+	}
+	statusSentWindowMs = kept
+	if len(statusSentWindowMs) >= statusRecoveryWindowMax {
+		return false, 0, "window_budget_exhausted"
+	}
+	gapMs := int64(statusRecoveryMinGap / time.Millisecond)
+	if statusLastSentMs > 0 && nowMs-statusLastSentMs < gapMs {
+		waitMs = gapMs - (nowMs - statusLastSentMs)
+	}
+	sendTs := nowMs + waitMs
+	statusLastSentMs = sendTs
+	statusSentWindowMs = append(statusSentWindowMs, sendTs)
+	return true, waitMs, ""
+}
+
+func recordStatusRecoveryOutcome(nowMs int64, sendErr error) {
+	statusRecoveryMu.Lock()
+	defer statusRecoveryMu.Unlock()
+	if sendErr == nil {
+		statusConsecErrs = 0
+		statusBackoffUntilMs = 0
+		return
+	}
+	statusConsecErrs++
+	if statusConsecErrs >= statusRecoveryMaxConsecErr {
+		statusBackoffUntilMs = nowMs + int64(statusRecoveryErrBackoff/time.Millisecond)
+	}
+}
+
+func shouldFlushStatusOnReconnect(nowMs int64) bool {
+	statusRecoveryMu.Lock()
+	defer statusRecoveryMu.Unlock()
+	if statusBackoffUntilMs > nowMs {
+		return false
+	}
+	cooldownMs := int64(statusReconnectFlushCooldown / time.Millisecond)
+	if statusLastFlushMs > 0 && nowMs-statusLastFlushMs < cooldownMs {
+		return false
+	}
+	winCutoff := nowMs - int64(statusRecoveryWindow/time.Millisecond)
+	recent := 0
+	for _, ts := range statusSentWindowMs {
+		if ts >= winCutoff {
+			recent++
+		}
+	}
+	if recent >= statusRecoveryWindowMax {
+		return false
+	}
+	statusLastFlushMs = nowMs
+	return true
+}
+
+func pickStatusRecoverySender(ctx context.Context, cli *whatsmeow.Client, sender, senderAlt types.JID) types.JID {
+	canon, _ := canonicalizeDMChatJID(ctx, cli, sender)
+	if !canon.IsEmpty() {
+		return canon
+	}
+	if !sender.IsEmpty() {
+		return sender.ToNonAD()
+	}
+	if !senderAlt.IsEmpty() {
+		return senderAlt.ToNonAD()
+	}
+	return types.EmptyJID
+}
+
+func attemptStatusPeerRecovery(entry *statusRecoveryEntry) {
+	if entry == nil || entry.msgID == "" {
+		return
+	}
+	if _, alreadyResolved := resolvedStatusIDs.Load(entry.msgID); alreadyResolved {
+		cancelPendingStatusRecovery(entry.msgID)
+		return
+	}
+	nowMs := time.Now().UnixMilli()
+	if nowMs-entry.tsMs > int64((24*time.Hour)/time.Millisecond) {
+		cancelPendingStatusRecovery(entry.msgID)
+		return
+	}
+	mu.Lock()
+	cli := client
+	ctx := baseCtx
+	mu.Unlock()
+	if cli == nil || cli.Store == nil || cli.Store.ID == nil || !cli.IsConnected() || !cli.IsLoggedIn() {
+		// Keep unresolved entry queued so flushPendingStatusRecoveries can recover once reconnected.
+		return
+	}
+	if entry.requested.Load() {
+		return
+	}
+	allowed, waitMs, skipReason := reserveStatusRecoveryBudget(nowMs)
+	if !allowed {
+		emitJSON("BRIDGE_LOG", map[string]any{
+			"level":  "INFO",
+			"module": "StatusRecovery",
+			"msg":    fmt.Sprintf("skipped peer resend id=%s reason=%s", entry.msgID, skipReason),
+		})
+		return
+	}
+	if !entry.requested.CompareAndSwap(false, true) {
+		return
+	}
+	if waitMs > 0 {
+		time.Sleep(time.Duration(waitMs) * time.Millisecond)
+	}
+	if _, stillPending := pendingStatusRecovery.Load(entry.msgID); !stillPending {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	targetSender := pickStatusRecoverySender(reqCtx, cli, entry.sender, entry.senderAlt)
+	chat := entry.chat
+	if chat.IsEmpty() {
+		chat = types.StatusBroadcastJID
+	}
+	_, err := cli.SendMessage(
+		reqCtx,
+		cli.Store.ID.ToNonAD(),
+		cli.BuildUnavailableMessageRequest(chat, targetSender, entry.msgID),
+		whatsmeow.SendRequestExtra{Peer: true},
+	)
+	recordStatusRecoveryOutcome(time.Now().UnixMilli(), err)
+	emitJSON("BRIDGE_LOG", map[string]any{
+		"level":  "INFO",
+		"module": "StatusRecovery",
+		"msg":    fmt.Sprintf("peer status resend id=%s sender=%s err=%v", entry.msgID, targetSender.String(), err),
+	})
+}
+
+func scheduleStatusRecovery(evt *events.UndecryptableMessage) {
+	if evt == nil || evt.Info.ID == "" || evt.Info.IsFromMe || evt.Info.Chat != types.StatusBroadcastJID {
+		return
+	}
+	msgID := string(evt.Info.ID)
+	if _, alreadyResolved := resolvedStatusIDs.Load(msgID); alreadyResolved {
+		return
+	}
+	if _, exists := pendingStatusRecovery.Load(msgID); exists {
+		return
+	}
+	tsMs := evt.Info.Timestamp.UnixMilli()
+	if tsMs <= 0 {
+		tsMs = time.Now().UnixMilli()
+	}
+	nowMs := time.Now().UnixMilli()
+	if nowMs-tsMs > int64((24*time.Hour)/time.Millisecond) {
+		return
+	}
+	prunePendingStatusRecoveries(nowMs)
+	entry := &statusRecoveryEntry{
+		msgID:     msgID,
+		chat:      evt.Info.Chat,
+		sender:    evt.Info.Sender,
+		senderAlt: evt.Info.SenderAlt,
+		tsMs:      tsMs,
+	}
+	if _, loaded := pendingStatusRecovery.LoadOrStore(msgID, entry); loaded {
+		return
+	}
+	timer := time.AfterFunc(statusRecoveryDelay, func() {
+		attemptStatusPeerRecovery(entry)
+	})
+	entry.timerMu.Lock()
+	if _, stillPending := pendingStatusRecovery.Load(msgID); stillPending {
+		entry.timer = timer
+	} else {
+		timer.Stop()
+	}
+	entry.timerMu.Unlock()
+}
+
+func flushPendingStatusRecoveries() {
+	nowMs := time.Now().UnixMilli()
+	prunePendingStatusRecoveries(nowMs)
+	if !shouldFlushStatusOnReconnect(nowMs) {
+		return
+	}
+	var todo []*statusRecoveryEntry
+	pendingStatusRecovery.Range(func(_, value any) bool {
+		if entry, ok := value.(*statusRecoveryEntry); ok && entry != nil && !entry.requested.Load() {
+			if nowMs-entry.tsMs >= int64(statusRecoveryDelay/time.Millisecond) {
+				todo = append(todo, entry)
+			}
+		}
+		return true
+	})
+	if len(todo) == 0 {
+		return
+	}
+	sort.Slice(todo, func(i, j int) bool { return todo[i].tsMs > todo[j].tsMs })
+	if len(todo) > statusRecoveryMaxPerSync {
+		todo = todo[:statusRecoveryMaxPerSync]
+	}
+	for _, entry := range todo {
+		attemptStatusPeerRecovery(entry)
+	}
+}
+
+func isStatusMessageInfo(info *types.MessageInfo) bool {
+	return info != nil && (info.Chat == types.StatusBroadcastJID || info.IsNewsletterStatus)
 }
 
 func shouldIgnoreUndecryptable(evt *events.UndecryptableMessage) bool {
@@ -3070,6 +3497,7 @@ func cancelPendingUndecryptable(msgID string) {
 		}
 	}
 	retryCounts.Delete(msgID)
+	cancelPendingStatusRecovery(msgID)
 }
 
 func resolveEmittedStubIfNonVisible(msgID string, chatJid string) {
@@ -3121,6 +3549,10 @@ func processUndecryptable(evt *events.UndecryptableMessage) {
 			"reason":     "Key=0B stripped by Meta server on companion session",
 		})
 		return
+	}
+
+	if evt.Info.Chat == types.StatusBroadcastJID && !evt.Info.IsFromMe {
+		scheduleStatusRecovery(evt)
 	}
 
 	if shouldIgnoreUndecryptable(evt) {
@@ -3277,12 +3709,24 @@ func processIncomingMessage(evt *events.Message) {
 						if uErr := proto.Unmarshal(pr.GetWebMessageInfoBytes(), &webMsg); uErr != nil {
 							continue
 						}
-						parsed, pErr := cli.ParseWebMessage(types.EmptyJID, &webMsg)
+						parsedID := webMsg.GetKey().GetID()
+						chatHint := types.EmptyJID
+						if webMsg.GetKey().GetRemoteJID() == "" {
+							if _, isStatusPending := pendingStatusRecovery.Load(parsedID); isStatusPending {
+								chatHint = types.StatusBroadcastJID
+							}
+						}
+						parsed, pErr := parseStatusWebMessage(cli, chatHint, &webMsg)
 						if pErr != nil || parsed == nil {
+							emitJSON("BRIDGE_LOG", map[string]any{
+								"level":  "WARN",
+								"module": "PeerResend",
+								"msg":    fmt.Sprintf("parse failed id=%s remote=%q err=%v", parsedID, webMsg.GetKey().GetRemoteJID(), pErr),
+							})
 							continue
 						}
-						parsedID := string(parsed.Info.ID)
-						cancelPendingUndecryptable(parsedID)
+						resolvedID := string(parsed.Info.ID)
+						cancelPendingUndecryptable(resolvedID)
 						rInner, rVO, rEph, rEphSec, _ := unwrapMessageContainer(parsed.Message)
 						if parsed.IsViewOnce {
 							rVO = true
@@ -3291,19 +3735,18 @@ func processIncomingMessage(evt *events.Message) {
 							rEph = true
 						}
 						if rInner == nil {
-							resolveEmittedStubIfNonVisible(parsedID, parsed.Info.Chat.String())
+							resolveEmittedStubIfNonVisible(resolvedID, parsed.Info.Chat.String())
 							continue
 						}
-						emittedStubIDs.Delete(parsedID)
-						rPayload, rJob := buildNormalizedMessage(&parsed.Info, rInner, rVO, rEph, rEphSec)
-						if parsed.Info.Chat == types.StatusBroadcastJID {
-							enrichStatusPayload(parsed.Info.Sender, rPayload)
-							emitJSON("STATUS_UPSERT", rPayload)
+						emittedStubIDs.Delete(resolvedID)
+						if isStatusMessageInfo(&parsed.Info) {
+							_ = emitStatusFromMessage(&parsed.Info, rInner, rVO, rEph, rEphSec)
 						} else {
+							rPayload, rJob := buildNormalizedMessage(&parsed.Info, rInner, rVO, rEph, rEphSec)
 							emitJSON("MESSAGE_UPSERT", rPayload)
-						}
-						if shouldAutoDownloadMedia(rJob) {
-							enqueueMedia(rJob)
+							if shouldAutoDownloadMedia(rJob) {
+								enqueueMedia(rJob)
+							}
 						}
 					}
 				}
@@ -3375,6 +3818,11 @@ func processIncomingMessage(evt *events.Message) {
 		return
 	}
 
+	if isStatusMessageInfo(&evt.Info) {
+		_ = emitStatusFromMessage(&evt.Info, inner, isVO, isEph, ephSec)
+		return
+	}
+
 	payload, job := buildNormalizedMessage(&evt.Info, inner, isVO, isEph, ephSec)
 	if v, ok := payload["isViewOnce"].(bool); ok && v {
 		isVO = true
@@ -3391,12 +3839,7 @@ func processIncomingMessage(evt *events.Message) {
 	} else {
 		enqueueAvatarFetch(evt.Info.Chat)
 	}
-	if evt.Info.Chat == types.StatusBroadcastJID {
-		enrichStatusPayload(evt.Info.Sender, payload)
-		emitJSON("STATUS_UPSERT", payload)
-	} else {
-		emitJSON("MESSAGE_UPSERT", payload)
-	}
+	emitJSON("MESSAGE_UPSERT", payload)
 
 	if shouldAutoDownloadMedia(job) {
 		enqueueMedia(job)
@@ -3501,7 +3944,18 @@ func processHistorySync(evt *events.HistorySync) {
 
 	for _, conv := range evt.Data.GetConversations() {
 		rawChatJID, err := types.ParseJID(conv.GetID())
-		if err != nil || rawChatJID.IsEmpty() || rawChatJID == types.StatusBroadcastJID || rawChatJID.Server == types.BroadcastServer {
+		if err != nil || rawChatJID.IsEmpty() {
+			continue
+		}
+		if rawChatJID == types.StatusBroadcastJID {
+			for _, hMsg := range conv.GetMessages() {
+				if webMsg := hMsg.GetMessage(); webMsg != nil {
+					processHistoryStatus(cli, webMsg)
+				}
+			}
+			continue
+		}
+		if rawChatJID.Server == types.BroadcastServer {
 			continue
 		}
 		if cli.Store != nil && cli.Store.LIDs != nil && conv.GetPnJID() != "" && conv.GetLidJID() != "" {
@@ -3887,8 +4341,20 @@ func processHistorySync(evt *events.HistorySync) {
 		}
 	}
 
-	for _, stMsg := range evt.Data.GetStatusV3Messages() {
-		processHistoryStatus(cli, stMsg)
+	statusV3List := evt.Data.GetStatusV3Messages()
+	emittedStatusCount := 0
+	for _, stMsg := range statusV3List {
+		if processHistoryStatus(cli, stMsg) {
+			emittedStatusCount++
+		}
+	}
+	if len(statusV3List) > 0 || evt.Data.GetSyncType().String() == "INITIAL_STATUS_V3" {
+		emitJSON("BRIDGE_LOG", map[string]any{
+			"level":  "INFO",
+			"module": "HistorySync",
+			"msg": fmt.Sprintf("syncType=%s statusV3Total=%d statusEmitted=%d",
+				evt.Data.GetSyncType().String(), len(statusV3List), emittedStatusCount),
+		})
 	}
 
 	flush(true)
@@ -3907,42 +4373,114 @@ func processHistorySync(evt *events.HistorySync) {
 	}
 }
 
-func processHistoryStatus(cli *whatsmeow.Client, webMsg *waWeb.WebMessageInfo) {
+func resolveStatusFallbackParticipant(webMsg *waWeb.WebMessageInfo) string {
 	if webMsg == nil {
-		return
+		return ""
 	}
-	parsed, err := cli.ParseWebMessage(types.StatusBroadcastJID, webMsg)
+	for _, cand := range []string{
+		webMsg.GetKey().GetParticipant(),
+		webMsg.GetParticipant(),
+		webMsg.GetOriginalSelfAuthorUserJIDString(),
+	} {
+		if trimmed := strings.TrimSpace(cand); trimmed != "" {
+			return trimmed
+		}
+	}
+	if remote := strings.TrimSpace(webMsg.GetKey().GetRemoteJID()); remote != "" {
+		if rJID, err := types.ParseJID(remote); err == nil &&
+			(rJID.Server == types.DefaultUserServer || rJID.Server == types.HiddenUserServer) {
+			return remote
+		}
+	}
+	return ""
+}
+
+func parseStatusWebMessage(cli *whatsmeow.Client, chatHint types.JID, webMsg *waWeb.WebMessageInfo) (*events.Message, error) {
+	if cli == nil || webMsg == nil {
+		return nil, errors.New("nil client or webMsg")
+	}
+	targetHint := chatHint
+	if targetHint.IsEmpty() && strings.TrimSpace(webMsg.GetKey().GetRemoteJID()) == "" {
+		targetHint = types.EmptyJID
+	}
+	msgToParse := webMsg
+	if !webMsg.GetKey().GetFromMe() &&
+		strings.TrimSpace(webMsg.GetParticipant()) == "" &&
+		strings.TrimSpace(webMsg.GetKey().GetParticipant()) == "" {
+		if fallbackPart := resolveStatusFallbackParticipant(webMsg); fallbackPart != "" {
+			if cloned, ok := proto.Clone(webMsg).(*waWeb.WebMessageInfo); ok && cloned != nil {
+				if cloned.Key == nil {
+					cloned.Key = &waCommon.MessageKey{}
+				}
+				cloned.Key.Participant = proto.String(fallbackPart)
+				msgToParse = cloned
+			}
+		}
+	}
+	parsed, err := cli.ParseWebMessage(targetHint, msgToParse)
 	if err != nil || parsed == nil {
-		return
+		return nil, err
+	}
+	if parsed.Info.Chat.IsEmpty() && !chatHint.IsEmpty() {
+		parsed.Info.Chat = chatHint
 	}
 	if parsed.Info.Sender.IsEmpty() {
-		rawPart := strings.TrimSpace(webMsg.GetKey().GetParticipant())
-		if rawPart == "" {
-			rawPart = strings.TrimSpace(webMsg.GetParticipant())
-		}
-		if rawPart != "" {
+		if rawPart := resolveStatusFallbackParticipant(webMsg); rawPart != "" {
 			if pJID, pErr := types.ParseJID(rawPart); pErr == nil && !pJID.IsEmpty() {
 				parsed.Info.Sender = pJID
 			}
 		}
 	}
-	inner, isVO, isEph, ephSec, _ := unwrapMessageContainer(parsed.Message)
-	if inner == nil {
-		return
+	return parsed, nil
+}
+
+func emitStatusFromMessage(info *types.MessageInfo, inner *waE2E.Message, isVO bool, isEph bool, ephSec uint32) bool {
+	if info == nil || inner == nil {
+		return false
 	}
-	payload, job := buildNormalizedMessage(&parsed.Info, inner, isVO, isEph, ephSec)
+	payload, job := buildNormalizedMessage(info, inner, isVO, isEph, ephSec)
 	mt, _ := payload["msgType"].(string)
 	bd, _ := payload["body"].(string)
 	if !isVO && job == nil && mt == "UNKNOWN" && strings.TrimSpace(bd) == "" {
-		return
+		resolveEmittedStubIfNonVisible(string(info.ID), info.Chat.String())
+		return false
 	}
-	if !parsed.Info.Sender.IsEmpty() {
-		enrichStatusPayload(parsed.Info.Sender, payload)
+	msgID := string(info.ID)
+	resolvedStatusIDs.Store(msgID, time.Now().UnixMilli())
+	cancelPendingStatusRecovery(msgID)
+	emittedStubIDs.Delete(msgID)
+	statusSender := info.Sender
+	if statusSender.IsEmpty() && info.IsNewsletterStatus {
+		statusSender = info.Chat
+	}
+	if !statusSender.IsEmpty() {
+		enrichStatusPayload(statusSender, payload)
 	}
 	emitJSON("STATUS_UPSERT", payload)
 	if shouldAutoDownloadMedia(job) {
 		enqueueMedia(job)
 	}
+	return true
+}
+
+func processHistoryStatus(cli *whatsmeow.Client, webMsg *waWeb.WebMessageInfo) bool {
+	if webMsg == nil {
+		return false
+	}
+	parsed, err := parseStatusWebMessage(cli, types.StatusBroadcastJID, webMsg)
+	if err != nil || parsed == nil {
+		emitJSON("BRIDGE_LOG", map[string]any{
+			"level":  "WARN",
+			"module": "HistorySync",
+			"msg":    fmt.Sprintf("skipped status id=%s err=%v", webMsg.GetKey().GetID(), err),
+		})
+		return false
+	}
+	inner, isVO, isEph, ephSec, _ := unwrapMessageContainer(parsed.Message)
+	if inner == nil {
+		return false
+	}
+	return emitStatusFromMessage(&parsed.Info, inner, isVO, isEph, ephSec)
 }
 
 func isNumericOrPhoneDisplayName(name string) bool {
@@ -4113,7 +4651,7 @@ func buildNormalizedMessage(
 			FileEncSHA256: append([]byte(nil), dlMsg.GetFileEncSHA256()...),
 			FileLength:    fileSize,
 			IsViewOnce:    false,
-			IsStatus:      info.Chat == types.StatusBroadcastJID,
+			IsStatus:      isStatusMessageInfo(info),
 			IsFromMe:      info.IsFromMe,
 			IsHistorical:  isHist,
 			MetaVer:       1,
@@ -4357,6 +4895,12 @@ func extractMessageContent(m *waE2E.Message) (
 		text := joinBusinessParts(lm.GetTitle(), lm.GetDescription(), lm.GetFooterText())
 		if text != "" {
 			return text, "TEXT", "text/plain", 0, 0, nil
+		}
+		return "", "UNKNOWN", "", 0, 0, nil
+	case m.GetStatusQuotedMessage() != nil:
+		sq := m.GetStatusQuotedMessage()
+		if txt := strings.TrimSpace(sq.GetText()); txt != "" {
+			return txt, "TEXT", "text/plain", 0, 0, nil
 		}
 		return "", "UNKNOWN", "", 0, 0, nil
 	default:
