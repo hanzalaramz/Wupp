@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.2] - 2026-11-19
+
+### 🛠️ Fixes
+- 🎙️ **Voice Notes:** Fixed recorded voice messages failing to play in WhatsApp with standard Ogg/Opus voice encoding.
+- 📱 **Own Status Sync:** Added recovery for your own status uploads and fixed missing timestamps hiding stories.
+
 ## [0.3.5-pre.1] - 2026-11-19
 
 ### 🛠️ Fixes

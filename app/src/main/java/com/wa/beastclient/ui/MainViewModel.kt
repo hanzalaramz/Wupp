@@ -30,7 +30,9 @@ import com.wa.beastclient.data.db.WaUiDatabase
 import com.wa.beastclient.data.media.BuiltinSticker
 import com.wa.beastclient.data.media.CuppyPackManager
 import com.wa.beastclient.data.media.EagerMediaVault
+import com.wa.beastclient.data.media.OpusOggVoiceRecorder
 import com.wa.beastclient.data.media.OutboundQualityMode
+import com.wa.beastclient.data.media.hasExtractableAudioTrack
 import com.wa.beastclient.data.media.SoundPoolManager
 import com.wa.beastclient.data.media.StickerFavoritesStore
 import com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
@@ -170,6 +172,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isRecordingVoice = MutableStateFlow(false)
     val isRecordingVoice: StateFlow<Boolean> = _isRecordingVoice.asStateFlow()
     private var activeRecorder: MediaRecorder? = null
+    private var activeOpusRecorder: OpusOggVoiceRecorder? = null
     private var activeRecordingFile: File? = null
     private var recordingStartMs: Long = 0L
 
@@ -1120,6 +1123,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val mediaDir = EagerMediaVault.mediaDir(appContext)
         val ts = System.currentTimeMillis()
+
+        // Prefer deterministic AudioRecord + MediaCodec(audio/opus) + RFC 7845 OggOpus muxing on Android 10+
+        // so Official WhatsApp always receives spec-compliant Ogg/Opus PTT frames.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val opusFile = File(mediaDir, "ptt_rec_${ts}_opus.ogg")
+            val opusRec = OpusOggVoiceRecorder(opusFile)
+            if (opusRec.start()) {
+                SoundPoolManager.playPttStart()
+                activeOpusRecorder = opusRec
+                activeRecorder = null
+                activeRecordingFile = opusFile
+                recordingStartMs = System.currentTimeMillis()
+                _isRecordingVoice.value = true
+                return
+            } else {
+                runCatching { opusFile.delete() }
+            }
+        }
+
         var startedRecorder: MediaRecorder? = null
         var startedFile: File? = null
 
@@ -1162,6 +1184,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         if (startedRecorder == null || startedFile == null) {
             activeRecorder = null
+            activeOpusRecorder = null
             activeRecordingFile = null
             _isRecordingVoice.value = false
             showToast("Unable to access microphone to record audio")
@@ -1169,6 +1192,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         SoundPoolManager.playPttStart()
+        activeOpusRecorder = null
         activeRecorder = startedRecorder
         activeRecordingFile = startedFile
         recordingStartMs = System.currentTimeMillis()
@@ -1177,6 +1201,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelVoiceRecording() {
         SoundPoolManager.playPttCancel()
+        activeOpusRecorder?.cancelAndDelete()
+        activeOpusRecorder = null
         runCatching { activeRecorder?.stop() }
         runCatching { activeRecorder?.release() }
         activeRecorder = null
@@ -1186,6 +1212,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun stopAndSendVoiceRecording(chatJid: String) {
+        val opusRec = activeOpusRecorder
+        activeOpusRecorder = null
         val rec = activeRecorder
         activeRecorder = null
         val file = activeRecordingFile
@@ -1193,12 +1221,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isRecordingVoice.value = false
 
         val elapsedMs = (System.currentTimeMillis() - recordingStartMs).coerceAtLeast(0L)
-        val stopSucceeded = if (rec != null) {
-            val ok = runCatching { rec.stop() }.isSuccess
-            runCatching { rec.release() }
-            ok
-        } else {
-            false
+        val stopSucceeded = when {
+            opusRec != null -> opusRec.stopAndFinalize()
+            rec != null -> {
+                val ok = runCatching { rec.stop() }.isSuccess
+                runCatching { rec.release() }
+                ok
+            }
+            else -> false
         }
 
         if (!stopSucceeded || elapsedMs < 600L || file == null || !file.exists() || file.length() <= 1024L) {
@@ -1212,6 +1242,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         SoundPoolManager.playPttEnd()
         val elapsedSec = ((elapsedMs + 500L) / 1000L).toInt().coerceIn(1, 300)
+        val recordedWaveformCsv = opusRec?.waveformCsv().orEmpty()
 
         viewModelScope.launch {
             val validatedDurationSec = kotlinx.coroutines.withContext(Dispatchers.IO) {
@@ -1232,7 +1263,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 caption = "",
                 qualityMode = OutboundQualityMode.STANDARD,
                 isVoiceNote = dispatch.isVoiceNote,
-                durationSec = validatedDurationSec
+                durationSec = validatedDurationSec,
+                waveformCsvOverride = if (dispatch.isVoiceNote) recordedWaveformCsv else ""
             ).onFailure { err ->
                 showToast(err.message ?: "Voice send failed")
             }
@@ -1593,6 +1625,7 @@ private fun probeValidRecordedAudioDurationSec(file: File, fallbackElapsedSec: I
         file.inputStream().use { input -> input.read(header).coerceAtLeast(0) }
     }.getOrDefault(0)
     if (!hasValidAudioContainerHeader(file.extension, header.copyOf(readLen))) return 0
+    if (!hasExtractableAudioTrack(file)) return 0
 
     val retriever = MediaMetadataRetriever()
     val durationMs = try {

@@ -2662,7 +2662,8 @@ class WaRealtimeService : Service() {
             qualityMode: OutboundQualityMode,
             isVoiceNote: Boolean,
             durationSec: Int,
-            isViewOnce: Boolean = false
+            isViewOnce: Boolean = false,
+            waveformCsvOverride: String = ""
         ): Result<MessageEntity> = withContext(Dispatchers.IO) {
             runCatching {
                 ensureOnlineForOutbound()
@@ -2687,8 +2688,10 @@ class WaRealtimeService : Service() {
                 } else {
                     durationSec
                 }
-                val waveformCsv = if (isVoiceNote || mimeType.startsWith("audio/")) {
-                    EagerMediaVault.extract40BarWaveform(prepared.file).joinToString(",")
+                val waveformCsv = if (isVoiceNote) {
+                    waveformCsvOverride.trim().ifBlank {
+                        EagerMediaVault.extract40BarWaveform(prepared.file).joinToString(",")
+                    }
                 } else ""
                 val voActive = isViewOnce && effectiveQuality != OutboundQualityMode.GIF && (msgType == "IMAGE" || msgType == "VIDEO")
                 val wireModeWithVo = if (voActive) {

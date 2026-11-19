@@ -930,6 +930,46 @@ func buildOutboundVideoMessage(
 	return msg
 }
 
+func buildOutboundAudioMessage(
+	up whatsmeow.UploadResponse,
+	mimeType string,
+	isVoiceNote bool,
+	durationSec int,
+	waveformCsv string,
+	nowUnixSec int64,
+) *waE2E.Message {
+	sec := uint32(maxInt(durationSec, 1))
+	mimeLower := strings.ToLower(strings.TrimSpace(mimeType))
+	audioMime := strings.TrimSpace(mimeType)
+	var wf []byte
+	if isVoiceNote {
+		if strings.Contains(mimeLower, "ogg") || strings.Contains(mimeLower, "opus") || mimeLower == "" {
+			audioMime = "audio/ogg; codecs=opus"
+		}
+		wf = parseWaveformCsv(waveformCsv)
+	} else if audioMime == "" || strings.Contains(mimeLower, "m4a") {
+		audioMime = "audio/mp4"
+	}
+	audioMsg := &waE2E.AudioMessage{
+		Mimetype:          proto.String(audioMime),
+		Seconds:           &sec,
+		PTT:               proto.Bool(isVoiceNote),
+		URL:               &up.URL,
+		DirectPath:        &up.DirectPath,
+		MediaKey:          up.MediaKey,
+		FileEncSHA256:     up.FileEncSHA256,
+		FileSHA256:        up.FileSHA256,
+		FileLength:        &up.FileLength,
+		MediaKeyTimestamp: proto.Int64(nowUnixSec),
+	}
+	if len(wf) > 0 {
+		audioMsg.Waveform = wf
+	}
+	return &waE2E.Message{
+		AudioMessage: audioMsg,
+	}
+}
+
 func SendGifMessage(
 	chatJid string,
 	filePath string,
@@ -973,7 +1013,6 @@ func SendMediaMessage(
 	isViewOnce := spec.isViewOnce
 	isSticker := spec.isSticker
 	isGifPlayback := spec.isGifPlayback
-	mimeLower := strings.ToLower(strings.TrimSpace(mimeType))
 
 	up, err := cli.Upload(ctx, data, waMediaType)
 	if err != nil {
@@ -1021,28 +1060,7 @@ func SendMediaMessage(
 		case whatsmeow.MediaVideo:
 			msg = buildOutboundVideoMessage(up, mimeType, caption, durationSec, isViewOnce, isGifPlayback)
 		case whatsmeow.MediaAudio:
-			sec := uint32(maxInt(durationSec, 1))
-			wf := parseWaveformCsv(waveformCsv)
-			audioMime := mimeType
-			if isVoiceNote {
-				if strings.Contains(mimeLower, "ogg") || strings.Contains(mimeLower, "opus") || mimeLower == "" {
-					audioMime = "audio/ogg; codecs=opus"
-				}
-			}
-			msg = &waE2E.Message{
-				AudioMessage: &waE2E.AudioMessage{
-					Mimetype:      proto.String(audioMime),
-					Seconds:       &sec,
-					PTT:           proto.Bool(isVoiceNote),
-					Waveform:      wf,
-					URL:           &up.URL,
-					DirectPath:    &up.DirectPath,
-					MediaKey:      up.MediaKey,
-					FileEncSHA256: up.FileEncSHA256,
-					FileSHA256:    up.FileSHA256,
-					FileLength:    &up.FileLength,
-				},
-			}
+			msg = buildOutboundAudioMessage(up, mimeType, isVoiceNote, durationSec, waveformCsv, time.Now().Unix())
 		default:
 			msg = &waE2E.Message{
 				DocumentMessage: &waE2E.DocumentMessage{
@@ -3394,7 +3412,7 @@ func attemptStatusPeerRecovery(entry *statusRecoveryEntry) {
 }
 
 func scheduleStatusRecovery(evt *events.UndecryptableMessage) {
-	if evt == nil || evt.Info.ID == "" || evt.Info.IsFromMe || evt.Info.Chat != types.StatusBroadcastJID {
+	if evt == nil || evt.Info.ID == "" || evt.Info.Chat != types.StatusBroadcastJID {
 		return
 	}
 	msgID := string(evt.Info.ID)
@@ -3551,7 +3569,7 @@ func processUndecryptable(evt *events.UndecryptableMessage) {
 		return
 	}
 
-	if evt.Info.Chat == types.StatusBroadcastJID && !evt.Info.IsFromMe {
+	if evt.Info.Chat == types.StatusBroadcastJID {
 		scheduleStatusRecovery(evt)
 	}
 
@@ -4610,6 +4628,11 @@ func buildNormalizedMessage(
 		}
 	}
 
+	msgTsMs := info.Timestamp.UnixMilli()
+	if info.Timestamp.IsZero() || msgTsMs <= 0 {
+		msgTsMs = time.Now().UnixMilli()
+	}
+
 	payload := map[string]any{
 		"id":                string(info.ID),
 		"chatJid":           chatStr,
@@ -4619,7 +4642,7 @@ func buildNormalizedMessage(
 		"senderName":        resolvedSenderName,
 		"isFromMe":          info.IsFromMe,
 		"isGroup":           info.IsGroup,
-		"timestamp":         info.Timestamp.UnixMilli(),
+		"timestamp":         msgTsMs,
 		"body":              body,
 		"msgType":           msgType,
 		"mimeType":          mimeType,
@@ -5453,10 +5476,11 @@ func compute40BarWaveform(data []byte) string {
 }
 
 func parseWaveformCsv(csv string) []byte {
+	const targetBars = 64
 	clean := strings.TrimSpace(csv)
 	if clean != "" {
 		parts := strings.Split(clean, ",")
-		out := make([]byte, 0, len(parts))
+		raw := make([]byte, 0, len(parts))
 		for _, p := range parts {
 			if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
 				if n < 0 {
@@ -5465,15 +5489,23 @@ func parseWaveformCsv(csv string) []byte {
 				if n > 100 {
 					n = 100
 				}
-				out = append(out, byte(n))
+				raw = append(raw, byte(n))
 			}
 		}
-		if len(out) > 0 {
+		if len(raw) == targetBars {
+			return raw
+		}
+		if len(raw) > 0 {
+			out := make([]byte, targetBars)
+			for i := 0; i < targetBars; i++ {
+				srcIdx := (i * len(raw)) / targetBars
+				out[i] = raw[srcIdx]
+			}
 			return out
 		}
 	}
 	// Fallback to a clean 64-bar speech waveform so WhatsApp renders the native waveform bubble
-	def := make([]byte, 64)
+	def := make([]byte, targetBars)
 	for i := range def {
 		def[i] = byte(15 + ((i * 7) % 35) + ((i % 4) * 8))
 	}
