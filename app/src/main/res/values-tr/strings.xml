@@ -110,7 +110,9 @@
     <string name="applock_timeout_5m">5 dk</string>
     <string name="applock_timeout_30m">30 dk</string>
     <string name="applock_hide_recents_title">Son Kullanılanlarda İçeriği Gizle</string>
-    <string name="applock_hide_recents_subtitle">FLAG_SECURE ile uygulama önizlemesini ve ekran görüntüsünü engeller</string>
+    <string name="applock_hide_recents_subtitle">Android 13+ cihazlarda Son Kullanılanlar önizlemesini gizler</string>
+    <string name="settings_allow_screenshots_title">Ekran Görüntüsüne İzin Ver</string>
+    <string name="settings_allow_screenshots_subtitle">Wupp içinde her yerde ekran görüntüsü alınmasına izin verir</string>
     <string name="applock_hide_locked_chats_title">Kilitli Sohbetleri Kilit Arkasında Gizle</string>
     <string name="applock_hide_locked_chats_subtitle">WhatsApp kilitli sohbetlerini yerel olarak açılana kadar Ana Ekranda gizler</string>
     <string name="applock_set_pin_title">Özel PIN Belirle</string>

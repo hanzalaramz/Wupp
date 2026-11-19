@@ -535,8 +535,9 @@ fun OutboundMediaPreviewDialog(
                                 qualityMode = when (qualityMode) {
                                     OutboundQualityMode.STANDARD -> OutboundQualityMode.HD
                                     OutboundQualityMode.HD -> if (isViewOnce) OutboundQualityMode.STANDARD else OutboundQualityMode.ORIGINAL
-                                    OutboundQualityMode.ORIGINAL -> OutboundQualityMode.STANDARD
-                                    OutboundQualityMode.STICKER -> OutboundQualityMode.STANDARD
+                                    OutboundQualityMode.ORIGINAL,
+                                    OutboundQualityMode.STICKER,
+                                    OutboundQualityMode.GIF -> OutboundQualityMode.STANDARD
                                 }
                             }
                             .padding(horizontal = 9.dp, vertical = 5.dp),

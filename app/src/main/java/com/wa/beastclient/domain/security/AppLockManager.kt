@@ -3,6 +3,7 @@ package com.wa.beastclient.domain.security
 import android.app.Activity
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
 import android.os.SystemClock
 import android.util.Base64
 import android.view.WindowManager
@@ -40,7 +41,13 @@ data class AppLockConfig(
     val timeout: AppLockTimeout = AppLockTimeout.IMMEDIATE,
     val hideInRecents: Boolean = true,
     val hideLockedChatsBehindLock: Boolean = false,
+    val allowScreenshots: Boolean = true,
     val hasCustomPin: Boolean = false
+)
+
+internal data class WindowPrivacyPolicy(
+    val useFlagSecure: Boolean,
+    val allowRecentsScreenshot: Boolean
 )
 
 /**
@@ -53,6 +60,7 @@ object AppLockManager {
     private const val KEY_TIMEOUT = "applock_timeout"
     private const val KEY_HIDE_RECENTS = "applock_hide_recents"
     private const val KEY_HIDE_LOCKED_CHATS = "applock_hide_locked_chats"
+    private const val KEY_ALLOW_SCREENSHOTS = "applock_allow_screenshots"
     private const val KEY_PIN_SALT = "applock_pin_salt"
     private const val KEY_PIN_HASH = "applock_pin_hash"
 
@@ -90,6 +98,7 @@ object AppLockManager {
                 timeout = AppLockTimeout.fromStorageKey(prefs.getString(KEY_TIMEOUT, null)),
                 hideInRecents = prefs.getBoolean(KEY_HIDE_RECENTS, true),
                 hideLockedChatsBehindLock = prefs.getBoolean(KEY_HIDE_LOCKED_CHATS, false),
+                allowScreenshots = prefs.getBoolean(KEY_ALLOW_SCREENSHOTS, true),
                 hasCustomPin = hasPin
             )
             _config.value = loaded
@@ -211,12 +220,37 @@ object AppLockManager {
         _config.value = _config.value.copy(hideLockedChatsBehindLock = hide)
     }
 
+    fun setAllowScreenshots(allow: Boolean) {
+        prefs.edit().putBoolean(KEY_ALLOW_SCREENSHOTS, allow).apply()
+        _config.value = _config.value.copy(allowScreenshots = allow)
+    }
+
+    internal fun resolveWindowPrivacyPolicy(
+        cfg: AppLockConfig = _config.value,
+        sdkInt: Int = Build.VERSION.SDK_INT
+    ): WindowPrivacyPolicy {
+        val hideRecents = isLockActive(cfg) && cfg.hideInRecents
+        val useFlagSecure = !cfg.allowScreenshots
+        val allowRecentsScreenshot = if (sdkInt >= Build.VERSION_CODES.TIRAMISU) {
+            !hideRecents && cfg.allowScreenshots
+        } else {
+            !useFlagSecure
+        }
+        return WindowPrivacyPolicy(
+            useFlagSecure = useFlagSecure,
+            allowRecentsScreenshot = allowRecentsScreenshot
+        )
+    }
+
     fun applyWindowSecureFlag(activity: Activity, cfg: AppLockConfig = _config.value) {
-        val shouldSecure = isLockActive(cfg) && cfg.hideInRecents
-        if (shouldSecure) {
+        val policy = resolveWindowPrivacyPolicy(cfg, Build.VERSION.SDK_INT)
+        if (policy.useFlagSecure) {
             activity.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         } else {
             activity.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            runCatching { activity.setRecentsScreenshotEnabled(policy.allowRecentsScreenshot) }
         }
     }
 

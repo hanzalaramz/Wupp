@@ -1062,13 +1062,6 @@ private fun StickerPickerGridItem(
             File(path).takeIf { it.exists() && it.length() > 0L }
         }
     }
-    val bmp by produceState<ImageBitmap?>(initialValue = null, key1 = localFile?.absolutePath) {
-        value = if (localFile != null) {
-            withContext(Dispatchers.IO) {
-                runCatching { BitmapFactory.decodeFile(localFile.absolutePath)?.asImageBitmap() }.getOrNull()
-            }
-        } else null
-    }
 
     Box(
         modifier = Modifier
@@ -1081,13 +1074,20 @@ private fun StickerPickerGridItem(
             .padding(3.dp),
         contentAlignment = Alignment.Center
     ) {
-        val loaded = bmp
-        if (loaded != null) {
-            Image(
-                bitmap = loaded,
+        if (localFile != null) {
+            AnimatedStickerImage(
+                file = localFile,
                 contentDescription = "Sticker",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize()
+                maxDecodeDimPx = 220,
+                modifier = Modifier.fillMaxSize(),
+                placeholder = {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(colors.incomingBubble.copy(alpha = 0.35f))
+                    )
+                }
             )
         } else {
             Box(

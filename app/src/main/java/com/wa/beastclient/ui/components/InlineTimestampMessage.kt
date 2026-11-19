@@ -43,6 +43,7 @@ import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
 import com.wa.beastclient.ui.theme.LocalWuppChatFontScale
 import com.wa.beastclient.ui.theme.LocalWuppShowSeconds
+import com.wa.beastclient.ui.theme.LocalWuppUse24Hour
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -62,11 +63,12 @@ fun InlineTimestampMessage(
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
     val showSeconds = LocalWuppShowSeconds.current
+    val use24Hour = LocalWuppUse24Hour.current
     val fontScale = LocalWuppChatFontScale.current
     var lastLayout: TextLayoutResult? = null
 
     val displayText = msg.body
-    val timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds)
+    val timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour)
     val linkColor = colors.accentGreen
     val codeBg = colors.elevatedBar.copy(alpha = 0.65f)
     val styledText = androidx.compose.runtime.remember(displayText, linkColor, codeBg) {
@@ -90,7 +92,7 @@ fun InlineTimestampMessage(
                     modifier = Modifier.size(13.dp)
                 )
                 Text(
-                    text = "Deleted · ${formatMessageClock(msg.deletedAt.takeIf { it > 0L } ?: msg.timestamp, includeSeconds = showSeconds)}",
+                    text = "Deleted · ${formatMessageClock(msg.deletedAt.takeIf { it > 0L } ?: msg.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour)}",
                     color = colors.antiDeleteRed,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -255,10 +257,16 @@ fun DeliveryTickIcon(
 
 fun formatMessageClock(
     epochMs: Long,
-    includeSeconds: Boolean = com.wa.beastclient.domain.stealth.StealthMatrixManager.config.value.showSecondsInTimestamps
+    includeSeconds: Boolean = com.wa.beastclient.domain.stealth.StealthMatrixManager.config.value.showSecondsInTimestamps,
+    use24Hour: Boolean = com.wa.beastclient.domain.stealth.StealthMatrixManager.defaultUse24Hour()
 ): String {
     if (epochMs <= 0L) return ""
-    val pattern = if (includeSeconds) "h:mm:ss a" else "h:mm a"
+    val pattern = when {
+        use24Hour && includeSeconds -> "HH:mm:ss"
+        use24Hour -> "HH:mm"
+        includeSeconds -> "h:mm:ss a"
+        else -> "h:mm a"
+    }
     return SimpleDateFormat(pattern, Locale.getDefault()).format(Date(epochMs))
 }
 

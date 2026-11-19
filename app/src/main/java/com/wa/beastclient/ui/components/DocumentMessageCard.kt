@@ -7,7 +7,10 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color as AndroidColor
 import android.graphics.pdf.PdfRenderer
+import android.net.Uri
+import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.provider.Settings
 import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -84,6 +87,12 @@ private data class PdfFirstPagePreview(
     val pageCount: Int
 )
 
+internal fun resolveDocumentTitleLine(body: String): String =
+    body.substringBefore('\n').trim()
+
+internal fun resolveDocumentCaptionLine(body: String): String =
+    body.substringAfter('\n', "").trim()
+
 /**
  * Returns true when [msg] represents a document attachment (PDF, Office file, archive, etc.).
  */
@@ -93,6 +102,7 @@ internal fun isDocumentMessage(msg: MessageEntity): Boolean {
     if (upper == "DOCUMENT") return true
     val mime = msg.mimeType.lowercase(Locale.US)
     if (mime == "application/pdf" ||
+        mime == "application/vnd.android.package-archive" ||
         mime.startsWith("application/vnd.") ||
         mime == "application/msword" ||
         mime == "application/zip"
@@ -104,17 +114,16 @@ internal fun isDocumentMessage(msg: MessageEntity): Boolean {
             return false
         }
     }
-    val candidate = msg.body.trim()
+    val candidate = resolveDocumentTitleLine(msg.body)
     val ext = candidate.substringAfterLast('.', "").lowercase(Locale.US)
     return (msg.fileSize > 0L || !msg.localMediaPath.isNullOrBlank()) &&
         candidate.length <= 160 &&
-        !candidate.contains('\n') &&
         ext in DOC_EXTENSIONS
 }
 
 internal fun isPdfDocument(msg: MessageEntity, localFile: File? = null): Boolean {
     if (msg.mimeType.contains("pdf", ignoreCase = true)) return true
-    if (msg.body.trim().endsWith(".pdf", ignoreCase = true)) return true
+    if (resolveDocumentTitleLine(msg.body).endsWith(".pdf", ignoreCase = true)) return true
     if (localFile != null && localFile.extension.equals("pdf", ignoreCase = true)) return true
     if (localFile != null && localFile.exists() && localFile.length() >= 5L) {
         return runCatching {
@@ -126,13 +135,22 @@ internal fun isPdfDocument(msg: MessageEntity, localFile: File? = null): Boolean
     return false
 }
 
+internal fun isApkDocument(msg: MessageEntity, localFile: File? = null): Boolean {
+    val mime = msg.mimeType.trim()
+    if (mime.equals("application/vnd.android.package-archive", ignoreCase = true)) return true
+    if (resolveDocumentTitleLine(msg.body).endsWith(".apk", ignoreCase = true)) return true
+    if (localFile != null && localFile.extension.equals("apk", ignoreCase = true)) return true
+    return false
+}
+
 internal fun resolveDocumentMimeType(msg: MessageEntity, localFile: File? = null): String {
     val rawMime = msg.mimeType.trim()
     if (rawMime.isNotBlank() && !rawMime.equals("application/octet-stream", ignoreCase = true)) {
         return rawMime
     }
+    if (isApkDocument(msg, localFile)) return "application/vnd.android.package-archive"
     if (isPdfDocument(msg, localFile)) return "application/pdf"
-    val bodyExt = msg.body.trim().substringAfterLast('.', "").lowercase(Locale.US)
+    val bodyExt = resolveDocumentTitleLine(msg.body).substringAfterLast('.', "").lowercase(Locale.US)
     val fileExt = localFile?.extension?.lowercase(Locale.US).orEmpty()
     val ext = bodyExt.takeIf { it in DOC_EXTENSIONS } ?: fileExt
     if (ext.isNotBlank()) {
@@ -142,8 +160,9 @@ internal fun resolveDocumentMimeType(msg: MessageEntity, localFile: File? = null
 }
 
 internal fun resolveDocumentExtensionLabel(mimeType: String, fileName: String): String {
-    val ext = fileName.trim().substringAfterLast('.', "").lowercase(Locale.US)
+    val ext = resolveDocumentTitleLine(fileName).substringAfterLast('.', "").lowercase(Locale.US)
     return when {
+        mimeType.contains("android.package-archive", ignoreCase = true) || ext == "apk" -> "APK"
         mimeType.contains("pdf", ignoreCase = true) || ext == "pdf" -> "PDF"
         ext in DOC_EXTENSIONS -> ext.uppercase(Locale.US)
         mimeType.contains("msword", ignoreCase = true) || mimeType.contains("wordprocessingml", ignoreCase = true) -> "DOCX"
@@ -156,8 +175,8 @@ internal fun resolveDocumentExtensionLabel(mimeType: String, fileName: String): 
 }
 
 internal fun resolveDocumentDisplayName(msg: MessageEntity, mimeType: String, localFile: File?): String {
-    val body = msg.body.trim()
-    if (body.isNotBlank()) return body
+    val title = resolveDocumentTitleLine(msg.body)
+    if (title.isNotBlank()) return title
     val extLabel = resolveDocumentExtensionLabel(mimeType, localFile?.name.orEmpty()).lowercase(Locale.US)
     val safeExt = if (extLabel == "file") "bin" else extLabel
     return "Document.$safeExt"
@@ -165,9 +184,14 @@ internal fun resolveDocumentDisplayName(msg: MessageEntity, mimeType: String, lo
 
 internal fun buildDocumentExportFileName(msg: MessageEntity, localFile: File): String {
     val resolvedMime = resolveDocumentMimeType(msg, localFile)
-    val extLabel = resolveDocumentExtensionLabel(resolvedMime, msg.body).lowercase(Locale.US)
-    val fallbackExt = localFile.extension.ifBlank { if (extLabel == "file") "bin" else extLabel }
-    val rawTitle = msg.body.trim()
+    val rawName = resolveDocumentTitleLine(msg.body)
+    val extLabel = resolveDocumentExtensionLabel(resolvedMime, rawName).lowercase(Locale.US)
+    val fallbackExt = if (extLabel != "file") {
+        extLabel
+    } else {
+        localFile.extension.ifBlank { "bin" }
+    }
+    val rawTitle = rawName
         .replace(Regex("""[\\/:*?"<>|]+"""), "_")
         .take(96)
     return when {
@@ -200,11 +224,18 @@ internal fun formatDocumentMetaLine(
             sizeText.takeIf { it.isNotBlank() },
             extLabel
         ).joinToString(" · ")
-        errorMsg != null && !hasLocalFile -> listOfNotNull(
-            "Tap to retry",
-            sizeText.takeIf { it.isNotBlank() },
-            extLabel
-        ).joinToString(" · ")
+        errorMsg != null && !hasLocalFile -> {
+            val cleanErr = errorMsg.trim()
+            val statusLabel = when {
+                cleanErr.isBlank() || cleanErr.equals("Tap to retry", ignoreCase = true) -> "Tap to retry"
+                else -> "$cleanErr · Tap to retry"
+            }
+            listOfNotNull(
+                statusLabel,
+                sizeText.takeIf { it.isNotBlank() },
+                extLabel
+            ).joinToString(" · ")
+        }
         else -> listOfNotNull(
             pageCount?.takeIf { it > 0 }?.let { if (it == 1) "1 page" else "$it pages" },
             sizeText.takeIf { it.isNotBlank() },
@@ -226,8 +257,28 @@ fun openDocumentNatively(
     val isPdf = isPdfDocument(msg, localFile)
     val resolvedMime = resolveDocumentMimeType(msg, localFile)
     val cleanName = buildDocumentExportFileName(msg, localFile)
+    val isApk = isApkDocument(msg, localFile) ||
+        resolvedMime.equals("application/vnd.android.package-archive", ignoreCase = true) ||
+        cleanName.endsWith(".apk", ignoreCase = true)
 
-    // Stage under cacheDir with proper display filename + extension so external viewers recognize PDFs even if vaulted as .bin
+    if (isApk && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+        !context.packageManager.canRequestPackageInstalls()
+    ) {
+        Toast.makeText(
+            context,
+            "Allow 'Install unknown apps' for Wupp, then tap again",
+            Toast.LENGTH_LONG
+        ).show()
+        val permIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+            data = Uri.parse("package:${context.packageName}")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        AppLockManager.suspendNextBackgroundLock()
+        val opened = runCatching { context.startActivity(permIntent); true }.getOrDefault(false)
+        if (opened) return
+    }
+
+    // Stage under cacheDir with proper display filename + extension so external viewers recognize files even if vaulted as .bin
     val stagedFile = runCatching {
         val previewDir = File(context.cacheDir, "doc_preview").apply { mkdirs() }
         val target = File(previewDir, cleanName)
@@ -264,6 +315,8 @@ fun openDocumentNatively(
         } else {
             Toast.makeText(context, context.getString(R.string.chat_doc_no_viewer), Toast.LENGTH_SHORT).show()
         }
+    } catch (_: SecurityException) {
+        Toast.makeText(context, context.getString(R.string.chat_doc_no_viewer), Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -306,6 +359,7 @@ fun DocumentMessageCard(
     errorMsg: String?,
     onClick: () -> Unit,
     onLongClick: () -> Unit = {},
+    onSaveToDownloads: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val resolvedMime = remember(msg.mimeType, msg.body, localFile?.absolutePath) {
@@ -319,6 +373,9 @@ fun DocumentMessageCard(
     }
     val titleText = remember(msg.body, resolvedMime, localFile?.name) {
         resolveDocumentDisplayName(msg, resolvedMime, localFile)
+    }
+    val captionText = remember(msg.body) {
+        resolveDocumentCaptionLine(msg.body)
     }
     val hasLocalFile = localFile != null
 
@@ -346,6 +403,7 @@ fun DocumentMessageCard(
     )
 
     val badgeColor = when (extLabel) {
+        "APK" -> Color(0xFF2E7D32)
         "PDF" -> Color(0xFFE53935)
         "DOC", "DOCX" -> Color(0xFF1E88E5)
         "XLS", "XLSX", "CSV" -> Color(0xFF2E7D32)
@@ -446,7 +504,29 @@ fun DocumentMessageCard(
                         )
                     }
                 }
+            } else if (onSaveToDownloads != null) {
+                Spacer(modifier = Modifier.width(6.dp))
+                IconButton(
+                    onClick = onSaveToDownloads,
+                    modifier = Modifier.size(34.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Download,
+                        contentDescription = stringResource(R.string.chat_doc_save_downloads),
+                        tint = colors.textSecondary,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
             }
+        }
+        if (captionText.isNotBlank()) {
+            Text(
+                text = captionText,
+                color = colors.textPrimary,
+                fontSize = 13.5.sp,
+                lineHeight = 18.sp,
+                modifier = Modifier.padding(start = 10.dp, end = 10.dp, bottom = 8.dp)
+            )
         }
     }
 }

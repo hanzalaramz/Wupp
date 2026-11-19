@@ -87,6 +87,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.wa.beastclient.R
 import com.wa.beastclient.data.db.StatusEntity
 import com.wa.beastclient.ui.screens.WhatsAppAvatar
+import com.wa.beastclient.ui.theme.LocalWuppUse24Hour
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -635,7 +636,7 @@ private fun StatusGroupPage(
                         }
                     }
                     Text(
-                        text = formatStatusRelativeTime(current.timestamp),
+                        text = formatStatusRelativeTime(current.timestamp, LocalWuppUse24Hour.current),
                         color = Color(0xFFD1D7DB),
                         fontSize = 12.sp
                     )
@@ -948,14 +949,18 @@ private fun StatusVideoPlayer(
     )
 }
 
-private fun formatStatusRelativeTime(epochMs: Long): String {
+private fun formatStatusRelativeTime(
+    epochMs: Long,
+    use24Hour: Boolean = com.wa.beastclient.domain.stealth.StealthMatrixManager.defaultUse24Hour()
+): String {
     if (epochMs <= 0L) return ""
     val diffMin = ((System.currentTimeMillis() - epochMs) / 60_000L).coerceAtLeast(0L)
+    val timePat = if (use24Hour) "HH:mm" else "h:mm a"
     return when {
         diffMin < 1L -> "Just now"
         diffMin == 1L -> "1 minute ago"
         diffMin < 60L -> "$diffMin minutes ago"
-        diffMin < 24 * 60L -> "Today, " + SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(epochMs))
-        else -> SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(epochMs))
+        diffMin < 24 * 60L -> "Today, " + SimpleDateFormat(timePat, Locale.getDefault()).format(Date(epochMs))
+        else -> SimpleDateFormat("MMM d, $timePat", Locale.getDefault()).format(Date(epochMs))
     }
 }

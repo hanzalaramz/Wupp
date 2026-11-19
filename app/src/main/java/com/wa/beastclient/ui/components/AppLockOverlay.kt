@@ -552,6 +552,34 @@ fun AppLockConfigDialog(
                     ) {
                         Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                             Text(
+                                text = stringResource(R.string.settings_allow_screenshots_title),
+                                color = colors.textPrimary,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = stringResource(R.string.settings_allow_screenshots_subtitle),
+                                color = colors.textSecondary,
+                                fontSize = 11.5.sp
+                            )
+                        }
+                        Switch(
+                            checked = config.allowScreenshots,
+                            onCheckedChange = { AppLockManager.setAllowScreenshots(it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = colors.accentGreen
+                            )
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text(
                                 text = stringResource(R.string.applock_hide_recents_title),
                                 color = colors.textPrimary,
                                 fontSize = 13.5.sp,

@@ -80,6 +80,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.wa.beastclient.data.db.MessageEntity
+import com.wa.beastclient.ui.theme.LocalWuppUse24Hour
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -179,9 +180,11 @@ fun FullScreenMediaViewer(
     var showChrome by remember { mutableStateOf(true) }
     var showOverflow by remember { mutableStateOf(false) }
 
-    val formattedTime = remember(current.timestamp) {
+    val use24Hour = LocalWuppUse24Hour.current
+    val formattedTime = remember(current.timestamp, use24Hour) {
         if (current.timestamp > 0L) {
-            SimpleDateFormat("MMMM d, h:mm a", Locale.getDefault()).format(Date(current.timestamp))
+            val pattern = if (use24Hour) "MMMM d, HH:mm" else "MMMM d, h:mm a"
+            SimpleDateFormat(pattern, Locale.getDefault()).format(Date(current.timestamp))
         } else {
             ""
         }

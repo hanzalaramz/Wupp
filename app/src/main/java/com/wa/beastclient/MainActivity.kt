@@ -48,6 +48,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.core.update.WuppUpdater
 import com.wa.beastclient.domain.security.AppLockManager
+import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.MainViewModel
 import com.wa.beastclient.ui.components.AppLockOverlay
 import com.wa.beastclient.ui.components.AppUpdateDialog
@@ -128,6 +129,7 @@ class MainActivity : FragmentActivity() {
                 accentColor = stealth.accentColor,
                 useSystemFont = stealth.useSystemFont,
                 showSecondsInTimestamps = stealth.showSecondsInTimestamps,
+                use24HourFormat = StealthMatrixManager.is24HourEnabled(this, stealth.clockFormat),
                 chatFontScale = stealth.chatFontScale,
                 classicUi = stealth.classicWhatsAppLook,
                 assetManager = assets

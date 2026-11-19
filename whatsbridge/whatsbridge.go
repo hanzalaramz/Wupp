@@ -82,9 +82,10 @@ const (
 	avatarMissTTLSec          = 6 * 3600
 	avatarUnmappedRetrySec    = 60
 	maxDecryptRetries         = 2
+	undecryptableGraceDelay   = 12 * time.Second
 	autoDownloadVideoMaxBytes = uint64(5 * 1024 * 1024)
 	autoDownloadVaultMaxBytes = uint64(16 * 1024 * 1024)
-	maxManualMediaBytes       = uint64(128 * 1024 * 1024)
+	maxManualMediaBytes       = uint64(512 * 1024 * 1024)
 	mediaDownloadTimeout      = 120 * time.Second
 )
 
@@ -94,42 +95,44 @@ type cachedPicInfo struct {
 }
 
 var (
-	mu                   sync.Mutex
-	client               *whatsmeow.Client
-	container            *sqlstore.Container
-	metaDB               *sql.DB
-	baseCtx              context.Context
-	baseCancel           context.CancelFunc
-	appFilesDir          string
-	eventCallback        NativeBridgeCallback
-	eventRing            chan bridgeEvent
-	mediaQueue           chan mediaJob
-	metaWriteQueue       chan mediaJob
-	avatarQueue          chan types.JID
-	workersOnce          sync.Once
-	ghostPresence        atomic.Bool
+	mu                     sync.Mutex
+	client                 *whatsmeow.Client
+	container              *sqlstore.Container
+	metaDB                 *sql.DB
+	baseCtx                context.Context
+	baseCancel             context.CancelFunc
+	appFilesDir            string
+	eventCallback          NativeBridgeCallback
+	eventRing              chan bridgeEvent
+	mediaQueue             chan mediaJob
+	metaWriteQueue         chan mediaJob
+	avatarQueue            chan types.JID
+	workersOnce            sync.Once
+	ghostPresence          atomic.Bool
 	contactsSyncRunning    atomic.Bool
 	lastContactsSyncUnix   atomic.Int64
 	lastKeepAliveResetUnix atomic.Int64
 	verifyBulkLastMs       atomic.Int64
-	retryCounts          sync.Map
-	seenMediaMap         sync.Map
-	mediaJobsById        sync.Map
-	mediaInFlight        sync.Map
-	historyReqMu         sync.Map
-	peerMediaReqMu       sync.Map
-	mediaRetrySent       sync.Map
-	avatarFetchedMu      sync.Map
-	avatarInFlight       sync.Map
-	fullAvatarReqMu      sync.Map
-	newsletterPicURLs    sync.Map
-	deadNewsletters      sync.Map
-	disableAutoDlPhoto   atomic.Bool
-	disableAutoDlAudio   atomic.Bool
-	disableAutoDlVideo   atomic.Bool
-	disableAutoDlDoc     atomic.Bool
-	rngMu                sync.Mutex
-	rng                  = rand.New(rand.NewSource(time.Now().UnixNano()))
+	retryCounts            sync.Map
+	pendingUndecryptable   sync.Map
+	emittedStubIDs         sync.Map
+	seenMediaMap           sync.Map
+	mediaJobsById          sync.Map
+	mediaInFlight          sync.Map
+	historyReqMu           sync.Map
+	peerMediaReqMu         sync.Map
+	mediaRetrySent         sync.Map
+	avatarFetchedMu        sync.Map
+	avatarInFlight         sync.Map
+	fullAvatarReqMu        sync.Map
+	newsletterPicURLs      sync.Map
+	deadNewsletters        sync.Map
+	disableAutoDlPhoto     atomic.Bool
+	disableAutoDlAudio     atomic.Bool
+	disableAutoDlVideo     atomic.Bool
+	disableAutoDlDoc       atomic.Bool
+	rngMu                  sync.Mutex
+	rng                    = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
 
 type bridgeLogger struct {
@@ -178,6 +181,7 @@ func InitClient(filesDir string, callback NativeBridgeCallback) error {
 	if baseCancel != nil {
 		baseCancel()
 	}
+	clearPendingUndecryptable()
 	baseCtx, baseCancel = context.WithCancel(context.Background())
 	startWorkers()
 
@@ -223,6 +227,10 @@ func InitClient(filesDir string, callback NativeBridgeCallback) error {
 	cli := whatsmeow.NewClient(deviceStore, rootLog.Sub("Client"))
 	// Cap retry receipt parallelism to prevent Bad MAC storms
 	cli.SetMaxParallelRetryReceiptHandling(2)
+	// Match official WhatsApp Web/Desktop recovery: after 5s with no sender retry,
+	// request 1 copy from primary phone via Peer BuildUnavailableMessageRequest
+	// (auto-cancelled if sender retry arrives first).
+	cli.AutomaticMessageRerequestFromPhone = true
 	// Never automatically send active delivery receipts when ghost overrides apply
 	cli.SetForceActiveDeliveryReceipts(false)
 	cli.EnableAutoReconnect = true
@@ -559,6 +567,7 @@ func ConnectClient() error {
 }
 
 func DisconnectClient() {
+	clearPendingUndecryptable()
 	mu.Lock()
 	cli := client
 	mu.Unlock()
@@ -821,6 +830,104 @@ func RevokeMessage(chatJid string, messageId string) error {
 	return err
 }
 
+type outboundUploadSpec struct {
+	mediaType     whatsmeow.MediaType
+	isViewOnce    bool
+	isSticker     bool
+	isGifPlayback bool
+}
+
+func resolveOutboundUploadSpec(mimeType string, qualityMode string, isVoiceNote bool) outboundUploadSpec {
+	rawMode := strings.ToLower(strings.TrimSpace(qualityMode))
+	isViewOnce := strings.Contains(rawMode, "viewonce") || strings.Contains(rawMode, "view_once")
+	modeLower := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(rawMode, ":viewonce"), "_viewonce"))
+	mimeLower := strings.ToLower(strings.TrimSpace(mimeType))
+	isSticker := modeLower == "sticker" || strings.Contains(rawMode, "sticker")
+	isGifPlayback := !isVoiceNote && !isSticker && (modeLower == "gif" || strings.Contains(rawMode, "gif"))
+	if isGifPlayback {
+		isViewOnce = false
+	}
+
+	var waMediaType whatsmeow.MediaType
+	switch {
+	case isVoiceNote:
+		waMediaType = whatsmeow.MediaAudio
+	case isSticker:
+		waMediaType = whatsmeow.MediaImage
+	case isGifPlayback:
+		waMediaType = whatsmeow.MediaVideo
+	case !isViewOnce && modeLower == "original" && !strings.HasPrefix(mimeLower, "video/"):
+		waMediaType = whatsmeow.MediaDocument
+	case strings.HasPrefix(mimeLower, "audio/"):
+		waMediaType = whatsmeow.MediaAudio
+	case strings.HasPrefix(mimeLower, "video/"):
+		waMediaType = whatsmeow.MediaVideo
+	case strings.HasPrefix(mimeLower, "image/"):
+		waMediaType = whatsmeow.MediaImage
+	default:
+		waMediaType = whatsmeow.MediaDocument
+	}
+
+	return outboundUploadSpec{
+		mediaType:     waMediaType,
+		isViewOnce:    isViewOnce,
+		isSticker:     isSticker,
+		isGifPlayback: isGifPlayback,
+	}
+}
+
+func buildOutboundVideoMessage(
+	up whatsmeow.UploadResponse,
+	mimeType string,
+	caption string,
+	durationSec int,
+	isViewOnce bool,
+	isGifPlayback bool,
+) *waE2E.Message {
+	sec := uint32(maxInt(durationSec, 0))
+	videoMime := strings.TrimSpace(mimeType)
+	if isGifPlayback && (videoMime == "" || !strings.HasPrefix(strings.ToLower(videoMime), "video/")) {
+		videoMime = "video/mp4"
+	}
+	effectiveViewOnce := isViewOnce && !isGifPlayback
+	videoMsg := &waE2E.VideoMessage{
+		Caption:       proto.String(caption),
+		Mimetype:      proto.String(videoMime),
+		Seconds:       &sec,
+		URL:           &up.URL,
+		DirectPath:    &up.DirectPath,
+		MediaKey:      up.MediaKey,
+		FileEncSHA256: up.FileEncSHA256,
+		FileSHA256:    up.FileSHA256,
+		FileLength:    &up.FileLength,
+		ViewOnce:      proto.Bool(effectiveViewOnce),
+	}
+	if isGifPlayback {
+		videoMsg.GifPlayback = proto.Bool(true)
+		videoMsg.GifAttribution = waE2E.VideoMessage_NONE.Enum()
+	}
+	msg := &waE2E.Message{
+		VideoMessage: videoMsg,
+	}
+	if effectiveViewOnce {
+		msg = &waE2E.Message{
+			ViewOnceMessageV2: &waE2E.FutureProofMessage{
+				Message: msg,
+			},
+		}
+	}
+	return msg
+}
+
+func SendGifMessage(
+	chatJid string,
+	filePath string,
+	caption string,
+	durationSec int,
+) (string, error) {
+	return SendMediaMessage(chatJid, filePath, "video/mp4", caption, "gif", false, durationSec, "")
+}
+
 func SendMediaMessage(
 	chatJid string,
 	filePath string,
@@ -850,29 +957,12 @@ func SendMediaMessage(
 		return "", fmt.Errorf("read media file: %w", err)
 	}
 
-	var waMediaType whatsmeow.MediaType
-	rawMode := strings.ToLower(strings.TrimSpace(qualityMode))
-	isViewOnce := strings.Contains(rawMode, "viewonce") || strings.Contains(rawMode, "view_once")
-	modeLower := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(rawMode, ":viewonce"), "_viewonce"))
+	spec := resolveOutboundUploadSpec(mimeType, qualityMode, isVoiceNote)
+	waMediaType := spec.mediaType
+	isViewOnce := spec.isViewOnce
+	isSticker := spec.isSticker
+	isGifPlayback := spec.isGifPlayback
 	mimeLower := strings.ToLower(strings.TrimSpace(mimeType))
-	isSticker := modeLower == "sticker" || strings.Contains(rawMode, "sticker")
-
-	switch {
-	case isVoiceNote:
-		waMediaType = whatsmeow.MediaAudio
-	case isSticker:
-		waMediaType = whatsmeow.MediaImage
-	case !isViewOnce && modeLower == "original" && !strings.HasPrefix(mimeLower, "video/"):
-		waMediaType = whatsmeow.MediaDocument
-	case strings.HasPrefix(mimeLower, "audio/"):
-		waMediaType = whatsmeow.MediaAudio
-	case strings.HasPrefix(mimeLower, "video/"):
-		waMediaType = whatsmeow.MediaVideo
-	case strings.HasPrefix(mimeLower, "image/"):
-		waMediaType = whatsmeow.MediaImage
-	default:
-		waMediaType = whatsmeow.MediaDocument
-	}
 
 	up, err := cli.Upload(ctx, data, waMediaType)
 	if err != nil {
@@ -896,89 +986,68 @@ func SendMediaMessage(
 		}
 	} else {
 		switch waMediaType {
-	case whatsmeow.MediaImage:
-		msg = &waE2E.Message{
-			ImageMessage: &waE2E.ImageMessage{
-				Caption:       proto.String(caption),
-				Mimetype:      proto.String(mimeType),
-				URL:           &up.URL,
-				DirectPath:    &up.DirectPath,
-				MediaKey:      up.MediaKey,
-				FileEncSHA256: up.FileEncSHA256,
-				FileSHA256:    up.FileSHA256,
-				FileLength:    &up.FileLength,
-				ViewOnce:      proto.Bool(isViewOnce),
-			},
-		}
-		if isViewOnce {
+		case whatsmeow.MediaImage:
 			msg = &waE2E.Message{
-				ViewOnceMessageV2: &waE2E.FutureProofMessage{
-					Message: msg,
+				ImageMessage: &waE2E.ImageMessage{
+					Caption:       proto.String(caption),
+					Mimetype:      proto.String(mimeType),
+					URL:           &up.URL,
+					DirectPath:    &up.DirectPath,
+					MediaKey:      up.MediaKey,
+					FileEncSHA256: up.FileEncSHA256,
+					FileSHA256:    up.FileSHA256,
+					FileLength:    &up.FileLength,
+					ViewOnce:      proto.Bool(isViewOnce),
+				},
+			}
+			if isViewOnce {
+				msg = &waE2E.Message{
+					ViewOnceMessageV2: &waE2E.FutureProofMessage{
+						Message: msg,
+					},
+				}
+			}
+		case whatsmeow.MediaVideo:
+			msg = buildOutboundVideoMessage(up, mimeType, caption, durationSec, isViewOnce, isGifPlayback)
+		case whatsmeow.MediaAudio:
+			sec := uint32(maxInt(durationSec, 1))
+			wf := parseWaveformCsv(waveformCsv)
+			audioMime := mimeType
+			if isVoiceNote {
+				if strings.Contains(mimeLower, "ogg") || strings.Contains(mimeLower, "opus") || mimeLower == "" {
+					audioMime = "audio/ogg; codecs=opus"
+				}
+			}
+			msg = &waE2E.Message{
+				AudioMessage: &waE2E.AudioMessage{
+					Mimetype:      proto.String(audioMime),
+					Seconds:       &sec,
+					PTT:           proto.Bool(isVoiceNote),
+					Waveform:      wf,
+					URL:           &up.URL,
+					DirectPath:    &up.DirectPath,
+					MediaKey:      up.MediaKey,
+					FileEncSHA256: up.FileEncSHA256,
+					FileSHA256:    up.FileSHA256,
+					FileLength:    &up.FileLength,
+				},
+			}
+		default:
+			msg = &waE2E.Message{
+				DocumentMessage: &waE2E.DocumentMessage{
+					FileName:      proto.String(fileName),
+					Title:         proto.String(fileName),
+					Caption:       proto.String(caption),
+					Mimetype:      proto.String(mimeType),
+					URL:           &up.URL,
+					DirectPath:    &up.DirectPath,
+					MediaKey:      up.MediaKey,
+					FileEncSHA256: up.FileEncSHA256,
+					FileSHA256:    up.FileSHA256,
+					FileLength:    &up.FileLength,
 				},
 			}
 		}
-	case whatsmeow.MediaVideo:
-		sec := uint32(maxInt(durationSec, 0))
-		msg = &waE2E.Message{
-			VideoMessage: &waE2E.VideoMessage{
-				Caption:       proto.String(caption),
-				Mimetype:      proto.String(mimeType),
-				Seconds:       &sec,
-				URL:           &up.URL,
-				DirectPath:    &up.DirectPath,
-				MediaKey:      up.MediaKey,
-				FileEncSHA256: up.FileEncSHA256,
-				FileSHA256:    up.FileSHA256,
-				FileLength:    &up.FileLength,
-				ViewOnce:      proto.Bool(isViewOnce),
-			},
-		}
-		if isViewOnce {
-			msg = &waE2E.Message{
-				ViewOnceMessageV2: &waE2E.FutureProofMessage{
-					Message: msg,
-				},
-			}
-		}
-	case whatsmeow.MediaAudio:
-		sec := uint32(maxInt(durationSec, 1))
-		wf := parseWaveformCsv(waveformCsv)
-		audioMime := mimeType
-		if isVoiceNote {
-			if strings.Contains(mimeLower, "ogg") || strings.Contains(mimeLower, "opus") || mimeLower == "" {
-				audioMime = "audio/ogg; codecs=opus"
-			}
-		}
-		msg = &waE2E.Message{
-			AudioMessage: &waE2E.AudioMessage{
-				Mimetype:      proto.String(audioMime),
-				Seconds:       &sec,
-				PTT:           proto.Bool(isVoiceNote),
-				Waveform:      wf,
-				URL:           &up.URL,
-				DirectPath:    &up.DirectPath,
-				MediaKey:      up.MediaKey,
-				FileEncSHA256: up.FileEncSHA256,
-				FileSHA256:    up.FileSHA256,
-				FileLength:    &up.FileLength,
-			},
-		}
-	default:
-		msg = &waE2E.Message{
-			DocumentMessage: &waE2E.DocumentMessage{
-				FileName:      proto.String(fileName),
-				Title:         proto.String(fileName),
-				Caption:       proto.String(caption),
-				Mimetype:      proto.String(mimeType),
-				URL:           &up.URL,
-				DirectPath:    &up.DirectPath,
-				MediaKey:      up.MediaKey,
-				FileEncSHA256: up.FileEncSHA256,
-				FileSHA256:    up.FileSHA256,
-				FileLength:    &up.FileLength,
-			},
-		}
-	}
 	}
 
 	resp, err := cli.SendMessage(ctx, jid, msg)
@@ -2533,14 +2602,14 @@ func handleWhatsmeowEvent(rawEvt any) {
 			ids = append(ids, string(id))
 		}
 		emitJSON("RECEIPT", map[string]any{
-			"chatJid":          chatStr,
-			"altChatJid":       altChatStr,
-			"senderJid":        senderStr,
-			"messageIds":       ids,
-			"receiptType":      rt,
-			"isFromMe":         evt.IsFromMe,
-			"isPrimaryActive":  evt.Type == types.ReceiptTypeReadSelf || evt.Type == types.ReceiptTypePlayedSelf || evt.IsFromMe,
-			"timestamp":        evt.Timestamp.UnixMilli(),
+			"chatJid":         chatStr,
+			"altChatJid":      altChatStr,
+			"senderJid":       senderStr,
+			"messageIds":      ids,
+			"receiptType":     rt,
+			"isFromMe":        evt.IsFromMe,
+			"isPrimaryActive": evt.Type == types.ReceiptTypeReadSelf || evt.Type == types.ReceiptTypePlayedSelf || evt.IsFromMe,
+			"timestamp":       evt.Timestamp.UnixMilli(),
 		})
 
 	case *events.GroupInfo:
@@ -2960,14 +3029,69 @@ func handlePictureUpdate(evt *events.Picture) {
 	})
 }
 
+func clearPendingUndecryptable() {
+	pendingUndecryptable.Range(func(key, value any) bool {
+		if t, ok := value.(*time.Timer); ok && t != nil {
+			t.Stop()
+		}
+		pendingUndecryptable.Delete(key)
+		return true
+	})
+}
+
+func shouldIgnoreUndecryptable(evt *events.UndecryptableMessage) bool {
+	if evt == nil {
+		return true
+	}
+	if evt.DecryptFailMode == events.DecryptFailHide {
+		return true
+	}
+	if evt.Info.Category == "peer" ||
+		evt.Info.Chat == types.StatusBroadcastJID ||
+		evt.Info.Chat.Server == types.BroadcastServer ||
+		evt.Info.Chat.Server == types.NewsletterServer ||
+		evt.Info.Edit != "" {
+		return true
+	}
+	switch evt.Info.Type {
+	case "reaction", "poll", "medianotify":
+		return true
+	}
+	return false
+}
+
+func cancelPendingUndecryptable(msgID string) {
+	if msgID == "" {
+		return
+	}
+	if val, ok := pendingUndecryptable.LoadAndDelete(msgID); ok {
+		if t, ok := val.(*time.Timer); ok && t != nil {
+			t.Stop()
+		}
+	}
+	retryCounts.Delete(msgID)
+}
+
+func resolveEmittedStubIfNonVisible(msgID string, chatJid string) {
+	if msgID == "" {
+		return
+	}
+	if _, hadStub := emittedStubIDs.LoadAndDelete(msgID); hadStub {
+		emitJSON("UNDECRYPTABLE_RESOLVED", map[string]any{
+			"id":      msgID,
+			"chatJid": chatJid,
+		})
+	}
+}
+
 func processUndecryptable(evt *events.UndecryptableMessage) {
 	if evt == nil {
 		return
 	}
 	msgID := string(evt.Info.ID)
-	val, _ := retryCounts.LoadOrStore(msgID, 0)
-	cnt := val.(int) + 1
-	retryCounts.Store(msgID, cnt)
+	if msgID == "" {
+		return
+	}
 
 	mu.Lock()
 	uCli := client
@@ -2999,20 +3123,68 @@ func processUndecryptable(evt *events.UndecryptableMessage) {
 		return
 	}
 
-	if cnt > maxDecryptRetries || evt.IsUnavailable {
+	if shouldIgnoreUndecryptable(evt) {
+		emitJSON("BRIDGE_LOG", map[string]any{
+			"level":  "INFO",
+			"module": "Decrypt",
+			"msg": fmt.Sprintf("ignored non-visible undecryptable id=%s chat=%s type=%q cat=%q failMode=%q unavail=%v",
+				msgID, chatStr, evt.Info.Type, evt.Info.Category, evt.DecryptFailMode, evt.IsUnavailable),
+		})
+		return
+	}
+
+	val, _ := retryCounts.LoadOrStore(msgID, 0)
+	cnt := val.(int) + 1
+	retryCounts.Store(msgID, cnt)
+
+	emitJSON("BRIDGE_LOG", map[string]any{
+		"level":  "INFO",
+		"module": "Decrypt",
+		"msg": fmt.Sprintf("pending recovery id=%s chat=%s attempt=%d unavail=%v",
+			msgID, chatStr, cnt, evt.IsUnavailable),
+	})
+
+	if _, alreadyPending := pendingUndecryptable.Load(msgID); alreadyPending {
+		return
+	}
+
+	snapChat := chatStr
+	snapAlt := altChat.String()
+	snapSender := senderStr
+	snapPush := evt.Info.PushName
+	snapFromMe := evt.Info.IsFromMe
+	snapTs := evt.Info.Timestamp.UnixMilli()
+	snapCtx := uCtx
+
+	timer := time.AfterFunc(undecryptableGraceDelay, func() {
+		pendingUndecryptable.Delete(msgID)
+		retryCounts.Delete(msgID)
+		if snapCtx != nil && snapCtx.Err() != nil {
+			return
+		}
+		emittedStubIDs.Store(msgID, struct{}{})
 		emitJSON("UNDECRYPTABLE_STUB", map[string]any{
 			"id":         msgID,
-			"chatJid":    chatStr,
-			"altChatJid": altChat.String(),
-			"senderJid":  senderStr,
-			"pushName":   evt.Info.PushName,
-			"retries":    cnt,
-			"timestamp":  evt.Info.Timestamp.UnixMilli(),
+			"chatJid":    snapChat,
+			"altChatJid": snapAlt,
+			"senderJid":  snapSender,
+			"pushName":   snapPush,
+			"isFromMe":   snapFromMe,
+			"timestamp":  snapTs,
 		})
+	})
+	if _, loaded := pendingUndecryptable.LoadOrStore(msgID, timer); loaded {
+		timer.Stop()
 	}
 }
 
 func processIncomingMessage(evt *events.Message) {
+	if evt == nil {
+		return
+	}
+	evtMsgID := string(evt.Info.ID)
+	cancelPendingUndecryptable(evtMsgID)
+
 	raw := evt.Message
 	if raw == nil {
 		raw = evt.RawMessage
@@ -3028,6 +3200,7 @@ func processIncomingMessage(evt *events.Message) {
 		isEdit = true
 	}
 	if inner == nil {
+		resolveEmittedStubIfNonVisible(evtMsgID, evt.Info.Chat.String())
 		return
 	}
 
@@ -3063,6 +3236,7 @@ func processIncomingMessage(evt *events.Message) {
 				"revokedAt":       evt.Info.Timestamp.UnixMilli(),
 				"isStatus":        evt.Info.Chat == types.StatusBroadcastJID,
 			})
+			resolveEmittedStubIfNonVisible(evtMsgID, evtChatStr)
 			return
 
 		case waE2E.ProtocolMessage_MESSAGE_EDIT:
@@ -3080,6 +3254,7 @@ func processIncomingMessage(evt *events.Message) {
 				"newBody":         newBody,
 				"editedAt":        editedAt,
 			})
+			resolveEmittedStubIfNonVisible(evtMsgID, evtChatStr)
 			return
 
 		case waE2E.ProtocolMessage_PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE:
@@ -3106,6 +3281,8 @@ func processIncomingMessage(evt *events.Message) {
 						if pErr != nil || parsed == nil {
 							continue
 						}
+						parsedID := string(parsed.Info.ID)
+						cancelPendingUndecryptable(parsedID)
 						rInner, rVO, rEph, rEphSec, _ := unwrapMessageContainer(parsed.Message)
 						if parsed.IsViewOnce {
 							rVO = true
@@ -3114,8 +3291,10 @@ func processIncomingMessage(evt *events.Message) {
 							rEph = true
 						}
 						if rInner == nil {
+							resolveEmittedStubIfNonVisible(parsedID, parsed.Info.Chat.String())
 							continue
 						}
+						emittedStubIDs.Delete(parsedID)
 						rPayload, rJob := buildNormalizedMessage(&parsed.Info, rInner, rVO, rEph, rEphSec)
 						if parsed.Info.Chat == types.StatusBroadcastJID {
 							enrichStatusPayload(parsed.Info.Sender, rPayload)
@@ -3129,8 +3308,10 @@ func processIncomingMessage(evt *events.Message) {
 					}
 				}
 			}
+			resolveEmittedStubIfNonVisible(evtMsgID, evtChatStr)
 			return
 		}
+		resolveEmittedStubIfNonVisible(evtMsgID, evtChatStr)
 		return
 	}
 
@@ -3146,6 +3327,7 @@ func processIncomingMessage(evt *events.Message) {
 			"emoji":           rm.GetText(),
 			"timestamp":       evt.Info.Timestamp.UnixMilli(),
 		})
+		resolveEmittedStubIfNonVisible(evtMsgID, evtChatStr)
 		return
 	}
 
@@ -3175,6 +3357,7 @@ func processIncomingMessage(evt *events.Message) {
 			"durationSec":     durSec,
 			"timestamp":       ts,
 		})
+		resolveEmittedStubIfNonVisible(evtMsgID, evtChatStr)
 		return
 	}
 
@@ -3184,10 +3367,11 @@ func processIncomingMessage(evt *events.Message) {
 		emitJSON("MESSAGE_EDIT", map[string]any{
 			"chatJid":         evtChatStr,
 			"altChatJid":      altEvtChat.String(),
-			"targetMessageId": string(evt.Info.ID),
+			"targetMessageId": evtMsgID,
 			"newBody":         body,
 			"editedAt":        evt.Info.Timestamp.UnixMilli(),
 		})
+		resolveEmittedStubIfNonVisible(evtMsgID, evtChatStr)
 		return
 	}
 
@@ -3198,8 +3382,10 @@ func processIncomingMessage(evt *events.Message) {
 	msgTypeStr, _ := payload["msgType"].(string)
 	bodyStr, _ := payload["body"].(string)
 	if !isVO && job == nil && msgTypeStr == "UNKNOWN" && strings.TrimSpace(bodyStr) == "" {
+		resolveEmittedStubIfNonVisible(evtMsgID, evtChatStr)
 		return
 	}
+	emittedStubIDs.Delete(evtMsgID)
 	if !canonEvtChat.IsEmpty() {
 		enqueueAvatarFetch(canonEvtChat)
 	} else {
@@ -3938,6 +4124,136 @@ func buildNormalizedMessage(
 	return payload, job
 }
 
+func joinBusinessParts(parts ...string) string {
+	var cleaned []string
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t == "" {
+			continue
+		}
+		if len(cleaned) > 0 && cleaned[len(cleaned)-1] == t {
+			continue
+		}
+		cleaned = append(cleaned, t)
+	}
+	return strings.Join(cleaned, "\n")
+}
+
+func formatDocumentBody(fileName, caption, extraText string) string {
+	fn := strings.TrimSpace(fileName)
+	capTxt := strings.TrimSpace(caption)
+	extra := strings.TrimSpace(extraText)
+	captionPart := joinBusinessParts(capTxt, extra)
+	switch {
+	case fn != "" && captionPart != "" && captionPart != fn:
+		return fn + "\n" + captionPart
+	case fn != "":
+		return fn
+	default:
+		return captionPart
+	}
+}
+
+func extractBusinessMediaOrText(
+	im *waE2E.ImageMessage,
+	vm *waE2E.VideoMessage,
+	dm *waE2E.DocumentMessage,
+	text string,
+) (
+	body string,
+	msgType string,
+	mimeType string,
+	durationSec int,
+	fileSize uint64,
+	dl whatsmeow.DownloadableMessage,
+) {
+	switch {
+	case im != nil:
+		capTxt := joinBusinessParts(text, im.GetCaption())
+		return capTxt, "IMAGE", im.GetMimetype(), 0, im.GetFileLength(), im
+	case vm != nil:
+		capTxt := joinBusinessParts(text, vm.GetCaption())
+		return capTxt, "VIDEO", vm.GetMimetype(), int(vm.GetSeconds()), vm.GetFileLength(), vm
+	case dm != nil:
+		docLabel := strings.TrimSpace(dm.GetFileName())
+		if docLabel == "" {
+			docLabel = strings.TrimSpace(dm.GetTitle())
+		}
+		capTxt := formatDocumentBody(docLabel, dm.GetCaption(), text)
+		return capTxt, "DOCUMENT", dm.GetMimetype(), 0, dm.GetFileLength(), dm
+	case text != "":
+		return text, "TEXT", "text/plain", 0, 0, nil
+	default:
+		return "", "UNKNOWN", "", 0, 0, nil
+	}
+}
+
+func extractInteractiveMessage(im *waE2E.InteractiveMessage) (
+	body string,
+	msgType string,
+	mimeType string,
+	durationSec int,
+	fileSize uint64,
+	dl whatsmeow.DownloadableMessage,
+) {
+	if im == nil {
+		return "", "UNKNOWN", "", 0, 0, nil
+	}
+	var hdrTitle, hdrSub, bodyTxt, footerTxt string
+	var hdrImg *waE2E.ImageMessage
+	var hdrVid *waE2E.VideoMessage
+	var hdrDoc *waE2E.DocumentMessage
+	if hdr := im.GetHeader(); hdr != nil {
+		hdrTitle = hdr.GetTitle()
+		hdrSub = hdr.GetSubtitle()
+		hdrImg = hdr.GetImageMessage()
+		hdrVid = hdr.GetVideoMessage()
+		hdrDoc = hdr.GetDocumentMessage()
+	}
+	if b := im.GetBody(); b != nil {
+		bodyTxt = b.GetText()
+	}
+	if f := im.GetFooter(); f != nil {
+		footerTxt = f.GetText()
+	}
+	text := joinBusinessParts(hdrTitle, hdrSub, bodyTxt, footerTxt)
+	return extractBusinessMediaOrText(hdrImg, hdrVid, hdrDoc, text)
+}
+
+func extractTemplateMessage(tm *waE2E.TemplateMessage) (
+	body string,
+	msgType string,
+	mimeType string,
+	durationSec int,
+	fileSize uint64,
+	dl whatsmeow.DownloadableMessage,
+) {
+	if tm == nil {
+		return "", "UNKNOWN", "", 0, 0, nil
+	}
+	ht := tm.GetHydratedTemplate()
+	if ht == nil {
+		ht = tm.GetHydratedFourRowTemplate()
+	}
+	if ht != nil {
+		text := joinBusinessParts(
+			ht.GetHydratedTitleText(),
+			ht.GetHydratedContentText(),
+			ht.GetHydratedFooterText(),
+		)
+		return extractBusinessMediaOrText(
+			ht.GetImageMessage(),
+			ht.GetVideoMessage(),
+			ht.GetDocumentMessage(),
+			text,
+		)
+	}
+	if im := tm.GetInteractiveMessageTemplate(); im != nil {
+		return extractInteractiveMessage(im)
+	}
+	return "", "UNKNOWN", "", 0, 0, nil
+}
+
 func extractMessageContent(m *waE2E.Message) (
 	body string,
 	msgType string,
@@ -3969,13 +4285,11 @@ func extractMessageContent(m *waE2E.Message) (
 		return "", mt, am.GetMimetype(), int(am.GetSeconds()), am.GetFileLength(), am
 	case m.GetDocumentMessage() != nil:
 		dm := m.GetDocumentMessage()
-		capTxt := strings.TrimSpace(dm.GetCaption())
-		if capTxt == "" {
-			capTxt = strings.TrimSpace(dm.GetFileName())
+		fileName := strings.TrimSpace(dm.GetFileName())
+		if fileName == "" {
+			fileName = strings.TrimSpace(dm.GetTitle())
 		}
-		if capTxt == "" {
-			capTxt = strings.TrimSpace(dm.GetTitle())
-		}
+		capTxt := formatDocumentBody(fileName, dm.GetCaption(), "")
 		return capTxt, "DOCUMENT", dm.GetMimetype(), 0, dm.GetFileLength(), dm
 	case m.GetStickerMessage() != nil:
 		sm := m.GetStickerMessage()
@@ -4030,6 +4344,21 @@ func extractMessageContent(m *waE2E.Message) (
 			capTxt = "Live location"
 		}
 		return "📍 " + capTxt, "TEXT", "", 0, 0, nil
+	case m.GetTemplateMessage() != nil:
+		return extractTemplateMessage(m.GetTemplateMessage())
+	case m.GetInteractiveMessage() != nil:
+		return extractInteractiveMessage(m.GetInteractiveMessage())
+	case m.GetButtonsMessage() != nil:
+		bm := m.GetButtonsMessage()
+		text := joinBusinessParts(bm.GetText(), bm.GetContentText(), bm.GetFooterText())
+		return extractBusinessMediaOrText(bm.GetImageMessage(), bm.GetVideoMessage(), bm.GetDocumentMessage(), text)
+	case m.GetListMessage() != nil:
+		lm := m.GetListMessage()
+		text := joinBusinessParts(lm.GetTitle(), lm.GetDescription(), lm.GetFooterText())
+		if text != "" {
+			return text, "TEXT", "text/plain", 0, 0, nil
+		}
+		return "", "UNKNOWN", "", 0, 0, nil
 	default:
 		return "", "UNKNOWN", "", 0, 0, nil
 	}
@@ -4053,6 +4382,14 @@ func extractContextInfo(m *waE2E.Message) (qId, qSender, qBody, mentionsCsv stri
 		ctx = m.GetDocumentMessage().GetContextInfo()
 	case m.GetStickerMessage() != nil:
 		ctx = m.GetStickerMessage().GetContextInfo()
+	case m.GetTemplateMessage() != nil:
+		ctx = m.GetTemplateMessage().GetContextInfo()
+	case m.GetInteractiveMessage() != nil:
+		ctx = m.GetInteractiveMessage().GetContextInfo()
+	case m.GetButtonsMessage() != nil:
+		ctx = m.GetButtonsMessage().GetContextInfo()
+	case m.GetListMessage() != nil:
+		ctx = m.GetListMessage().GetContextInfo()
 	}
 	if ctx == nil {
 		return
@@ -4594,13 +4931,13 @@ func parseWaveformCsv(csv string) []byte {
 	// Fallback to a clean 64-bar speech waveform so WhatsApp renders the native waveform bubble
 	def := make([]byte, 64)
 	for i := range def {
-		def[i] = byte(15 + ((i*7)%35) + ((i%4)*8))
+		def[i] = byte(15 + ((i * 7) % 35) + ((i % 4) * 8))
 	}
 	return def
 }
 
 func extensionForMime(mime, mediaType string) string {
-	m := strings.ToLower(mime)
+	m := strings.ToLower(strings.TrimSpace(mime))
 	switch {
 	case strings.Contains(m, "jpeg"), strings.Contains(m, "jpg"):
 		return ".jpg"
@@ -4618,6 +4955,32 @@ func extensionForMime(mime, mediaType string) string {
 		return ".m4a"
 	case strings.Contains(m, "pdf"):
 		return ".pdf"
+	case strings.Contains(m, "android.package-archive"):
+		return ".apk"
+	case strings.Contains(m, "wordprocessingml"):
+		return ".docx"
+	case strings.Contains(m, "msword"):
+		return ".doc"
+	case strings.Contains(m, "spreadsheetml"):
+		return ".xlsx"
+	case strings.Contains(m, "ms-excel"):
+		return ".xls"
+	case strings.Contains(m, "presentationml"):
+		return ".pptx"
+	case strings.Contains(m, "ms-powerpoint"):
+		return ".ppt"
+	case strings.Contains(m, "x-rar"), strings.Contains(m, "vnd.rar"):
+		return ".rar"
+	case strings.Contains(m, "7z"):
+		return ".7z"
+	case strings.Contains(m, "zip"):
+		return ".zip"
+	case strings.Contains(m, "text/csv"):
+		return ".csv"
+	case strings.Contains(m, "application/json"):
+		return ".json"
+	case strings.HasPrefix(m, "text/"):
+		return ".txt"
 	case mediaType == "IMAGE":
 		return ".jpg"
 	case mediaType == "VIDEO":

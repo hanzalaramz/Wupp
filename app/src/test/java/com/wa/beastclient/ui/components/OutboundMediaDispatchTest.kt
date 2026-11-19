@@ -42,6 +42,10 @@ class OutboundMediaDispatchTest {
             "STICKER" to "sticker",
             resolveOutboundMediaDispatch("image/webp", OutboundQualityMode.STICKER, isVoiceNote = false)
         )
+        assertEquals(
+            "VIDEO" to "gif",
+            resolveOutboundMediaDispatch("video/mp4", OutboundQualityMode.GIF, isVoiceNote = false)
+        )
     }
 
     @Test

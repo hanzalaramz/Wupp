@@ -1034,7 +1034,8 @@ interface WaDao {
                 )
             )
         } else {
-            val shouldAdvancePreview = effectiveMessage.timestamp >= existingChat.lastMessageTimestamp
+            val shouldAdvancePreview = effectiveMessage.timestamp >= existingChat.lastMessageTimestamp ||
+                existingChat.lastMessageId == effectiveMessage.id
             val resolvedUnread = when {
                 effectiveMessage.isFromMe && shouldAdvancePreview -> 0
                 shouldBumpUnread -> existingChat.unreadCount + 1
@@ -1121,6 +1122,24 @@ interface WaDao {
 
         val mediaPath = existing.localMediaPath?.takeIf { it.isNotBlank() } ?: return null
         return if (countMediaPathReferences(mediaPath) == 0) mediaPath else null
+    }
+
+    @Query("SELECT id FROM messages WHERE body LIKE 'Decryption retry cap (%'")
+    suspend fun getLegacyDecryptStubMessageIds(): List<String>
+
+    @Transaction
+    suspend fun purgeLegacyDecryptStubMessages() {
+        val ids = getLegacyDecryptStubMessageIds()
+        for (id in ids) {
+            deleteMessagePermanentlyFromDb(id)
+        }
+    }
+
+    @Transaction
+    suspend fun deleteUndecryptableStubAndRefreshChat(messageId: String) {
+        val existing = getMessage(messageId) ?: return
+        if (existing.msgType != "UNDECRYPTABLE" && !existing.body.startsWith("Decryption retry cap (")) return
+        deleteMessagePermanentlyFromDb(messageId)
     }
 
     @Transaction
@@ -1217,6 +1236,7 @@ interface WaDao {
                 msg.msgType == "VIDEO" -> msg.body.ifBlank { "🎥 Video" }
                 msg.msgType == "DOCUMENT" -> msg.body.ifBlank { "📄 Document" }
                 msg.msgType == "STICKER" -> "💟 Sticker"
+                msg.msgType == "UNDECRYPTABLE" -> "⏳ Waiting for this message"
                 else -> msg.body
             }
         }

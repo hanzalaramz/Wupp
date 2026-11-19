@@ -34,7 +34,8 @@ enum class OutboundQualityMode(val wireValue: String, val label: String) {
     STANDARD("standard", "Standard (Fast)"),
     HD("hd", "HD (2560px)"),
     ORIGINAL("original", "Original (Lossless Doc)"),
-    STICKER("sticker", "Sticker")
+    STICKER("sticker", "Sticker"),
+    GIF("gif", "GIF")
 }
 
 data class PreparedMedia(
@@ -162,7 +163,7 @@ object EagerMediaVault {
             }
         }
 
-        if (mode == OutboundQualityMode.ORIGINAL || mimeType.equals("image/webp", ignoreCase = true) || !mimeType.startsWith("image/")) {
+        if (mode == OutboundQualityMode.ORIGINAL || mode == OutboundQualityMode.GIF || mimeType.equals("image/webp", ignoreCase = true) || !mimeType.startsWith("image/")) {
             val outFile = if (sourceFile.parentFile == mediaDir(context)) {
                 sourceFile
             } else {
@@ -232,6 +233,46 @@ object EagerMediaVault {
         )
     }
 
+    private val DOWNLOAD_MIME_BY_EXT = mapOf(
+        "apk" to "application/vnd.android.package-archive",
+        "pdf" to "application/pdf",
+        "zip" to "application/zip",
+        "rar" to "application/vnd.rar",
+        "7z" to "application/x-7z-compressed",
+        "doc" to "application/msword",
+        "docx" to "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" to "application/vnd.ms-excel",
+        "xlsx" to "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" to "application/vnd.ms-powerpoint",
+        "pptx" to "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "txt" to "text/plain",
+        "csv" to "text/csv",
+        "json" to "application/json"
+    )
+
+    internal fun resolveDownloadExportSpec(
+        displayName: String,
+        mimeType: String
+    ): Pair<String, String> {
+        val cleanName = displayName.trim().ifBlank { "Wupp_file.bin" }
+        val rawMime = mimeType.trim()
+        val ext = cleanName.substringAfterLast('.', "").lowercase()
+        val inferredMime = DOWNLOAD_MIME_BY_EXT[ext]
+        val finalMime = when {
+            inferredMime != null && (rawMime.isBlank() || rawMime.equals("application/octet-stream", ignoreCase = true)) ->
+                inferredMime
+            rawMime.isNotBlank() -> rawMime
+            inferredMime != null -> inferredMime
+            else -> "application/octet-stream"
+        }
+        val finalName = if (!cleanName.contains('.') && finalMime == "application/vnd.android.package-archive") {
+            "$cleanName.apk"
+        } else {
+            cleanName
+        }
+        return finalName to finalMime
+    }
+
     suspend fun exportToGallery(
         context: Context,
         sourceFile: File,
@@ -241,7 +282,7 @@ object EagerMediaVault {
         runCatching {
             require(sourceFile.exists()) { "Vault media file not found: ${sourceFile.absolutePath}" }
             val resolver = context.contentResolver
-            val resolvedMime = mimeType.ifBlank { "application/octet-stream" }
+            val (safeDisplayName, resolvedMime) = resolveDownloadExportSpec(displayName, mimeType)
             val isImage = resolvedMime.startsWith("image/")
             val isVideo = resolvedMime.startsWith("video/")
 
@@ -274,17 +315,26 @@ object EagerMediaVault {
                 }
             }
 
-            val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
-                put(MediaStore.MediaColumns.MIME_TYPE, resolvedMime)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, relDir)
-                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+            fun insertForMime(mimeToUse: String): Uri? {
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, safeDisplayName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mimeToUse)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, relDir)
+                        put(MediaStore.MediaColumns.IS_PENDING, 1)
+                    }
                 }
+                return runCatching { resolver.insert(collection, values) }.getOrNull()
             }
 
-            val targetUri = resolver.insert(collection, values)
-                ?: error("MediaStore rejected export for $displayName")
+            val targetUri = insertForMime(resolvedMime)
+                ?: if (!isImage && !isVideo && resolvedMime != "application/octet-stream") {
+                    // Some OEM MediaStore providers reject application/vnd.android.package-archive unless generic octet-stream is used.
+                    insertForMime("application/octet-stream")
+                } else {
+                    null
+                }
+                ?: error("MediaStore rejected export for $safeDisplayName")
 
             resolver.openOutputStream(targetUri)?.use { out ->
                 sourceFile.inputStream().use { input ->

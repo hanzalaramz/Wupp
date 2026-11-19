@@ -68,6 +68,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.Forward
 import androidx.compose.material.icons.automirrored.rounded.Reply
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
@@ -162,6 +163,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
@@ -188,10 +190,12 @@ import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.MainViewModel
 import com.wa.beastclient.ui.QuotedSenderMeta
 import com.wa.beastclient.ui.ResolvedParticipantUi
+import com.wa.beastclient.ui.components.AnimatedStickerImage
 import com.wa.beastclient.ui.components.ChatEmojiPickerDock
 import com.wa.beastclient.ui.components.ChatMediaVisibilitySelector
 import com.wa.beastclient.ui.components.DocumentMessageCard
 import com.wa.beastclient.ui.components.DoodleBackground
+import com.wa.beastclient.ui.components.ForwardMessageDialog
 import com.wa.beastclient.ui.components.FullScreenMediaViewer
 import com.wa.beastclient.ui.components.InAppPdfViewerDialog
 import com.wa.beastclient.ui.components.InlineTimestampMessage
@@ -220,6 +224,7 @@ import com.wa.beastclient.ui.components.resolveDocumentMimeType
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
 import com.wa.beastclient.ui.theme.LocalWuppShowSeconds
+import com.wa.beastclient.ui.theme.LocalWuppUse24Hour
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -246,6 +251,7 @@ fun ChatScreen(
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
     val showSeconds = LocalWuppShowSeconds.current
+    val use24Hour = LocalWuppUse24Hour.current
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
@@ -501,6 +507,7 @@ fun ChatScreen(
     var groupReceiptsTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var actionMenuTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var deleteConfirmTarget by remember { mutableStateOf<MessageEntity?>(null) }
+    var forwardTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var showMoreReactionEmojis by remember { mutableStateOf(false) }
     var editMessageDialogTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var mediaLightboxTarget by remember { mutableStateOf<MessageEntity?>(null) }
@@ -626,176 +633,233 @@ fun ChatScreen(
                             )
                         },
                         actions = {
-                            if (!isChannel && !isGroupAnnounceLocked) {
-                                IconButton(
-                                    onClick = {
+                            val isSelectedDoc = remember(
+                                selectedMsg.id,
+                                selectedMsg.msgType,
+                                selectedMsg.mimeType,
+                                selectedMsg.body,
+                                selectedMsg.isViewOnce,
+                                selectedMsg.isDeletedBySender
+                            ) {
+                                !selectedMsg.localMediaPath.isNullOrBlank() && isDocumentMessage(selectedMsg)
+                            }
+                            val barLayout = remember(
+                                selectedMsg.id,
+                                selectedMsg.isFromMe,
+                                selectedMsg.msgType,
+                                selectedMsg.body,
+                                selectedMsg.localMediaPath,
+                                selectedMsg.isPinned,
+                                selectedMsg.isEdited,
+                                isChannel,
+                                isGroupAnnounceLocked,
+                                chat?.isGroup,
+                                isSelectedDoc
+                            ) {
+                                resolveSelectionBarLayout(
+                                    msg = selectedMsg,
+                                    isChannel = isChannel,
+                                    isGroupAnnounceLocked = isGroupAnnounceLocked,
+                                    isGroup = chat?.isGroup == true,
+                                    isDocument = isSelectedDoc
+                                )
+                            }
+
+                            val triggerAction: (SelectionBarAction) -> Unit = { action ->
+                                showSelectionOverflow = false
+                                when (action) {
+                                    SelectionBarAction.REPLY -> {
                                         replyTarget = selectedMsg
                                         actionMenuTarget = null
                                         showMoreReactionEmojis = false
                                     }
-                                ) {
-                                    Icon(Icons.AutoMirrored.Rounded.Reply, "Reply", tint = colors.textPrimary)
-                                }
-                            }
-                            if (selectedMsg.body.isNotBlank()) {
-                                IconButton(
-                                    onClick = {
+                                    SelectionBarAction.FORWARD -> {
+                                        val upper = selectedMsg.msgType.uppercase()
+                                        val localReady = upper == "TEXT" || selectedMsg.localMediaPath
+                                            ?.takeIf { it.isNotBlank() }
+                                            ?.let(::File)
+                                            ?.let { it.exists() && it.length() > 0L } == true
+                                        if (localReady) {
+                                            forwardTarget = selectedMsg
+                                        } else {
+                                            Toast.makeText(context, "Downloading media before forwarding…", Toast.LENGTH_SHORT).show()
+                                            viewModel.requestMediaDownload(selectedMsg, userInitiated = true)
+                                        }
+                                        actionMenuTarget = null
+                                        showMoreReactionEmojis = false
+                                    }
+                                    SelectionBarAction.PIN_UNPIN -> {
+                                        val target = selectedMsg
+                                        actionMenuTarget = null
+                                        showMoreReactionEmojis = false
+                                        if (target.isPinned) {
+                                            viewModel.unpinMessage(chatJid, target)
+                                        } else {
+                                            pinDurationDialogTarget = target
+                                        }
+                                    }
+                                    SelectionBarAction.EDIT -> {
+                                        editMessageDialogTarget = selectedMsg
+                                        actionMenuTarget = null
+                                        showMoreReactionEmojis = false
+                                    }
+                                    SelectionBarAction.COPY -> {
                                         clipboard.setText(AnnotatedString(selectedMsg.body))
                                         Toast.makeText(context, "Message copied", Toast.LENGTH_SHORT).show()
                                         actionMenuTarget = null
                                         showMoreReactionEmojis = false
                                     }
-                                ) {
-                                    Icon(Icons.Rounded.ContentCopy, "Copy", tint = colors.textPrimary)
-                                }
-                            }
-                            if (chat?.isGroup == true || selectedMsg.isEdited) {
-                                IconButton(
-                                    onClick = {
-                                        if (chat?.isGroup == true) {
-                                            groupReceiptsTarget = selectedMsg
-                                        } else {
-                                            editHistoryTarget = selectedMsg
+                                    SelectionBarAction.SAVE_MEDIA -> {
+                                        val mediaPath = selectedMsg.localMediaPath
+                                        if (!mediaPath.isNullOrBlank()) {
+                                            val targetFile = File(mediaPath)
+                                            val exportName = if (isSelectedDoc) {
+                                                buildDocumentExportFileName(selectedMsg, targetFile)
+                                            } else {
+                                                "WA_${selectedMsg.msgType}_${selectedMsg.id}.${targetFile.extension.ifBlank { "bin" }}"
+                                            }
+                                            val exportMime = if (isSelectedDoc) {
+                                                resolveDocumentMimeType(selectedMsg, targetFile)
+                                            } else {
+                                                selectedMsg.mimeType
+                                            }
+                                            viewModel.exportMediaToGallery(mediaPath, exportName, exportMime)
                                         }
                                         actionMenuTarget = null
                                         showMoreReactionEmojis = false
                                     }
-                                ) {
-                                    Icon(Icons.Rounded.Info, "Message info", tint = colors.textPrimary)
-                                }
-                            }
-                            IconButton(
-                                onClick = {
-                                    deleteConfirmTarget = selectedMsg
-                                    actionMenuTarget = null
-                                    showMoreReactionEmojis = false
-                                    showSelectionOverflow = false
-                                }
-                            ) {
-                                Icon(Icons.Rounded.Delete, "Delete", tint = colors.textPrimary)
-                            }
-                            Box {
-                                IconButton(onClick = { showSelectionOverflow = true }) {
-                                    Icon(Icons.Rounded.MoreVert, "More actions", tint = colors.textPrimary)
-                                }
-                                DropdownMenu(
-                                    expanded = showSelectionOverflow,
-                                    onDismissRequest = { showSelectionOverflow = false }
-                                ) {
-                                    if (selectedMsg.isFromMe && selectedMsg.msgType == "TEXT") {
-                                        DropdownMenuItem(
-                                            text = { Text("Edit") },
-                                            onClick = {
-                                                showSelectionOverflow = false
-                                                editMessageDialogTarget = selectedMsg
-                                                actionMenuTarget = null
-                                                showMoreReactionEmojis = false
-                                            }
-                                        )
+                                    SelectionBarAction.MESSAGE_INFO -> {
+                                        groupReceiptsTarget = selectedMsg
+                                        actionMenuTarget = null
+                                        showMoreReactionEmojis = false
                                     }
-                                    if (selectedMsg.isEdited) {
-                                        DropdownMenuItem(
-                                            text = { Text("Edit history") },
-                                            onClick = {
-                                                showSelectionOverflow = false
-                                                editHistoryTarget = selectedMsg
-                                                actionMenuTarget = null
-                                                showMoreReactionEmojis = false
-                                            }
-                                        )
+                                    SelectionBarAction.EDIT_HISTORY -> {
+                                        editHistoryTarget = selectedMsg
+                                        actionMenuTarget = null
+                                        showMoreReactionEmojis = false
                                     }
-                                    if (!selectedMsg.localMediaPath.isNullOrBlank()) {
-                                        val isSelectedDoc = isDocumentMessage(selectedMsg)
-                                        if (isSelectedDoc) {
-                                            DropdownMenuItem(
-                                                text = { Text(stringResource(R.string.chat_doc_open_with)) },
-                                                onClick = {
-                                                    showSelectionOverflow = false
-                                                    val docFile = File(selectedMsg.localMediaPath)
-                                                    if (docFile.exists()) {
-                                                        openDocumentNatively(context, selectedMsg, docFile) { pdfFile ->
-                                                            pdfViewerTarget = pdfFile to resolveDocumentDisplayName(
-                                                                selectedMsg,
-                                                                resolveDocumentMimeType(selectedMsg, pdfFile),
-                                                                pdfFile
-                                                            )
-                                                        }
-                                                    } else {
-                                                        viewModel.requestMediaDownload(selectedMsg, userInitiated = true)
-                                                    }
-                                                    actionMenuTarget = null
-                                                    showMoreReactionEmojis = false
+                                    SelectionBarAction.OPEN_DOCUMENT -> {
+                                        val mediaPath = selectedMsg.localMediaPath
+                                        if (!mediaPath.isNullOrBlank()) {
+                                            val docFile = File(mediaPath)
+                                            if (docFile.exists()) {
+                                                openDocumentNatively(context, selectedMsg, docFile) { pdfFile ->
+                                                    pdfViewerTarget = pdfFile to resolveDocumentDisplayName(
+                                                        selectedMsg,
+                                                        resolveDocumentMimeType(selectedMsg, pdfFile),
+                                                        pdfFile
+                                                    )
                                                 }
-                                            )
-                                        }
-                                        DropdownMenuItem(
-                                            text = {
-                                                Text(
-                                                    if (isSelectedDoc) stringResource(R.string.chat_doc_save_downloads)
-                                                    else "Save to Gallery"
-                                                )
-                                            },
-                                            onClick = {
-                                                showSelectionOverflow = false
-                                                val targetFile = File(selectedMsg.localMediaPath)
-                                                val exportName = if (isSelectedDoc) {
-                                                    buildDocumentExportFileName(selectedMsg, targetFile)
-                                                } else {
-                                                    "WA_${selectedMsg.msgType}_${selectedMsg.id}.${targetFile.extension.ifBlank { "bin" }}"
-                                                }
-                                                val exportMime = if (isSelectedDoc) {
-                                                    resolveDocumentMimeType(selectedMsg, targetFile)
-                                                } else {
-                                                    selectedMsg.mimeType
-                                                }
-                                                viewModel.exportMediaToGallery(
-                                                    selectedMsg.localMediaPath,
-                                                    exportName,
-                                                    exportMime
-                                                )
-                                                actionMenuTarget = null
-                                                showMoreReactionEmojis = false
-                                            }
-                                        )
-                                    }
-                                    if (chat?.isGroup == true) {
-                                        DropdownMenuItem(
-                                            text = { Text("Message info") },
-                                            onClick = {
-                                                showSelectionOverflow = false
-                                                groupReceiptsTarget = selectedMsg
-                                                actionMenuTarget = null
-                                                showMoreReactionEmojis = false
-                                            }
-                                        )
-                                    }
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                if (selectedMsg.isPinned) stringResource(R.string.unpin_message)
-                                                else stringResource(R.string.pin_message)
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            Icon(
-                                                imageVector = Icons.Rounded.PushPin,
-                                                contentDescription = null,
-                                                tint = if (selectedMsg.isPinned) colors.accentGreen else colors.textPrimary,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        },
-                                        onClick = {
-                                            showSelectionOverflow = false
-                                            val target = selectedMsg
-                                            actionMenuTarget = null
-                                            showMoreReactionEmojis = false
-                                            if (target.isPinned) {
-                                                viewModel.unpinMessage(chatJid, target)
                                             } else {
-                                                pinDurationDialogTarget = target
+                                                viewModel.requestMediaDownload(selectedMsg, userInitiated = true)
                                             }
                                         }
+                                        actionMenuTarget = null
+                                        showMoreReactionEmojis = false
+                                    }
+                                    SelectionBarAction.DELETE -> {
+                                        deleteConfirmTarget = selectedMsg
+                                        actionMenuTarget = null
+                                        showMoreReactionEmojis = false
+                                    }
+                                }
+                            }
+
+                            val iconForAction: (SelectionBarAction) -> androidx.compose.ui.graphics.vector.ImageVector = { action ->
+                                when (action) {
+                                    SelectionBarAction.REPLY -> Icons.AutoMirrored.Rounded.Reply
+                                    SelectionBarAction.FORWARD -> Icons.AutoMirrored.Rounded.Forward
+                                    SelectionBarAction.PIN_UNPIN -> Icons.Rounded.PushPin
+                                    SelectionBarAction.EDIT -> Icons.Rounded.Edit
+                                    SelectionBarAction.COPY -> Icons.Rounded.ContentCopy
+                                    SelectionBarAction.SAVE_MEDIA -> Icons.Rounded.Download
+                                    SelectionBarAction.MESSAGE_INFO -> Icons.Rounded.Info
+                                    SelectionBarAction.EDIT_HISTORY -> Icons.Rounded.History
+                                    SelectionBarAction.OPEN_DOCUMENT -> Icons.Rounded.Description
+                                    SelectionBarAction.DELETE -> Icons.Rounded.Delete
+                                }
+                            }
+
+                            val labelForAction: (SelectionBarAction) -> String = { action ->
+                                when (action) {
+                                    SelectionBarAction.REPLY -> "Reply"
+                                    SelectionBarAction.FORWARD -> "Forward"
+                                    SelectionBarAction.PIN_UNPIN -> if (selectedMsg.isPinned) {
+                                        context.getString(R.string.unpin_message)
+                                    } else {
+                                        context.getString(R.string.pin_message)
+                                    }
+                                    SelectionBarAction.EDIT -> "Edit"
+                                    SelectionBarAction.COPY -> "Copy"
+                                    SelectionBarAction.SAVE_MEDIA -> if (isSelectedDoc) {
+                                        context.getString(R.string.chat_doc_save_downloads)
+                                    } else {
+                                        "Save to Gallery"
+                                    }
+                                    SelectionBarAction.MESSAGE_INFO -> "Message info"
+                                    SelectionBarAction.EDIT_HISTORY -> "Edit history"
+                                    SelectionBarAction.OPEN_DOCUMENT -> context.getString(R.string.chat_doc_open_with)
+                                    SelectionBarAction.DELETE -> "Delete"
+                                }
+                            }
+
+                            barLayout.directActions.forEach { action ->
+                                val tint = if (action == SelectionBarAction.PIN_UNPIN && selectedMsg.isPinned) {
+                                    colors.accentGreen
+                                } else {
+                                    colors.textPrimary
+                                }
+                                val label = labelForAction(action)
+                                IconButton(
+                                    onClick = { triggerAction(action) },
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = iconForAction(action),
+                                        contentDescription = label,
+                                        tint = tint,
+                                        modifier = Modifier.size(21.dp)
                                     )
+                                }
+                            }
+
+                            if (barLayout.overflowActions.isNotEmpty()) {
+                                Box {
+                                    IconButton(
+                                        onClick = { showSelectionOverflow = true },
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.MoreVert,
+                                            contentDescription = "More actions",
+                                            tint = colors.textPrimary,
+                                            modifier = Modifier.size(21.dp)
+                                        )
+                                    }
+                                    DropdownMenu(
+                                        expanded = showSelectionOverflow,
+                                        onDismissRequest = { showSelectionOverflow = false }
+                                    ) {
+                                        barLayout.overflowActions.forEach { action ->
+                                            val tint = if (action == SelectionBarAction.PIN_UNPIN && selectedMsg.isPinned) {
+                                                colors.accentGreen
+                                            } else {
+                                                colors.textPrimary
+                                            }
+                                            DropdownMenuItem(
+                                                text = { Text(labelForAction(action)) },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = iconForAction(action),
+                                                        contentDescription = null,
+                                                        tint = tint,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                },
+                                                onClick = { triggerAction(action) }
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -858,7 +922,7 @@ fun ChatScreen(
                                         val sub = when {
                                             isChannel -> "Public channel"
                                             chat?.isOnline == true -> stringResource(R.string.chat_status_online)
-                                            (chat?.lastSeen ?: 0L) > 0L -> "last seen ${formatMessageClock(chat!!.lastSeen, includeSeconds = showSeconds)}"
+                                            (chat?.lastSeen ?: 0L) > 0L -> "last seen ${formatMessageClock(chat!!.lastSeen, includeSeconds = showSeconds, use24Hour = use24Hour)}"
                                             effectiveAbout.isNotBlank() -> effectiveAbout
                                             else -> ""
                                         }
@@ -1220,6 +1284,18 @@ fun ChatScreen(
                                         viewModel.requestMediaDownload(msg, userInitiated = true)
                                     }
                                 }
+                                val handleSaveDocument: () -> Unit = {
+                                    val docFile = msg.localMediaPath?.takeIf { it.isNotBlank() }?.let(::File)
+                                    if (docFile != null && docFile.exists() && docFile.length() > 0L) {
+                                        viewModel.exportMediaToGallery(
+                                            localPath = docFile.absolutePath,
+                                            displayName = buildDocumentExportFileName(msg, docFile),
+                                            mimeType = resolveDocumentMimeType(msg, docFile)
+                                        )
+                                    } else {
+                                        viewModel.requestMediaDownload(msg, userInitiated = true)
+                                    }
+                                }
                                 if (isChannel || isGroupAnnounceLocked) {
                                     MessageBubbleRow(
                                         msg = msg,
@@ -1241,6 +1317,7 @@ fun ChatScreen(
                                         onRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = true) },
                                         onOpenMedia = { mediaLightboxTarget = msg },
                                         onOpenDocument = handleOpenDocument,
+                                        onSaveDocument = handleSaveDocument,
                                         onLongPress = {
                                             showMoreReactionEmojis = false
                                             actionMenuTarget = msg
@@ -1268,6 +1345,7 @@ fun ChatScreen(
                                             onRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = true) },
                                             onOpenMedia = { mediaLightboxTarget = msg },
                                             onOpenDocument = handleOpenDocument,
+                                            onSaveDocument = handleSaveDocument,
                                             onLongPress = {
                                                 showMoreReactionEmojis = false
                                                 actionMenuTarget = msg
@@ -1538,7 +1616,13 @@ fun ChatScreen(
                                 checkedContainerColor = colors.accentGreen,
                                 checkedContentColor = Color(0xFF0B141A)
                             )
-                            val modes = OutboundQualityMode.entries
+                            val modes = remember {
+                                listOf(
+                                    OutboundQualityMode.STANDARD,
+                                    OutboundQualityMode.HD,
+                                    OutboundQualityMode.ORIGINAL
+                                )
+                            }
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -2145,7 +2229,7 @@ fun ChatScreen(
                 )
                 Card(colors = CardDefaults.cardColors(containerColor = colors.pillActiveBg)) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Text("Current Version · ${formatMessageClock(target.editedAt, includeSeconds = showSeconds)}", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = colors.pillActiveText)
+                        Text("Current Version · ${formatMessageClock(target.editedAt, includeSeconds = showSeconds, use24Hour = use24Hour)}", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = colors.pillActiveText)
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(target.body, color = colors.textPrimary, fontSize = 14.sp)
                     }
@@ -2157,7 +2241,7 @@ fun ChatScreen(
                         Card(colors = CardDefaults.cardColors(containerColor = colors.pillInactiveBg)) {
                             Column(modifier = Modifier.padding(12.dp)) {
                                 Text(
-                                    text = "Revision #${edits.size - idx} · ${formatMessageClock(rev.editedAt, includeSeconds = showSeconds)}",
+                                    text = "Revision #${edits.size - idx} · ${formatMessageClock(rev.editedAt, includeSeconds = showSeconds, use24Hour = use24Hour)}",
                                     fontSize = 11.sp,
                                     fontFamily = mono,
                                     color = colors.textSecondary
@@ -2196,7 +2280,7 @@ fun ChatScreen(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(r.participantName.ifBlank { r.participantJid }, color = colors.textPrimary)
-                            Text("${r.status} · ${formatMessageClock(r.timestamp, includeSeconds = showSeconds)}", color = colors.blueTick, fontFamily = mono, fontSize = 12.sp)
+                            Text("${r.status} · ${formatMessageClock(r.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour)}", color = colors.blueTick, fontFamily = mono, fontSize = 12.sp)
                         }
                     }
                 }
@@ -2476,6 +2560,21 @@ fun ChatScreen(
             colors = colors
         )
     }
+
+    forwardTarget?.let { target ->
+        val lockedGroups by com.wa.beastclient.core.service.WaRealtimeService.announceLockedGroups.collectAsState()
+        ForwardMessageDialog(
+            allChats = allChats,
+            announceLockedGroups = lockedGroups,
+            currentChatJid = chatJid,
+            colors = colors,
+            onDismiss = { forwardTarget = null },
+            onConfirmForward = { targetJids ->
+                viewModel.forwardMessage(target, targetJids)
+                forwardTarget = null
+            }
+        )
+    }
 }
 
 internal fun findLoadedQuotedItemIndex(
@@ -2497,6 +2596,63 @@ internal fun resolveMessageDeleteDialogMode(msg: MessageEntity): MessageDeleteDi
     msg.isDeletedBySender -> MessageDeleteDialogMode.PERMANENT_DELETE_CAPTURED
     msg.isFromMe -> MessageDeleteDialogMode.DELETE_OUTGOING_OPTIONS
     else -> MessageDeleteDialogMode.DELETE_FOR_ME_INCOMING
+}
+
+internal enum class SelectionBarAction {
+    REPLY,
+    FORWARD,
+    PIN_UNPIN,
+    EDIT,
+    SAVE_MEDIA,
+    COPY,
+    MESSAGE_INFO,
+    EDIT_HISTORY,
+    OPEN_DOCUMENT,
+    DELETE
+}
+
+internal data class SelectionBarLayout(
+    val directActions: List<SelectionBarAction>,
+    val overflowActions: List<SelectionBarAction>
+)
+
+internal fun resolveSelectionBarLayout(
+    msg: MessageEntity,
+    isChannel: Boolean,
+    isGroupAnnounceLocked: Boolean,
+    isGroup: Boolean,
+    isDocument: Boolean,
+    maxDirectWithoutOverflow: Int = 6
+): SelectionBarLayout {
+    val available = buildList {
+        if (!isChannel && !isGroupAnnounceLocked) add(SelectionBarAction.REPLY)
+        if (com.wa.beastclient.core.service.WaRealtimeService.isForwardableMessageType(msg)) {
+            add(SelectionBarAction.FORWARD)
+        }
+        add(SelectionBarAction.PIN_UNPIN)
+        if (msg.isFromMe && msg.msgType == "TEXT") add(SelectionBarAction.EDIT)
+        if (!msg.localMediaPath.isNullOrBlank()) {
+            add(SelectionBarAction.SAVE_MEDIA)
+        }
+        if (msg.body.isNotBlank()) add(SelectionBarAction.COPY)
+        if (!msg.localMediaPath.isNullOrBlank() && isDocument) {
+            add(SelectionBarAction.OPEN_DOCUMENT)
+        }
+        if (isGroup) add(SelectionBarAction.MESSAGE_INFO)
+        if (msg.isEdited) add(SelectionBarAction.EDIT_HISTORY)
+        add(SelectionBarAction.DELETE)
+    }
+
+    if (available.size <= maxDirectWithoutOverflow) {
+        return SelectionBarLayout(directActions = available, overflowActions = emptyList())
+    }
+
+    // Reserve one slot for the overflow button while keeping Delete always directly reachable.
+    val nonDelete = available.filter { it != SelectionBarAction.DELETE }
+    val directNonDeleteCount = (maxDirectWithoutOverflow - 2).coerceAtLeast(1)
+    val direct = nonDelete.take(directNonDeleteCount) + SelectionBarAction.DELETE
+    val overflow = nonDelete.drop(directNonDeleteCount)
+    return SelectionBarLayout(directActions = direct, overflowActions = overflow)
 }
 
 @Composable
@@ -2541,11 +2697,13 @@ private fun MessageBubbleRow(
     onRequestDownload: () -> Unit = {},
     onOpenMedia: () -> Unit,
     onOpenDocument: () -> Unit = {},
+    onSaveDocument: () -> Unit = {},
     onLongPress: () -> Unit
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
     val showSeconds = LocalWuppShowSeconds.current
+    val use24Hour = LocalWuppUse24Hour.current
     val context = LocalContext.current
     val effectiveOutgoing = msg.isFromMe && !isChannel
     val isSticker = msg.msgType == "STICKER" && !msg.isDeletedBySender
@@ -2836,7 +2994,7 @@ private fun MessageBubbleRow(
                         Spacer(modifier = Modifier.height(3.dp))
                         Row(modifier = Modifier.align(Alignment.End)) {
                             MessageMetaCluster(
-                                timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
+                                timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour),
                                 isEdited = false,
                                 isEphemeral = msg.isEphemeral,
                                 isFromMe = msg.isFromMe,
@@ -2896,7 +3054,7 @@ private fun MessageBubbleRow(
                         Spacer(modifier = Modifier.height(3.dp))
                         Row(modifier = Modifier.align(Alignment.End)) {
                             MessageMetaCluster(
-                                timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
+                                timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour),
                                 isEdited = msg.isEdited,
                                 isEphemeral = msg.isEphemeral,
                                 isFromMe = msg.isFromMe,
@@ -2990,7 +3148,7 @@ private fun MessageBubbleRow(
                             Spacer(modifier = Modifier.height(3.dp))
                             Row(modifier = Modifier.align(Alignment.End).padding(horizontal = 2.dp)) {
                                 MessageMetaCluster(
-                                    timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
+                                    timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour),
                                     isEdited = false,
                                     isEphemeral = false,
                                     isFromMe = false,
@@ -3178,7 +3336,7 @@ private fun MessageBubbleRow(
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
                                     MessageMetaCluster(
-                                        timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
+                                        timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour),
                                         isEdited = msg.isEdited,
                                         isEphemeral = msg.isEphemeral,
                                         isFromMe = msg.isFromMe,
@@ -3217,7 +3375,8 @@ private fun MessageBubbleRow(
                             onClick = {
                                 if (localDocFile != null) onOpenDocument() else onRequestDownload()
                             },
-                            onLongClick = onLongPress
+                            onLongClick = onLongPress,
+                            onSaveToDownloads = if (localDocFile != null) onSaveDocument else null
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Row(
@@ -3226,7 +3385,7 @@ private fun MessageBubbleRow(
                                 .padding(horizontal = 4.dp)
                         ) {
                             MessageMetaCluster(
-                                timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
+                                timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour),
                                 isEdited = msg.isEdited,
                                 isEphemeral = msg.isEphemeral,
                                 isFromMe = msg.isFromMe,
@@ -3247,6 +3406,40 @@ private fun MessageBubbleRow(
                             onRequestDownload = onRequestDownload,
                             onLongPress = onLongPress
                         )
+                    }
+
+                    // Undecryptable placeholder (only shown when sender retry & phone peer-sync timed out)
+                    msg.msgType == "UNDECRYPTABLE" && !msg.isDeletedBySender -> {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 2.dp, vertical = 1.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.History,
+                                contentDescription = null,
+                                tint = colors.textSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = msg.body.ifBlank { "Waiting for this message. This may take a while." },
+                                color = colors.textSecondary,
+                                fontStyle = FontStyle.Italic,
+                                fontSize = 13.5.sp,
+                                lineHeight = 18.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Row(modifier = Modifier.align(Alignment.End)) {
+                            MessageMetaCluster(
+                                timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour),
+                                isEdited = false,
+                                isEphemeral = msg.isEphemeral,
+                                isFromMe = msg.isFromMe,
+                                deliveryStatus = msg.deliveryStatus,
+                                isPinned = msg.isPinned
+                            )
+                        }
                     }
 
                     // Standard Text, Sticker, or Anti-Deleted text bubble
@@ -3556,16 +3749,7 @@ private fun StickerMessageBubbleItem(
             File(p).takeIf { it.exists() && it.length() > 0L }
         }
     }
-    val bmp by produceState<ImageBitmap?>(
-        initialValue = null,
-        key1 = localFile?.absolutePath
-    ) {
-        value = if (localFile != null) {
-            withContext(Dispatchers.IO) {
-                runCatching { BitmapFactory.decodeFile(localFile.absolutePath)?.asImageBitmap() }.getOrNull()
-            }
-        } else null
-    }
+    var replayNonce by remember(msg.id) { mutableStateOf(0) }
 
     LaunchedEffect(msg.id, localFile != null) {
         if (localFile == null && !isDownloadingMedia && mediaDownloadError == null) {
@@ -3578,20 +3762,28 @@ private fun StickerMessageBubbleItem(
             .sizeIn(minWidth = 120.dp, minHeight = 120.dp, maxWidth = 160.dp, maxHeight = 160.dp)
             .combinedClickable(
                 onClick = {
-                    if (localFile == null) onRequestDownload()
+                    if (localFile == null) onRequestDownload() else replayNonce++
                 },
                 onLongClick = onLongPress
             )
     ) {
-        val loaded = bmp
-        if (loaded != null) {
-            Image(
-                bitmap = loaded,
+        if (localFile != null) {
+            AnimatedStickerImage(
+                file = localFile,
                 contentDescription = "Sticker",
-                contentScale = ContentScale.Fit,
+                maxDecodeDimPx = 512,
+                replayNonce = replayNonce,
                 modifier = Modifier
                     .size(150.dp)
-                    .align(Alignment.Center)
+                    .align(Alignment.Center),
+                placeholder = {
+                    Box(
+                        modifier = Modifier
+                            .size(140.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.Black.copy(alpha = 0.08f))
+                    )
+                }
             )
         } else if (isDownloadingMedia) {
             Box(
@@ -3646,7 +3838,7 @@ private fun StickerMessageBubbleItem(
                 .padding(horizontal = 5.dp, vertical = 2.dp)
         ) {
             MessageMetaCluster(
-                timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
+                timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds, use24Hour = LocalWuppUse24Hour.current),
                 isEdited = msg.isEdited,
                 isEphemeral = msg.isEphemeral,
                 isFromMe = msg.isFromMe,

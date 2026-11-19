@@ -32,6 +32,7 @@ import com.wa.beastclient.data.media.EagerMediaVault
 import com.wa.beastclient.data.media.OutboundQualityMode
 import com.wa.beastclient.data.media.SoundPoolManager
 import com.wa.beastclient.data.media.StickerFavoritesStore
+import com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
 import com.wa.beastclient.domain.security.AppLockConfig
 import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.domain.stealth.AutoDownloadNetwork
@@ -804,7 +805,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var lastOfflineToggleMs: Long = 0L
+
+    fun setOfflineMode(enabled: Boolean) {
+        val current = StealthMatrixManager.config.value.offlineMode
+        if (current == enabled) return
+        val now = System.currentTimeMillis()
+        if (now - lastOfflineToggleMs < 2_000L) {
+            showToast("Hold on — switching connection state")
+            return
+        }
+        lastOfflineToggleMs = now
+        WaRealtimeService.setOfflineMode(appContext, enabled)
+        showToast(
+            if (enabled) "Wupp is now Offline — sync paused"
+            else "Connecting Wupp back Live…"
+        )
+    }
+
+    fun toggleOfflineMode() {
+        setOfflineMode(!StealthMatrixManager.config.value.offlineMode)
+    }
+
     fun reconnectSocket() {
+        if (StealthMatrixManager.config.value.offlineMode) {
+            setOfflineMode(false)
+            return
+        }
         val intent = Intent(appContext, WaRealtimeService::class.java).apply {
             action = WaRealtimeService.ACTION_RECONNECT
         }
@@ -822,6 +849,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             WaRealtimeService.sendTextMessage(appContext, chatJid, text.trim(), quoted, ghostMentionEveryone)
                 .onFailure { err ->
                     showToast(err.message ?: "Send failed")
+                }
+        }
+    }
+
+    fun forwardMessage(msg: MessageEntity, targetChatJids: List<String>) {
+        if (targetChatJids.isEmpty()) return
+        viewModelScope.launch {
+            WaRealtimeService.forwardMessageToChats(appContext, msg, targetChatJids)
+                .onSuccess { count ->
+                    showToast("Forwarded to $count ${if (count == 1) "chat" else "chats"}")
+                }
+                .onFailure { err ->
+                    showToast(err.message ?: "Forward failed")
                 }
         }
     }
@@ -1016,6 +1056,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun sendGifMessage(chatJid: String, gifMp4File: File, caption: String = "", durationSec: Int = 0) {
+        viewModelScope.launch {
+            if (!gifMp4File.exists() || gifMp4File.length() == 0L) {
+                showToast("GIF file not found")
+                return@launch
+            }
+            WaRealtimeService.sendMediaMessage(
+                context = appContext,
+                chatJid = chatJid,
+                sourceFile = gifMp4File,
+                mimeType = "video/mp4",
+                caption = caption,
+                qualityMode = OutboundQualityMode.GIF,
+                isVoiceNote = false,
+                durationSec = durationSec
+            ).onFailure { err ->
+                showToast(err.message ?: "Failed to send GIF")
+            }
+        }
+    }
+
     fun toggleFavoriteSticker(msg: MessageEntity): Boolean {
         val key = msg.mediaSha256?.takeIf { it.isNotBlank() }
             ?: msg.localMediaPath?.takeIf { it.isNotBlank() }
@@ -1150,8 +1211,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         viewModelScope.launch {
-            EagerMediaVault.exportToGallery(appContext, File(localPath), displayName, mimeType)
-                .onSuccess { showToast("Saved to Gallery ($displayName)") }
+            val resolvedMime = EagerMediaVault.resolveDownloadExportSpec(displayName, mimeType).second
+            val isGalleryMedia = resolvedMime.startsWith("image/") || resolvedMime.startsWith("video/")
+            EagerMediaVault.exportToGallery(appContext, File(localPath), displayName, resolvedMime)
+                .onSuccess {
+                    val where = if (isGalleryMedia) "Gallery" else "Downloads/Wupp"
+                    showToast("Saved to $where ($displayName)")
+                }
                 .onFailure { showToast("Export failed: ${it.message}") }
         }
     }
@@ -1243,6 +1309,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _quotedMsgMeta = MutableStateFlow<Map<String, QuotedSenderMeta>>(emptyMap())
     val quotedMsgMeta: StateFlow<Map<String, QuotedSenderMeta>> = _quotedMsgMeta.asStateFlow()
 
+    fun syncDeviceContactFallbacks(forceRefresh: Boolean = true, notifyUser: Boolean = false) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val updated = DeviceContactFallbackResolver.backfillMissingContactNames(
+                context = appContext,
+                dao = dao,
+                forceRefresh = forceRefresh
+            )
+            // Drop cached participant entries that had neither saved nor push names from the server so open screens re-resolve.
+            val currentMeta = _participantMeta.value
+            val staleKeys = currentMeta.entries
+                .filter { (_, v) ->
+                    DeviceContactFallbackResolver.isServerNameMissing(v.savedName, v.jid, v.altJid) &&
+                        DeviceContactFallbackResolver.isServerNameMissing(v.pushName, v.jid, v.altJid)
+                }
+                .map { it.key }
+            if (staleKeys.isNotEmpty()) {
+                _participantMeta.value = currentMeta - staleKeys.toSet()
+            }
+            if (notifyUser) {
+                val msg = if (updated > 0) {
+                    "Matched $updated missing contact name(s) from device"
+                } else {
+                    "Device contact fallback active · server names prioritized"
+                }
+                showToast(msg)
+            }
+        }
+    }
+
     fun resolveParticipantsLocally(jids: Collection<String>) {
         val current = _participantMeta.value
         val missing = jids
@@ -1261,12 +1356,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             while (keys.hasNext()) {
                 val key = keys.next()
                 val item = obj.optJSONObject(key) ?: continue
+                val altJid = item.optString("altJid")
+                val serverSaved = item.optString("savedName")
+                val serverPush = item.optString("pushName")
+                val phone = item.optString("phone")
+                val effectiveSaved = if (
+                    DeviceContactFallbackResolver.isServerNameMissing(serverSaved, key, altJid) &&
+                    DeviceContactFallbackResolver.isServerNameMissing(serverPush, key, altJid)
+                ) {
+                    DeviceContactFallbackResolver.lookupForParticipant(
+                        context = appContext,
+                        jid = key,
+                        altJid = altJid,
+                        phone = phone
+                    ).orEmpty()
+                } else {
+                    serverSaved
+                }
                 parsed[key] = ResolvedParticipantUi(
                     jid = key,
-                    altJid = item.optString("altJid"),
-                    savedName = item.optString("savedName"),
-                    pushName = item.optString("pushName"),
-                    phone = item.optString("phone"),
+                    altJid = altJid,
+                    savedName = effectiveSaved,
+                    pushName = serverPush,
+                    phone = phone,
                     avatarPath = item.optString("avatarPath"),
                     isSelf = item.optBoolean("isSelf", false)
                 )

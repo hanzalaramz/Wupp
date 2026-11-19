@@ -153,12 +153,19 @@ fun ContactInfoScreen(
     var isMemberSearchActive by remember { mutableStateOf(false) }
     val participantMeta by viewModel.participantMeta.collectAsState()
 
-    val filteredMembers = remember(groupParticipants, memberSearchQuery, participantMeta) {
+    val otherParticipants = remember(groupParticipants, participantMeta) {
+        groupParticipants.filter { participantMeta[it]?.isSelf != true }
+    }
+    val totalMembersCount = remember(otherParticipants) {
+        (1 + otherParticipants.size).coerceAtLeast(1)
+    }
+
+    val filteredMembers = remember(otherParticipants, memberSearchQuery, participantMeta) {
         if (memberSearchQuery.isBlank()) {
-            groupParticipants
+            otherParticipants
         } else {
             val q = memberSearchQuery.lowercase().trim()
-            groupParticipants.filter { jid ->
+            otherParticipants.filter { jid ->
                 val meta = participantMeta[jid]
                 val name = meta?.savedName?.ifBlank { meta.pushName }.orEmpty().lowercase()
                 val phone = meta?.phone.orEmpty().lowercase()
@@ -436,9 +443,8 @@ fun ContactInfoScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                val total = if (groupParticipants.isNotEmpty()) groupParticipants.size else 1
                                 Text(
-                                    text = "$total members",
+                                    text = "$totalMembersCount members",
                                     color = colors.textSecondary,
                                     fontSize = 13.5.sp,
                                     fontWeight = FontWeight.Medium
@@ -579,7 +585,7 @@ fun ContactInfoScreen(
                                     .padding(horizontal = 16.dp, vertical = 14.dp)
                             ) {
                                 Text(
-                                    text = "See all (${groupParticipants.size} members)",
+                                    text = "See all ($totalMembersCount members)",
                                     color = colors.brightGreen,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Medium,

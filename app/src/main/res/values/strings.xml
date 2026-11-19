@@ -121,7 +121,9 @@
     <string name="applock_timeout_5m">5 min</string>
     <string name="applock_timeout_30m">30 min</string>
     <string name="applock_hide_recents_title">Hide content in Recents</string>
-    <string name="applock_hide_recents_subtitle">Blurs app preview and blocks screenshots with FLAG_SECURE</string>
+    <string name="applock_hide_recents_subtitle">Hides app preview in Recent Apps on Android 13+</string>
+    <string name="settings_allow_screenshots_title">Allow Screenshots</string>
+    <string name="settings_allow_screenshots_subtitle">Allow capturing screenshots anywhere inside Wupp</string>
     <string name="applock_hide_locked_chats_title">Hide locked chats behind App Lock</string>
     <string name="applock_hide_locked_chats_subtitle">Hides WhatsApp locked chats on Home until unlocked locally</string>
     <string name="applock_set_pin_title">Set Custom PIN</string>

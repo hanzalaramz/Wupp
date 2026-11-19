@@ -74,6 +74,7 @@ import com.wa.beastclient.data.db.WaDao
 import com.wa.beastclient.ui.screens.WhatsAppAvatar
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWuppClassicUi
+import com.wa.beastclient.ui.theme.LocalWuppUse24Hour
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -528,7 +529,7 @@ private fun ChatPeekMessageBubble(
                     )
                 }
                 Text(
-                    text = formatMessageClock(msg.timestamp, includeSeconds = showSeconds),
+                    text = formatMessageClock(msg.timestamp, includeSeconds = showSeconds, use24Hour = LocalWuppUse24Hour.current),
                     fontSize = 10.sp,
                     color = colors.textSecondary
                 )

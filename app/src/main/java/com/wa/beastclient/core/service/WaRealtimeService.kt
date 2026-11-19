@@ -22,6 +22,8 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.Person
+import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import com.wa.beastclient.MainActivity
 import com.wa.beastclient.R
@@ -40,6 +42,7 @@ import com.wa.beastclient.data.media.EagerMediaVault
 import com.wa.beastclient.data.media.OutboundQualityMode
 import com.wa.beastclient.data.media.SoundPoolManager
 import com.wa.beastclient.data.media.StickerFavoritesStore
+import com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.bridge.whatsbridge.NativeBridgeCallback
 import com.wa.bridge.whatsbridge.Whatsbridge
@@ -84,6 +87,7 @@ internal fun resolveOutboundMediaDispatch(
     isVoiceNote: Boolean
 ): Pair<String, String> = when {
     isVoiceNote -> "PTT" to qualityMode.wireValue
+    qualityMode == OutboundQualityMode.GIF -> "VIDEO" to OutboundQualityMode.GIF.wireValue
     qualityMode == OutboundQualityMode.STICKER || (mimeType.equals("image/webp", ignoreCase = true) && qualityMode.wireValue == "sticker") -> "STICKER" to "sticker"
     mimeType.startsWith("video/", ignoreCase = true) -> {
         val wireMode = if (qualityMode == OutboundQualityMode.ORIGINAL) {
@@ -228,6 +232,7 @@ class WaRealtimeService : Service() {
                 }
                 dao.purgeExpiredStatuses(statusCutoff)
                 dao.deleteEmptyUnknownMessages()
+                dao.purgeLegacyDecryptStubMessages()
                 dao.deleteOrphanReactions()
                 dao.normalizeViewOncePreviews()
                 val healPrefs = getSharedPreferences("wupp_migrations", Context.MODE_PRIVATE)
@@ -266,6 +271,7 @@ class WaRealtimeService : Service() {
                         }
                     }
                 }
+                DeviceContactFallbackResolver.backfillMissingContactNames(applicationContext, dao)
             }
         }
 
@@ -279,7 +285,11 @@ class WaRealtimeService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_RECONNECT -> serviceScope.launch {
-                if (hasValidatedInternet() && runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+                StealthMatrixManager.init(applicationContext)
+                if (!StealthMatrixManager.config.value.offlineMode &&
+                    hasValidatedInternet() &&
+                    runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)
+                ) {
                     runCatching { Whatsbridge.connectClient() }
                 }
             }
@@ -380,6 +390,7 @@ class WaRealtimeService : Service() {
 
     fun nudgeReconnectIfNeeded() {
         serviceScope.launch {
+            if (StealthMatrixManager.config.value.offlineMode) return@launch
             val loggedIn = runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)
             if (!loggedIn) return@launch
             val connected = runCatching { Whatsbridge.isConnected() }.getOrDefault(false)
@@ -436,16 +447,23 @@ class WaRealtimeService : Service() {
                     hasSeenInitialNetwork = true
                     return
                 }
+                if (StealthMatrixManager.config.value.offlineMode) return
                 Log.d(TAG, "Network changed/available -> resetting Go socket <500ms")
                 serviceScope.launch {
-                    if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+                    if (!StealthMatrixManager.config.value.offlineMode &&
+                        runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)
+                    ) {
                         runCatching { Whatsbridge.resetSocket() }
                     }
                 }
             }
 
             override fun onLost(network: Network) {
-                _bridgeStatus.value = _bridgeStatus.value.copy(connectionState = "RECONNECTING")
+                if (StealthMatrixManager.config.value.offlineMode && _bridgeStatus.value.isLoggedIn) {
+                    _bridgeStatus.value = _bridgeStatus.value.copy(connectionState = "OFFLINE_PAUSED")
+                } else {
+                    _bridgeStatus.value = _bridgeStatus.value.copy(connectionState = "RECONNECTING")
+                }
             }
         }
         networkCallback = cb
@@ -486,8 +504,18 @@ class WaRealtimeService : Service() {
                 Whatsbridge.initClient(applicationContext.filesDir.absolutePath, callback)
                 Whatsbridge.setGhostPresence(StealthMatrixManager.config.value.ghostPresence)
                 syncAutoDownloadPolicy(applicationContext)
-                // Always connect cleanly so paired sessions sync immediately and fresh installs stream QR right away.
-                Whatsbridge.connectClient()
+                val loggedIn = runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)
+                if (loggedIn && StealthMatrixManager.config.value.offlineMode) {
+                    _bridgeStatus.value = _bridgeStatus.value.copy(
+                        engineReady = true,
+                        isLoggedIn = true,
+                        connectionState = "OFFLINE_PAUSED"
+                    )
+                    promoteForeground("Offline mode (sync paused)")
+                } else {
+                    // Always connect cleanly so paired sessions sync immediately and fresh installs stream QR right away.
+                    Whatsbridge.connectClient()
+                }
             }.onFailure { err ->
                 Log.e(TAG, "Go bridge init failed", err)
                 _bridgeStatus.value = _bridgeStatus.value.copy(
@@ -525,11 +553,16 @@ class WaRealtimeService : Service() {
             "ENGINE_READY" -> {
                 val own = json.optString("ownJid", "")
                 val loggedIn = json.optBoolean("isLoggedIn", false) || own.isNotBlank()
+                val offlinePaused = loggedIn && StealthMatrixManager.config.value.offlineMode
                 _bridgeStatus.value = _bridgeStatus.value.copy(
                     engineReady = true,
                     isLoggedIn = loggedIn,
                     ownJid = own,
-                    connectionState = if (loggedIn) "CONNECTING" else "AWAITING_PAIR"
+                    connectionState = when {
+                        !loggedIn -> "AWAITING_PAIR"
+                        offlinePaused -> "OFFLINE_PAUSED"
+                        else -> "CONNECTING"
+                    }
                 )
             }
             "QR" -> {
@@ -553,19 +586,26 @@ class WaRealtimeService : Service() {
                     "PAIRED", "CONNECTED" -> true
                     else -> _bridgeStatus.value.isLoggedIn || runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)
                 }
+                val offlinePaused = nextLoggedIn && StealthMatrixManager.config.value.offlineMode
+                val effectiveState = if (offlinePaused && (st == "DISCONNECTED" || st == "RECONNECTING" || st == "CONNECTING")) {
+                    "OFFLINE_PAUSED"
+                } else {
+                    st
+                }
                 _bridgeStatus.value = _bridgeStatus.value.copy(
                     engineReady = true,
                     isLoggedIn = nextLoggedIn,
-                    connectionState = st,
+                    connectionState = effectiveState,
                     ownJid = if (st == "LOGGED_OUT") "" else own,
                     latestQrCode = if (nextLoggedIn) null else _bridgeStatus.value.latestQrCode,
                     latestPairCode = if (nextLoggedIn) null else _bridgeStatus.value.latestPairCode
                 )
                 val statusLine = when {
                     !nextLoggedIn -> "Waiting to link WhatsApp"
-                    st == "CONNECTED" -> "Real-time sync active"
-                    st == "RECONNECTING" -> "Reconnecting real-time sync…"
-                    else -> "Real-time sync ($st)"
+                    effectiveState == "OFFLINE_PAUSED" -> "Offline mode (sync paused)"
+                    effectiveState == "CONNECTED" -> "Real-time sync active"
+                    effectiveState == "RECONNECTING" -> "Reconnecting real-time sync…"
+                    else -> "Real-time sync ($effectiveState)"
                 }
                 promoteForeground(statusLine)
                 if (st == "CONNECTED") {
@@ -595,6 +635,7 @@ class WaRealtimeService : Service() {
             "VIEW_ONCE_STRIPPED" -> handleViewOnceStripped(json)
             "VIEW_ONCE_EXPIRED" -> handleViewOnceExpired(json)
             "UNDECRYPTABLE_STUB" -> handleUndecryptableStub(json)
+            "UNDECRYPTABLE_RESOLVED" -> handleUndecryptableResolved(json)
             "MEDIA_DOWNLOADED" -> handleMediaDownloaded(json)
             "MEDIA_DOWNLOAD_STATUS" -> handleMediaDownloadStatus(json)
             "RECEIPT" -> handleReceipt(json)
@@ -756,6 +797,7 @@ class WaRealtimeService : Service() {
 
             dao.insertHistorySyncBatch(chatsList, msgList)
             dao.deleteEmptyUnknownMessages()
+            DeviceContactFallbackResolver.backfillMissingContactNames(applicationContext, dao)
             dao.cleanupEmptyProtocolChats()
             val rxArr = json.optJSONArray("reactions")
             if (rxArr != null) {
@@ -869,21 +911,6 @@ class WaRealtimeService : Service() {
         }
     }
 
-    private fun ensureMessageNotificationChannel(mgr: NotificationManager) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val msgCh = NotificationChannel(
-                MESSAGES_CHANNEL_ID,
-                "Messages",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Incoming WhatsApp chat and group message alerts"
-                enableVibration(true)
-                setShowBadge(true)
-            }
-            mgr.createNotificationChannel(msgCh)
-        }
-    }
-
     private suspend fun postIncomingMessageNotification(msg: MessageEntity, isGroup: Boolean) {
         if (msg.chatJid == "status@broadcast" || msg.chatJid.endsWith("@newsletter")) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -896,9 +923,6 @@ class WaRealtimeService : Service() {
         val stealthCfg = StealthMatrixManager.config.value
         if (isGroup && !stealthCfg.notifyGroupEnabled) return
         if (!isGroup && !stealthCfg.notifyDmEnabled) return
-
-        val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        ensureMessageNotificationChannel(mgr)
 
         val chatTitle = chat?.name?.takeIf { it.isNotBlank() }
             ?: msg.senderName.takeIf { it.isNotBlank() && !isGroup }
@@ -919,48 +943,33 @@ class WaRealtimeService : Service() {
             else -> "New message"
         }
 
-        val contentText = if (!stealthCfg.notifyShowPreview) {
-            "New message"
-        } else if (isGroup) {
-            val senderLabel = msg.senderName.takeIf { it.isNotBlank() }
-                ?: msg.senderJid.substringBefore("@").substringBefore(":")
-            if (senderLabel.isNotBlank()) "$senderLabel: $bodyPreview" else bodyPreview
+        val senderLabel = if (isGroup) {
+            msg.senderName.takeIf { it.isNotBlank() }
+                ?: msg.senderJid.substringBefore("@").substringBefore(":").ifBlank { chatTitle }
         } else {
-            bodyPreview
+            chatTitle
         }
 
-        val notifId = notificationIdForChat(msg.chatJid)
-        val openIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("open_chat_jid", msg.chatJid)
-        }
-        val contentPendingIntent = PendingIntent.getActivity(
-            this,
-            notifId,
-            openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        val entry = NotificationHistoryEntry(
+            senderName = senderLabel,
+            text = bodyPreview,
+            timestamp = msg.timestamp,
+            isSelf = false
         )
+        val state = notificationThreads.compute(msg.chatJid) { _, existing ->
+            val updated = (existing?.entries ?: mutableListOf()).apply {
+                add(entry)
+                while (size > 6) removeAt(0)
+            }
+            NotificationChatState(
+                chatTitle = chatTitle,
+                isGroup = isGroup,
+                lastMessageId = msg.id,
+                entries = updated
+            )
+        } ?: return
 
-        val builder = NotificationCompat.Builder(this, MESSAGES_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_wupp)
-            .setContentTitle(chatTitle)
-            .setContentText(contentText)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(contentText))
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setAutoCancel(true)
-            .setSilent(isUiForeground)
-            .setWhen(msg.timestamp)
-            .setShowWhen(true)
-            .setGroup("wupp_messages")
-            .setContentIntent(contentPendingIntent)
-        if (!stealthCfg.notifyVibrateEnabled) {
-            builder.setVibrate(longArrayOf(0L))
-        }
-        val notification = builder.build()
-
-        runCatching { mgr.notify(notifId, notification) }
-            .onFailure { Log.w(TAG, "Failed to post message notification: ${it.message}") }
+        dispatchChatNotification(applicationContext, msg.chatJid, state, alertOnce = false)
     }
 
     private suspend fun handleStatusUpsert(json: JSONObject) {
@@ -1204,24 +1213,42 @@ class WaRealtimeService : Service() {
     }
 
     private suspend fun handleUndecryptableStub(json: JSONObject) {
-        val retries = json.optInt("retries", 2)
+        val id = json.optString("id")
+        val rawChatJid = json.optString("chatJid")
+        if (id.isBlank() || rawChatJid.isBlank()) return
+        val existing = dao.getMessage(id)
+        if (existing != null && existing.msgType != "UNDECRYPTABLE") return
+
+        val canonicalChat = canonicalizeAndMergeAlias(rawChatJid, json.optString("altChatJid"))
+        val senderJid = json.optString("senderJid")
+        val pushName = json.optString("pushName")
+        val isFromMe = json.optBoolean("isFromMe", false)
+        val ts = json.optLong("timestamp", System.currentTimeMillis())
+
         val msg = MessageEntity(
-            id = json.optString("id"),
-            chatJid = json.optString("chatJid"),
-            senderJid = json.optString("senderJid"),
-            senderName = json.optString("pushName"),
-            isFromMe = false,
-            timestamp = json.optLong("timestamp", System.currentTimeMillis()),
-            body = "Decryption retry cap ($retries/2) reached to avoid Bad MAC ban trigger",
-            msgType = "TEXT",
+            id = id,
+            chatJid = canonicalChat,
+            senderJid = senderJid,
+            senderName = pushName,
+            isFromMe = isFromMe,
+            timestamp = ts,
+            body = "Waiting for this message. This may take a while.",
+            msgType = "UNDECRYPTABLE",
             deliveryStatus = "DELIVERED"
         )
         dao.upsertIncomingMessageAndRefreshChat(
             message = msg,
-            chatNameHint = msg.senderName,
-            isGroup = msg.chatJid.endsWith("@g.us"),
+            chatNameHint = if (!canonicalChat.endsWith("@g.us") && !isFromMe) pushName else "",
+            isGroup = canonicalChat.endsWith("@g.us"),
             incrementUnread = false
         )
+    }
+
+    private suspend fun handleUndecryptableResolved(json: JSONObject) {
+        val id = json.optString("id")
+        if (id.isNotBlank()) {
+            dao.deleteUndecryptableStubAndRefreshChat(id)
+        }
     }
 
     private fun handleMediaDownloadStatus(json: JSONObject) {
@@ -1708,6 +1735,37 @@ class WaRealtimeService : Service() {
         private const val NOTIF_ID = 1042
         const val ACTION_RECONNECT = "com.wupp.app.action.RECONNECT"
         const val ACTION_DISCONNECT = "com.wupp.app.action.DISCONNECT"
+        const val OFFLINE_OUTBOUND_ERROR = "Wupp is in Offline mode — tap Offline to go Live"
+        const val MAX_FORWARD_RECIPIENTS = 5
+
+        internal fun isForwardableMessageType(msg: MessageEntity): Boolean {
+            if (msg.isViewOnce || msg.msgType == "VIEW_ONCE_STRIPPED" || msg.isDeletedBySender) return false
+            val upper = msg.msgType.uppercase()
+            if (upper in setOf("CALL", "SYSTEM", "UNDECRYPTABLE", "UNKNOWN")) return false
+            if (upper == "TEXT") return msg.body.isNotBlank()
+            return upper in setOf("IMAGE", "VIDEO", "AUDIO", "PTT", "DOCUMENT", "STICKER")
+        }
+
+        internal fun normalizeForwardTargetJids(rawTargets: Collection<String>): List<String> =
+            rawTargets.asSequence()
+                .map { it.trim() }
+                .filter {
+                    it.isNotBlank() &&
+                        it != "status@broadcast" &&
+                        !it.endsWith("@newsletter") &&
+                        !it.endsWith("@broadcast")
+                }
+                .distinct()
+                .take(MAX_FORWARD_RECIPIENTS)
+                .toList()
+
+        internal fun ensureOnlineForOutbound(
+            offlineMode: Boolean = StealthMatrixManager.config.value.offlineMode
+        ) {
+            if (offlineMode) {
+                throw IllegalStateException(OFFLINE_OUTBOUND_ERROR)
+            }
+        }
 
         fun isRealtimeStatusNotificationHidden(context: Context): Boolean {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
@@ -1778,6 +1836,215 @@ class WaRealtimeService : Service() {
         @Volatile
         var isUiForeground: Boolean = false
 
+        private data class NotificationHistoryEntry(
+            val senderName: String,
+            val text: String,
+            val timestamp: Long,
+            val isSelf: Boolean
+        )
+
+        private data class NotificationChatState(
+            val chatTitle: String,
+            val isGroup: Boolean,
+            val lastMessageId: String,
+            val entries: MutableList<NotificationHistoryEntry>
+        )
+
+        private val notificationThreads = ConcurrentHashMap<String, NotificationChatState>()
+
+        fun clearNotificationHistory(chatJid: String) {
+            notificationThreads.remove(chatJid)
+        }
+
+        fun appendSelfReplyToNotification(
+            context: Context,
+            chatJid: String,
+            replyText: String,
+            timestampMs: Long
+        ) {
+            val appCtx = context.applicationContext
+            val state = notificationThreads[chatJid] ?: run {
+                val mgr = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                mgr?.cancel(notificationIdForChat(chatJid))
+                return
+            }
+            synchronized(state) {
+                state.entries.add(
+                    NotificationHistoryEntry(
+                        senderName = "You",
+                        text = replyText,
+                        timestamp = timestampMs,
+                        isSelf = true
+                    )
+                )
+                while (state.entries.size > 6) {
+                    state.entries.removeAt(0)
+                }
+            }
+            dispatchChatNotification(appCtx, chatJid, state, alertOnce = true)
+        }
+
+        fun refreshMessageNotificationAfterAction(context: Context, chatJid: String) {
+            val appCtx = context.applicationContext
+            val state = notificationThreads[chatJid] ?: run {
+                val mgr = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                mgr?.cancel(notificationIdForChat(chatJid))
+                return
+            }
+            dispatchChatNotification(appCtx, chatJid, state, alertOnce = true)
+        }
+
+        private fun ensureMessageNotificationChannel(mgr: NotificationManager) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val msgCh = NotificationChannel(
+                    MESSAGES_CHANNEL_ID,
+                    "Messages",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Incoming WhatsApp chat and group message alerts"
+                    enableVibration(true)
+                    setShowBadge(true)
+                }
+                mgr.createNotificationChannel(msgCh)
+            }
+        }
+
+        private fun dispatchChatNotification(
+            appCtx: Context,
+            chatJid: String,
+            state: NotificationChatState,
+            alertOnce: Boolean
+        ) {
+            val mgr = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+            ensureMessageNotificationChannel(mgr)
+
+            val stealthCfg = StealthMatrixManager.config.value
+            val policy = resolveNotificationActionPolicy(
+                notifyShowPreview = stealthCfg.notifyShowPreview,
+                isChannel = chatJid.endsWith("@newsletter"),
+                isAnnounceLocked = _announceLockedGroups.value.contains(chatJid)
+            )
+            val entriesSnapshot = synchronized(state) { state.entries.toList() }
+            val latest = entriesSnapshot.lastOrNull()
+            val notifId = notificationIdForChat(chatJid)
+
+            val openIntent = Intent(appCtx, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("open_chat_jid", chatJid)
+            }
+            val contentPendingIntent = PendingIntent.getActivity(
+                appCtx,
+                notifId,
+                openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val fallbackText = when {
+                !stealthCfg.notifyShowPreview -> "New message"
+                latest == null -> "New message"
+                state.isGroup && !latest.isSelf && latest.senderName.isNotBlank() ->
+                    "${latest.senderName}: ${latest.text}"
+                else -> latest.text
+            }
+
+            val builder = NotificationCompat.Builder(appCtx, MESSAGES_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_wupp)
+                .setContentTitle(state.chatTitle)
+                .setContentText(fallbackText)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(alertOnce)
+                .setSilent(isUiForeground || alertOnce)
+                .setWhen(latest?.timestamp ?: System.currentTimeMillis())
+                .setShowWhen(true)
+                .setGroup("wupp_messages")
+                .setContentIntent(contentPendingIntent)
+
+            if (stealthCfg.notifyShowPreview && entriesSnapshot.isNotEmpty()) {
+                val mePerson = Person.Builder().setName("You").build()
+                val style = NotificationCompat.MessagingStyle(mePerson)
+                    .setGroupConversation(state.isGroup)
+                if (state.isGroup) {
+                    style.setConversationTitle(state.chatTitle)
+                }
+                entriesSnapshot.forEach { item ->
+                    val sender = if (item.isSelf) {
+                        null
+                    } else {
+                        Person.Builder().setName(item.senderName.ifBlank { state.chatTitle }).build()
+                    }
+                    style.addMessage(item.text, item.timestamp, sender)
+                }
+                builder.setStyle(style)
+            } else {
+                builder.setStyle(NotificationCompat.BigTextStyle().bigText(fallbackText))
+            }
+
+            if (policy.showReplyAction) {
+                val remoteInput = RemoteInput.Builder(NotificationActionReceiver.KEY_REPLY_TEXT)
+                    .setLabel("Reply")
+                    .build()
+                val replyIntent = Intent(appCtx, NotificationActionReceiver::class.java).apply {
+                    action = NotificationActionReceiver.ACTION_INLINE_REPLY
+                    data = android.net.Uri.parse("wupp://notif/reply/$notifId")
+                    putExtra(NotificationActionReceiver.EXTRA_CHAT_JID, chatJid)
+                    putExtra(NotificationActionReceiver.EXTRA_MESSAGE_ID, state.lastMessageId)
+                    putExtra(NotificationActionReceiver.EXTRA_NOTIFICATION_ID, notifId)
+                    putExtra(NotificationActionReceiver.EXTRA_IS_GROUP, state.isGroup)
+                }
+                val mutableFlags = PendingIntent.FLAG_UPDATE_CURRENT or
+                    (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0)
+                val replyPendingIntent = PendingIntent.getBroadcast(
+                    appCtx,
+                    notifId,
+                    replyIntent,
+                    mutableFlags
+                )
+                val replyAction = NotificationCompat.Action.Builder(
+                    R.drawable.ic_stat_wupp,
+                    "Reply",
+                    replyPendingIntent
+                )
+                    .addRemoteInput(remoteInput)
+                    .setAllowGeneratedReplies(true)
+                    .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
+                    .build()
+                builder.addAction(replyAction)
+            }
+
+            if (policy.showMarkReadAction) {
+                val readIntent = Intent(appCtx, NotificationActionReceiver::class.java).apply {
+                    action = NotificationActionReceiver.ACTION_MARK_READ
+                    data = android.net.Uri.parse("wupp://notif/read/$notifId")
+                    putExtra(NotificationActionReceiver.EXTRA_CHAT_JID, chatJid)
+                    putExtra(NotificationActionReceiver.EXTRA_NOTIFICATION_ID, notifId)
+                }
+                val readPendingIntent = PendingIntent.getBroadcast(
+                    appCtx,
+                    notifId,
+                    readIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                val readAction = NotificationCompat.Action.Builder(
+                    R.drawable.ic_stat_wupp,
+                    "Mark as read",
+                    readPendingIntent
+                )
+                    .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_MARK_AS_READ)
+                    .setShowsUserInterface(false)
+                    .build()
+                builder.addAction(readAction)
+            }
+
+            if (!stealthCfg.notifyVibrateEnabled) {
+                builder.setVibrate(longArrayOf(0L))
+            }
+
+            runCatching { mgr.notify(notifId, builder.build()) }
+                .onFailure { Log.w(TAG, "Failed to post message notification: ${it.message}") }
+        }
+
         private fun notificationIdForChat(chatJid: String): Int =
             20_000 + (chatJid.hashCode() and 0x0FFFFFFF)
 
@@ -1821,6 +2088,49 @@ class WaRealtimeService : Service() {
             updateGroupAnnounceLocks(context, mapOf(jid to locked))
         }
 
+        fun setOfflineMode(context: Context, enabled: Boolean) {
+            val appCtx = context.applicationContext
+            StealthMatrixManager.init(appCtx)
+            StealthMatrixManager.updateConfig { it.copy(offlineMode = enabled) }
+            val svc = instance
+            val loggedIn = _bridgeStatus.value.isLoggedIn || runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)
+            if (enabled) {
+                if (loggedIn) {
+                    _bridgeStatus.value = _bridgeStatus.value.copy(
+                        isLoggedIn = true,
+                        connectionState = "OFFLINE_PAUSED"
+                    )
+                }
+                svc?.promoteForeground("Offline mode (sync paused)")
+                if (svc != null) {
+                    runCatching {
+                        val intent = Intent(appCtx, WaRealtimeService::class.java).apply {
+                            action = ACTION_DISCONNECT
+                        }
+                        appCtx.startService(intent)
+                    }.onFailure {
+                        companionScope.launch { runCatching { Whatsbridge.disconnectClient() } }
+                    }
+                } else {
+                    companionScope.launch { runCatching { Whatsbridge.disconnectClient() } }
+                }
+            } else {
+                if (loggedIn) {
+                    _bridgeStatus.value = _bridgeStatus.value.copy(
+                        isLoggedIn = true,
+                        connectionState = "CONNECTING"
+                    )
+                }
+                svc?.promoteForeground("Reconnecting real-time sync…")
+                runCatching {
+                    val intent = Intent(appCtx, WaRealtimeService::class.java).apply {
+                        action = ACTION_RECONNECT
+                    }
+                    ContextCompat.startForegroundService(appCtx, intent)
+                }
+            }
+        }
+
         fun ensureStarted(context: Context) {
             runCatching {
                 val intent = Intent(context, WaRealtimeService::class.java)
@@ -1830,19 +2140,21 @@ class WaRealtimeService : Service() {
 
         fun onChatOpened(context: Context, chatJid: String) {
             val appCtx = context.applicationContext
+            clearNotificationHistory(chatJid)
             runCatching {
                 val mgr = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 mgr.cancel(notificationIdForChat(chatJid))
             }
             companionScope.launch {
                 val dao = WaUiDatabase.getInstance(appCtx).waDao()
+                val offline = StealthMatrixManager.config.value.offlineMode
                 val privacy = StealthMatrixManager.getEffectivePrivacy(dao, chatJid)
-                if (privacy.sendReadReceipts) {
+                if (privacy.sendReadReceipts && !offline) {
                     markChatReadExplicitly(appCtx, chatJid)
                 } else {
                     dao.clearLocalUnread(chatJid)
                 }
-                if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+                if (!offline && runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
                     if (chatJid.endsWith("@newsletter")) {
                         runCatching {
                             Whatsbridge::class.java
@@ -1953,6 +2265,13 @@ class WaRealtimeService : Service() {
                 _failedMediaIds.value = _failedMediaIds.value - msg.id
             }
             companionScope.launch {
+                if (StealthMatrixManager.config.value.offlineMode) {
+                    _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
+                    if (userInitiated) {
+                        _failedMediaIds.value = _failedMediaIds.value + (msg.id to "Offline — go Live to download")
+                    }
+                    return@launch
+                }
                 if (!runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
                     _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
                     return@launch
@@ -1962,15 +2281,16 @@ class WaRealtimeService : Service() {
                     val hasCached = runCatching { Whatsbridge.hasCachedMediaMeta(msg.id) }.getOrDefault(false)
                     if (hasCached) {
                         Whatsbridge.requestMediaDownload(msg.chatJid, msg.senderJid, msg.id, msg.timestamp)
+                        delay(125_000L)
                     } else {
                         triggerMediaDownloadWithAnchor(dao, msg)
                         delay(30_000L)
-                        val refreshed = dao.getMessage(msg.id)
-                        if (refreshed?.localMediaPath.isNullOrBlank() && _downloadingMediaIds.value.contains(msg.id)) {
-                            _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
-                            if (refreshed?.viewOnceState != "STRIPPED") {
-                                _failedMediaIds.value = _failedMediaIds.value + (msg.id to "Tap to retry")
-                            }
+                    }
+                    val refreshed = dao.getMessage(msg.id)
+                    if (refreshed?.localMediaPath.isNullOrBlank() && _downloadingMediaIds.value.contains(msg.id)) {
+                        _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
+                        if (refreshed?.viewOnceState != "STRIPPED") {
+                            _failedMediaIds.value = _failedMediaIds.value + (msg.id to "Tap to retry")
                         }
                     }
                 }.onFailure {
@@ -2051,6 +2371,7 @@ class WaRealtimeService : Service() {
             ghostMentionEveryone: Boolean
         ): Result<MessageEntity> = withContext(Dispatchers.IO) {
             runCatching {
+                ensureOnlineForOutbound()
                 val dao = WaUiDatabase.getInstance(context).waDao()
                 if (!StealthMatrixManager.canInitiateOutboundMessage(dao, chatJid)) {
                     error("ERROR_463_GUARD: First message to unsaved contact blocked to prevent companion Error 463 ban. Start chat on primary phone first.")
@@ -2122,6 +2443,7 @@ class WaRealtimeService : Service() {
             text: String
         ): Result<MessageEntity> = withContext(Dispatchers.IO) {
             runCatching {
+                ensureOnlineForOutbound()
                 val targetChatJid = status.senderJid.ifBlank { error("Invalid status sender JID") }
                 val dao = WaUiDatabase.getInstance(context).waDao()
                 val privacy = StealthMatrixManager.getEffectivePrivacy(dao, targetChatJid)
@@ -2194,6 +2516,7 @@ class WaRealtimeService : Service() {
             emoji: String
         ): Result<Unit> = withContext(Dispatchers.IO) {
             runCatching {
+                ensureOnlineForOutbound()
                 val targetChatJid = status.senderJid.ifBlank { return@runCatching }
                 if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
                     val success = runCatching {
@@ -2224,6 +2547,112 @@ class WaRealtimeService : Service() {
             }
         }
 
+        suspend fun forwardMessageToChats(
+            context: Context,
+            msg: MessageEntity,
+            targetChatJids: Collection<String>
+        ): Result<Int> = withContext(Dispatchers.IO) {
+            runCatching {
+                ensureOnlineForOutbound()
+                require(isForwardableMessageType(msg)) { "This message type cannot be forwarded" }
+                val targets = normalizeForwardTargetJids(targetChatJids)
+                require(targets.isNotEmpty()) { "Select at least one chat to forward to" }
+
+                val upper = msg.msgType.uppercase()
+                val sourceFile = if (upper != "TEXT") {
+                    msg.localMediaPath?.takeIf { it.isNotBlank() }?.let(::File)
+                        ?.takeIf { it.exists() && it.length() > 0L }
+                        ?: error("Download this media before forwarding")
+                } else {
+                    null
+                }
+
+                // Stage documents inside mediaDir with clean filename so prepareOutboundMedia keeps the real name.
+                val preparedFile = if (upper == "DOCUMENT" && sourceFile != null) {
+                    val cleanName = com.wa.beastclient.ui.components.buildDocumentExportFileName(msg, sourceFile)
+                    val staged = File(EagerMediaVault.mediaDir(context), cleanName)
+                    if (staged.absolutePath != sourceFile.absolutePath) {
+                        sourceFile.copyTo(staged, overwrite = true)
+                    }
+                    staged
+                } else {
+                    sourceFile
+                }
+
+                var forwardedCount = 0
+                var firstErr: Throwable? = null
+                targets.forEachIndexed { idx, targetJid ->
+                    if (idx > 0) delay(450L)
+                    val res = when (upper) {
+                        "TEXT" -> sendTextMessage(
+                            context = context,
+                            chatJid = targetJid,
+                            text = msg.body.trim(),
+                            quoted = null,
+                            ghostMentionEveryone = false
+                        ).map { Unit }
+                        "STICKER" -> sendMediaMessage(
+                            context = context,
+                            chatJid = targetJid,
+                            sourceFile = preparedFile!!,
+                            mimeType = "image/webp",
+                            caption = "",
+                            qualityMode = OutboundQualityMode.STICKER,
+                            isVoiceNote = false,
+                            durationSec = 0
+                        ).map { Unit }
+                        "PTT", "AUDIO" -> sendMediaMessage(
+                            context = context,
+                            chatJid = targetJid,
+                            sourceFile = preparedFile!!,
+                            mimeType = msg.mimeType.ifBlank { "audio/ogg" },
+                            caption = "",
+                            qualityMode = OutboundQualityMode.ORIGINAL,
+                            isVoiceNote = (upper == "PTT"),
+                            durationSec = msg.durationSec
+                        ).map { Unit }
+                        "IMAGE" -> sendMediaMessage(
+                            context = context,
+                            chatJid = targetJid,
+                            sourceFile = preparedFile!!,
+                            mimeType = msg.mimeType.ifBlank { "image/jpeg" },
+                            caption = msg.body,
+                            qualityMode = OutboundQualityMode.STANDARD,
+                            isVoiceNote = false,
+                            durationSec = 0
+                        ).map { Unit }
+                        "VIDEO" -> sendMediaMessage(
+                            context = context,
+                            chatJid = targetJid,
+                            sourceFile = preparedFile!!,
+                            mimeType = msg.mimeType.ifBlank { "video/mp4" },
+                            caption = msg.body,
+                            qualityMode = OutboundQualityMode.STANDARD,
+                            isVoiceNote = false,
+                            durationSec = msg.durationSec
+                        ).map { Unit }
+                        else -> sendMediaMessage(
+                            context = context,
+                            chatJid = targetJid,
+                            sourceFile = preparedFile!!,
+                            mimeType = com.wa.beastclient.ui.components.resolveDocumentMimeType(msg, preparedFile),
+                            caption = com.wa.beastclient.ui.components.resolveDocumentCaptionLine(msg.body),
+                            qualityMode = OutboundQualityMode.ORIGINAL,
+                            isVoiceNote = false,
+                            durationSec = 0
+                        ).map { Unit }
+                    }
+                    res.onSuccess { forwardedCount++ }
+                        .onFailure { err -> if (firstErr == null) firstErr = err }
+                }
+
+                if (forwardedCount == 0 && firstErr != null) {
+                    throw firstErr!!
+                }
+                forwardedCount
+            }
+        }
+
         suspend fun sendMediaMessage(
             context: Context,
             chatJid: String,
@@ -2236,6 +2665,7 @@ class WaRealtimeService : Service() {
             isViewOnce: Boolean = false
         ): Result<MessageEntity> = withContext(Dispatchers.IO) {
             runCatching {
+                ensureOnlineForOutbound()
                 val dao = WaUiDatabase.getInstance(context).waDao()
                 if (!StealthMatrixManager.canInitiateOutboundMessage(dao, chatJid)) {
                     error("ERROR_463_GUARD: First message to unsaved contact blocked to protect account reputation.")
@@ -2260,17 +2690,23 @@ class WaRealtimeService : Service() {
                 val waveformCsv = if (isVoiceNote || mimeType.startsWith("audio/")) {
                     EagerMediaVault.extract40BarWaveform(prepared.file).joinToString(",")
                 } else ""
-                val wireModeWithVo = if (isViewOnce && (msgType == "IMAGE" || msgType == "VIDEO")) {
+                val voActive = isViewOnce && effectiveQuality != OutboundQualityMode.GIF && (msgType == "IMAGE" || msgType == "VIDEO")
+                val wireModeWithVo = if (voActive) {
                     "${wireQualityMode}:viewonce"
                 } else {
                     wireQualityMode
+                }
+                val resolvedOutMime = if (effectiveQuality == OutboundQualityMode.GIF && !prepared.mimeType.startsWith("video/", ignoreCase = true)) {
+                    "video/mp4"
+                } else {
+                    prepared.mimeType
                 }
 
                 val stanzaId = if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
                     Whatsbridge.sendMediaMessage(
                         chatJid,
                         prepared.file.absolutePath,
-                        prepared.mimeType,
+                        resolvedOutMime,
                         caption,
                         wireModeWithVo,
                         isVoiceNote,
@@ -2281,7 +2717,6 @@ class WaRealtimeService : Service() {
                     "MEDIA_${UUID.randomUUID().toString().take(12).uppercase()}"
                 }
 
-                val voActive = isViewOnce && (msgType == "IMAGE" || msgType == "VIDEO")
                 val entity = MessageEntity(
                     id = stanzaId,
                     chatJid = chatJid,
@@ -2291,7 +2726,7 @@ class WaRealtimeService : Service() {
                     timestamp = System.currentTimeMillis(),
                     body = caption.ifBlank { if (msgType == "DOCUMENT") prepared.file.name else "" },
                     msgType = msgType,
-                    mimeType = prepared.mimeType,
+                    mimeType = resolvedOutMime,
                     localMediaPath = prepared.file.absolutePath,
                     mediaSha256 = prepared.sha256,
                     fileSize = prepared.fileSize,
@@ -2340,6 +2775,7 @@ class WaRealtimeService : Service() {
         suspend fun editOwnMessage(context: Context, chatJid: String, messageId: String, newText: String): Result<Unit> =
             withContext(Dispatchers.IO) {
                 runCatching {
+                    ensureOnlineForOutbound()
                     val dao = WaUiDatabase.getInstance(context).waDao()
                     dao.applyMessageEdit(messageId, newText, System.currentTimeMillis())
                     if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
@@ -2355,6 +2791,7 @@ class WaRealtimeService : Service() {
             messageId: String
         ): Result<Unit> = withContext(Dispatchers.IO) {
             runCatching {
+                ensureOnlineForOutbound()
                 val appCtx = context.applicationContext
                 val dao = WaUiDatabase.getInstance(appCtx).waDao()
                 if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
@@ -2514,6 +2951,7 @@ class WaRealtimeService : Service() {
             emoji: String
         ): Result<Unit> = withContext(Dispatchers.IO) {
             runCatching {
+                ensureOnlineForOutbound()
                 val dao = WaUiDatabase.getInstance(context).waDao()
                 val isChannel = chatJid.endsWith("@newsletter")
                 val finalEmoji: String
@@ -2565,6 +3003,7 @@ class WaRealtimeService : Service() {
             isUnpin: Boolean
         ): Result<Unit> = withContext(Dispatchers.IO) {
             runCatching {
+                ensureOnlineForOutbound()
                 val dao = WaUiDatabase.getInstance(context).waDao()
                 val now = System.currentTimeMillis()
                 val pinnedUntil = if (!isUnpin && durationSec > 0) now + (durationSec * 1000L) else 0L

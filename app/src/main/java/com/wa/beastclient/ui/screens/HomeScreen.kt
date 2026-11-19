@@ -1,5 +1,6 @@
 package com.wa.beastclient.ui.screens
 
+import android.Manifest
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -187,6 +188,7 @@ import com.wa.beastclient.data.db.ChatEntity
 import com.wa.beastclient.data.db.ContactEntity
 import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.data.db.StatusEntity
+import com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
 import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.domain.security.AppLockMode
 import com.wa.beastclient.domain.stealth.AutoDownloadNetwork
@@ -239,7 +241,9 @@ import com.wa.beastclient.ui.components.wuppBackdropSource
 import com.wa.beastclient.ui.theme.LocalWaColors
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
 import com.wa.beastclient.ui.theme.LocalWuppShowSeconds
+import com.wa.beastclient.ui.theme.LocalWuppUse24Hour
 import com.wa.beastclient.ui.theme.LocaleHelper
+import com.wa.beastclient.ui.theme.WuppClockFormat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
@@ -593,21 +597,22 @@ fun HomeScreen(
                     ),
                     title = {
                         if (currentTab == 0) {
+                            val badge = resolveTopBarConnectionBadge(
+                                connectionState = bridgeStatus.connectionState,
+                                offlineMode = stealth.offlineMode
+                            )
                             val statusColor by animateColorAsState(
-                                targetValue = when (bridgeStatus.connectionState) {
-                                    "CONNECTED" -> colors.brightGreen
-                                    "CONNECTING", "PAIRING", "SYNCING" -> colors.warningAmber
-                                    else -> colors.textSecondary.copy(alpha = 0.55f)
+                                targetValue = when (badge.tone) {
+                                    TopBarStatusTone.LIVE -> colors.brightGreen
+                                    TopBarStatusTone.SYNCING -> colors.warningAmber
+                                    TopBarStatusTone.OFFLINE -> Color(0xFFE53935)
+                                    TopBarStatusTone.IDLE -> colors.textSecondary.copy(alpha = 0.55f)
                                 },
                                 animationSpec = motionScheme.fastEffectsSpec(),
                                 label = "top_bar_status_dot"
                             )
-                            val statusWord = when (bridgeStatus.connectionState) {
-                                "CONNECTED" -> "Live"
-                                "SYNCING" -> "Syncing"
-                                "CONNECTING", "PAIRING" -> "Linking"
-                                else -> "Idle"
-                            }
+                            val showBadge = !stealth.hideStealthStatusBadges ||
+                                badge.tone == TopBarStatusTone.OFFLINE
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(9.dp)
@@ -625,23 +630,39 @@ fun HomeScreen(
                                     fontWeight = FontWeight.ExtraBold,
                                     letterSpacing = (-0.5).sp
                                 )
-                                if (!stealth.hideStealthStatusBadges) {
+                                if (showBadge) {
                                     Row(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(999.dp))
                                             .background(statusColor.copy(alpha = 0.14f))
+                                            .then(
+                                                if (bridgeStatus.isLoggedIn) {
+                                                    Modifier.clickable { viewModel.toggleOfflineMode() }
+                                                } else {
+                                                    Modifier
+                                                }
+                                            )
                                             .padding(horizontal = 8.dp, vertical = 3.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(5.dp)
                                     ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(6.5.dp)
-                                                .clip(CircleShape)
-                                                .background(statusColor)
-                                        )
+                                        if (badge.tone == TopBarStatusTone.OFFLINE) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Flight,
+                                                contentDescription = "Offline mode",
+                                                tint = statusColor,
+                                                modifier = Modifier.size(11.dp)
+                                            )
+                                        } else {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(6.5.dp)
+                                                    .clip(CircleShape)
+                                                    .background(statusColor)
+                                            )
+                                        }
                                         Text(
-                                            text = statusWord,
+                                            text = badge.label,
                                             color = statusColor,
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.SemiBold,
@@ -1914,7 +1935,7 @@ private fun ChatsTabContent(
                         )
                     }
                     Text(
-                        text = formatMessageClock(hit.timestamp, includeSeconds = showSeconds),
+                        text = formatMessageClock(hit.timestamp, includeSeconds = showSeconds, use24Hour = LocalWuppUse24Hour.current),
                         fontFamily = mono,
                         fontSize = 11.sp,
                         color = colors.textSecondary
@@ -2156,7 +2177,7 @@ private fun ChatListRow(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = formatMessageClock(chat.lastMessageTimestamp, includeSeconds = showSeconds),
+                    text = formatMessageClock(chat.lastMessageTimestamp, includeSeconds = showSeconds, use24Hour = LocalWuppUse24Hour.current),
                     fontFamily = mono,
                     fontSize = 11.5.sp,
                     color = if (chat.unreadCount > 0) colors.brightGreen else colors.textSecondary
@@ -2410,7 +2431,7 @@ private fun UpdatesStatusTab(
                         Text(
                             text = if (latestOwnStatus != null) {
                                 buildString {
-                                    append(formatMessageClock(latestOwnStatus.timestamp, includeSeconds = showSeconds))
+                                    append(formatMessageClock(latestOwnStatus.timestamp, includeSeconds = showSeconds, use24Hour = LocalWuppUse24Hour.current))
                                     if (ownStatuses.size > 1) {
                                         append(" · ${ownStatuses.size}")
                                     }
@@ -2470,7 +2491,7 @@ private fun UpdatesStatusTab(
                             )
                             Text(
                                 text = buildString {
-                                    append(formatMessageClock(st.timestamp, includeSeconds = showSeconds))
+                                    append(formatMessageClock(st.timestamp, includeSeconds = showSeconds, use24Hour = LocalWuppUse24Hour.current))
                                     if (st.caption.isNotBlank()) {
                                         append(" · ")
                                         append(st.caption)
@@ -2904,7 +2925,7 @@ private fun ChannelListRow(
                 if (channel.lastMessageTimestamp > 0L) {
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = formatMessageClock(channel.lastMessageTimestamp, includeSeconds = LocalWuppShowSeconds.current),
+                        text = formatMessageClock(channel.lastMessageTimestamp, includeSeconds = LocalWuppShowSeconds.current, use24Hour = LocalWuppUse24Hour.current),
                         fontFamily = mono,
                         fontSize = 11.5.sp,
                         color = if (channel.unreadCount > 0) colors.brightGreen else colors.textSecondary
@@ -3279,7 +3300,7 @@ private fun CommunityGroupRow(
                 if (chat.lastMessageTimestamp > 0L) {
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = formatMessageClock(chat.lastMessageTimestamp, includeSeconds = LocalWuppShowSeconds.current),
+                        text = formatMessageClock(chat.lastMessageTimestamp, includeSeconds = LocalWuppShowSeconds.current, use24Hour = LocalWuppUse24Hour.current),
                         color = if (chat.unreadCount > 0) colors.accentGreen else colors.textSecondary,
                         fontSize = 12.sp
                     )
@@ -3397,12 +3418,30 @@ private fun ToolsVaultTab(
     var showReactionDialog by remember { mutableStateOf(false) }
     var showAppLockDialog by remember { mutableStateOf(false) }
     var showLanguageDialog by remember { mutableStateOf(false) }
+    var showClockFormatDialog by remember { mutableStateOf(false) }
     var showHideNotifGuide by remember { mutableStateOf(false) }
     var isSyncNotifHidden by remember {
         mutableStateOf(WaRealtimeService.isRealtimeStatusNotificationHidden(context))
     }
     var isBatteryUnrestricted by remember {
         mutableStateOf(WaRealtimeService.isIgnoringBatteryOptimizations(context))
+    }
+    var hasContactsPermission by remember {
+        mutableStateOf(DeviceContactFallbackResolver.hasReadContactsPermission(context))
+    }
+    val contactsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasContactsPermission = granted
+        if (granted) {
+            viewModel.syncDeviceContactFallbacks(forceRefresh = true, notifyUser = true)
+        } else {
+            Toast.makeText(
+                context,
+                "Contacts permission not granted — showing server names and numbers only",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
     }
 
     LaunchedEffect(bridgeStatus.isLoggedIn, bridgeStatus.connectionState) {
@@ -3415,6 +3454,7 @@ private fun ToolsVaultTab(
             if (event == Lifecycle.Event.ON_RESUME) {
                 isSyncNotifHidden = WaRealtimeService.isRealtimeStatusNotificationHidden(context)
                 isBatteryUnrestricted = WaRealtimeService.isIgnoringBatteryOptimizations(context)
+                hasContactsPermission = DeviceContactFallbackResolver.hasReadContactsPermission(context)
             }
         }
         lifecycleOwner?.lifecycle?.addObserver(observer)
@@ -3478,11 +3518,21 @@ private fun ToolsVaultTab(
         item(key = "patch_section_privacy") {
             ExpressiveSegmentedGroup(title = "Privacy & Ghost Mode") {
                 ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.Flight,
+                    title = "Offline Mode (Pause Sync)",
+                    subtitle = "Disconnect WhatsApp sync while keeping internet active for other apps",
+                    checked = stealth.offlineMode,
+                    position = ExpressiveSegmentPosition.TOP,
+                    onCheckedChange = {
+                        viewModel.setOfflineMode(it)
+                    }
+                )
+                ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.VisibilityOff,
                     title = "Ghost Mode (Freeze Last Seen)",
                     subtitle = "Hide online status and freeze last seen (auto-unfreezes safely when sending)",
                     checked = stealth.ghostPresence,
-                    position = ExpressiveSegmentPosition.TOP,
+                    position = ExpressiveSegmentPosition.MIDDLE,
                     onCheckedChange = {
                         viewModel.updateGlobalStealth { c -> c.copy(ghostPresence = it) }
                     }
@@ -3647,12 +3697,20 @@ private fun ToolsVaultTab(
                     badgeText = if (appLockConfig.mode != AppLockMode.OFF) {
                         stringResource(R.string.common_enabled)
                     } else null,
-                    position = if (appLockConfig.mode != AppLockMode.OFF) {
-                        ExpressiveSegmentPosition.TOP
-                    } else {
-                        ExpressiveSegmentPosition.SINGLE
-                    },
+                    position = ExpressiveSegmentPosition.TOP,
                     onClick = { showAppLockDialog = true }
+                )
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.Image,
+                    title = stringResource(R.string.settings_allow_screenshots_title),
+                    subtitle = stringResource(R.string.settings_allow_screenshots_subtitle),
+                    checked = appLockConfig.allowScreenshots,
+                    position = if (appLockConfig.mode != AppLockMode.OFF) {
+                        ExpressiveSegmentPosition.MIDDLE
+                    } else {
+                        ExpressiveSegmentPosition.BOTTOM
+                    },
+                    onCheckedChange = { AppLockManager.setAllowScreenshots(it) }
                 )
                 if (appLockConfig.mode != AppLockMode.OFF) {
                     ExpressiveSegmentedActionRow(
@@ -3818,6 +3876,18 @@ private fun ToolsVaultTab(
                         viewModel.updateGlobalStealth { c -> c.copy(showSecondsInTimestamps = it) }
                     }
                 )
+                val clockFormatSubtitle = when (stealth.clockFormat) {
+                    WuppClockFormat.SYSTEM -> "Follow device setting (${if (LocalWuppUse24Hour.current) "24-hour" else "12-hour"})"
+                    WuppClockFormat.HOUR_24 -> "Always 24-hour (e.g. 14:30)"
+                    WuppClockFormat.HOUR_12 -> "Always 12-hour (e.g. 2:30 PM)"
+                }
+                ExpressiveSegmentedActionRow(
+                    icon = Icons.Rounded.Schedule,
+                    title = "Time format",
+                    subtitle = clockFormatSubtitle,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onClick = { showClockFormatDialog = true }
+                )
                 ExpressiveSegmentedSwitchRow(
                     icon = Icons.Rounded.VisibilityOff,
                     title = stringResource(R.string.settings_look_hide_camera_title),
@@ -3846,6 +3916,25 @@ private fun ToolsVaultTab(
                     position = ExpressiveSegmentPosition.MIDDLE,
                     onCheckedChange = {
                         viewModel.updateGlobalStealth { c -> c.copy(separateGroupsAndChats = it) }
+                    }
+                )
+                ExpressiveSegmentedActionRow(
+                    icon = Icons.Rounded.Person,
+                    title = "Local Contact Names Fallback",
+                    subtitle = if (hasContactsPermission) {
+                        "Active · Uses phonebook names only when no server name exists (Tap to refresh)"
+                    } else {
+                        "Tap to allow phonebook names when WhatsApp sends only numbers"
+                    },
+                    badgeText = if (hasContactsPermission) stringResource(R.string.common_enabled) else null,
+                    position = ExpressiveSegmentPosition.MIDDLE,
+                    onClick = {
+                        if (DeviceContactFallbackResolver.hasReadContactsPermission(context)) {
+                            hasContactsPermission = true
+                            viewModel.syncDeviceContactFallbacks(forceRefresh = true, notifyUser = true)
+                        } else {
+                            contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                        }
                     }
                 )
                 ExpressiveSegmentedSwitchRow(
@@ -4150,6 +4239,69 @@ private fun ToolsVaultTab(
                 }
             },
             onDismiss = { showLanguageDialog = false }
+        )
+    }
+
+    if (showClockFormatDialog) {
+        val colors = LocalWaColors.current
+        AlertDialog(
+            onDismissRequest = { showClockFormatDialog = false },
+            containerColor = colors.elevatedBar,
+            titleContentColor = colors.textPrimary,
+            textContentColor = colors.textPrimary,
+            title = {
+                Text(
+                    text = "Time format",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    WuppClockFormat.entries.forEach { option ->
+                        val selected = option == stealth.clockFormat
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (selected) colors.pillActiveBg else Color.Transparent)
+                                .clickable {
+                                    viewModel.updateGlobalStealth { c -> c.copy(clockFormat = option) }
+                                    showClockFormatDialog = false
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = option.label,
+                                    color = if (selected) colors.pillActiveText else colors.textPrimary,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    fontSize = 14.5.sp
+                                )
+                                Text(
+                                    text = option.subtitle,
+                                    color = colors.textSecondary,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            if (selected) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Check,
+                                    contentDescription = "Selected",
+                                    tint = colors.accentGreen,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showClockFormatDialog = false }) {
+                    Text("Close", color = colors.accentGreen)
+                }
+            }
         )
     }
 
@@ -4541,7 +4693,38 @@ private fun VaultMediaPreviewDialog(
     )
 }
 
-fun formatFullDateTime(epochMs: Long): String {
+fun formatFullDateTime(
+    epochMs: Long,
+    use24Hour: Boolean = StealthMatrixManager.defaultUse24Hour()
+): String {
     if (epochMs <= 0L) return ""
-    return SimpleDateFormat("MMM d · h:mm a", Locale.getDefault()).format(Date(epochMs))
+    val pattern = if (use24Hour) "MMM d · HH:mm" else "MMM d · h:mm a"
+    return SimpleDateFormat(pattern, Locale.getDefault()).format(Date(epochMs))
+}
+
+internal enum class TopBarStatusTone {
+    LIVE,
+    SYNCING,
+    OFFLINE,
+    IDLE
+}
+
+internal data class TopBarConnectionBadge(
+    val label: String,
+    val tone: TopBarStatusTone
+)
+
+internal fun resolveTopBarConnectionBadge(
+    connectionState: String,
+    offlineMode: Boolean
+): TopBarConnectionBadge {
+    if (offlineMode || connectionState == "OFFLINE_PAUSED") {
+        return TopBarConnectionBadge(label = "Offline", tone = TopBarStatusTone.OFFLINE)
+    }
+    return when (connectionState) {
+        "CONNECTED" -> TopBarConnectionBadge(label = "Live", tone = TopBarStatusTone.LIVE)
+        "SYNCING" -> TopBarConnectionBadge(label = "Syncing", tone = TopBarStatusTone.SYNCING)
+        "CONNECTING", "PAIRING" -> TopBarConnectionBadge(label = "Linking", tone = TopBarStatusTone.SYNCING)
+        else -> TopBarConnectionBadge(label = "Idle", tone = TopBarStatusTone.IDLE)
+    }
 }

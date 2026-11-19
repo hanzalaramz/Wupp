@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
 import android.util.Log
+import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.bridge.whatsbridge.Whatsbridge
 
 /**
@@ -21,6 +22,11 @@ class SyncWatchdogJobService : JobService() {
 
     override fun onStartJob(params: JobParameters?): Boolean {
         val appCtx = applicationContext
+        StealthMatrixManager.init(appCtx)
+        if (StealthMatrixManager.config.value.offlineMode) {
+            jobFinished(params, false)
+            return false
+        }
         val setupDone = appCtx.getSharedPreferences("wupp_setup_prefs", Context.MODE_PRIVATE)
             .getBoolean("setup_completed_v1", false)
         val loggedIn = setupDone && runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)

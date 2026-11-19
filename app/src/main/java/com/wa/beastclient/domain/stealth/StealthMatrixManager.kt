@@ -4,10 +4,12 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.text.format.DateFormat
 import com.wa.beastclient.data.db.PrivacyRuleEntity
 import com.wa.beastclient.data.db.WaDao
 import com.wa.beastclient.ui.theme.LocaleHelper
 import com.wa.beastclient.ui.theme.WuppAccentColor
+import com.wa.beastclient.ui.theme.WuppClockFormat
 import com.wa.beastclient.ui.theme.WuppThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,7 +54,9 @@ data class GlobalStealthConfig(
     val alwaysShowContactBio: Boolean = true,
     val compactChatRows: Boolean = false,
     val showSecondsInTimestamps: Boolean = false,
+    val clockFormat: WuppClockFormat = WuppClockFormat.SYSTEM,
     val hideHomeCameraShortcut: Boolean = false,
+    val offlineMode: Boolean = false,
     val hideStealthStatusBadges: Boolean = false,
     val separateGroupsAndChats: Boolean = false,
     val hideChannels: Boolean = false,
@@ -134,7 +138,9 @@ object StealthMatrixManager {
     private const val KEY_ALWAYS_SHOW_BIO = "always_show_contact_bio"
     private const val KEY_COMPACT_CHAT_ROWS = "compact_chat_rows"
     private const val KEY_SHOW_SECONDS_TIME = "show_seconds_timestamps"
+    private const val KEY_CLOCK_FORMAT = "clock_format_mode"
     private const val KEY_HIDE_HOME_CAMERA = "hide_home_camera_shortcut"
+    private const val KEY_OFFLINE_MODE = "offline_mode"
     private const val KEY_HIDE_STEALTH_BADGES = "hide_stealth_status_badges"
     private const val KEY_SEPARATE_GROUPS_CHATS = "separate_groups_chats"
     private const val KEY_HIDE_CHANNELS = "hide_channels"
@@ -167,10 +173,30 @@ object StealthMatrixManager {
     @Volatile
     private var initialized = false
 
+    @Volatile
+    private var appContextRef: Context? = null
+
+    fun resolveUse24Hour(clockFormat: WuppClockFormat, systemIs24Hour: Boolean): Boolean = when (clockFormat) {
+        WuppClockFormat.SYSTEM -> systemIs24Hour
+        WuppClockFormat.HOUR_24 -> true
+        WuppClockFormat.HOUR_12 -> false
+    }
+
+    fun is24HourEnabled(
+        context: Context,
+        clockFormat: WuppClockFormat = _config.value.clockFormat
+    ): Boolean = resolveUse24Hour(clockFormat, DateFormat.is24HourFormat(context))
+
+    fun defaultUse24Hour(): Boolean = resolveUse24Hour(
+        _config.value.clockFormat,
+        appContextRef?.let { DateFormat.is24HourFormat(it) } ?: false
+    )
+
     fun init(context: Context) {
         if (initialized) return
         synchronized(this) {
             if (initialized) return
+            appContextRef = context.applicationContext
             prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val now = System.currentTimeMillis()
             if (!prefs.contains(KEY_PRIMARY_HEARTBEAT_MS)) {
@@ -196,7 +222,9 @@ object StealthMatrixManager {
                 alwaysShowContactBio = prefs.getBoolean(KEY_ALWAYS_SHOW_BIO, true),
                 compactChatRows = prefs.getBoolean(KEY_COMPACT_CHAT_ROWS, false),
                 showSecondsInTimestamps = prefs.getBoolean(KEY_SHOW_SECONDS_TIME, false),
+                clockFormat = WuppClockFormat.fromStorageKey(prefs.getString(KEY_CLOCK_FORMAT, null)),
                 hideHomeCameraShortcut = prefs.getBoolean(KEY_HIDE_HOME_CAMERA, false),
+                offlineMode = prefs.getBoolean(KEY_OFFLINE_MODE, false),
                 hideStealthStatusBadges = prefs.getBoolean(KEY_HIDE_STEALTH_BADGES, false),
                 separateGroupsAndChats = prefs.getBoolean(KEY_SEPARATE_GROUPS_CHATS, false),
                 hideChannels = prefs.getBoolean(KEY_HIDE_CHANNELS, false),
@@ -250,7 +278,9 @@ object StealthMatrixManager {
                 .putBoolean(KEY_ALWAYS_SHOW_BIO, updated.alwaysShowContactBio)
                 .putBoolean(KEY_COMPACT_CHAT_ROWS, updated.compactChatRows)
                 .putBoolean(KEY_SHOW_SECONDS_TIME, updated.showSecondsInTimestamps)
+                .putString(KEY_CLOCK_FORMAT, updated.clockFormat.storageKey)
                 .putBoolean(KEY_HIDE_HOME_CAMERA, updated.hideHomeCameraShortcut)
+                .putBoolean(KEY_OFFLINE_MODE, updated.offlineMode)
                 .putBoolean(KEY_HIDE_STEALTH_BADGES, updated.hideStealthStatusBadges)
                 .putBoolean(KEY_SEPARATE_GROUPS_CHATS, updated.separateGroupsAndChats)
                 .putBoolean(KEY_HIDE_CHANNELS, updated.hideChannels)

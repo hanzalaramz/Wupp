@@ -44,6 +44,21 @@ enum class WuppThemeMode(
     }
 }
 
+enum class WuppClockFormat(
+    val storageKey: String,
+    val label: String,
+    val subtitle: String
+) {
+    SYSTEM("system", "Follow device setting", "Match your phone's 12-hour or 24-hour clock"),
+    HOUR_24("24h", "24-hour", "14:30"),
+    HOUR_12("12h", "12-hour", "2:30 PM");
+
+    companion object {
+        fun fromStorageKey(key: String?): WuppClockFormat =
+            entries.firstOrNull { it.storageKey.equals(key, ignoreCase = true) } ?: SYSTEM
+    }
+}
+
 enum class WuppAccentColor(
     val storageKey: String,
     val label: String,
@@ -238,6 +253,7 @@ fun colorsForTheme(
 val LocalWaColors = staticCompositionLocalOf { WaDarkColors }
 val LocalWaMonoFamily = staticCompositionLocalOf<FontFamily> { FontFamily.Monospace }
 val LocalWuppShowSeconds = staticCompositionLocalOf { false }
+val LocalWuppUse24Hour = staticCompositionLocalOf { false }
 val LocalWuppChatFontScale = staticCompositionLocalOf { 1.0f }
 val LocalWuppClassicUi = staticCompositionLocalOf { false }
 
@@ -248,6 +264,7 @@ fun WhatsAppTheme(
     accentColor: WuppAccentColor = WuppAccentColor.DEFAULT,
     useSystemFont: Boolean = false,
     showSecondsInTimestamps: Boolean = false,
+    use24HourFormat: Boolean = false,
     chatFontScale: Float = 1.0f,
     classicUi: Boolean = false,
     assetManager: AssetManager,
@@ -397,6 +414,7 @@ fun WhatsAppTheme(
         LocalWaColors provides waColors,
         LocalWaMonoFamily provides sansFamily,
         LocalWuppShowSeconds provides showSecondsInTimestamps,
+        LocalWuppUse24Hour provides use24HourFormat,
         LocalWuppChatFontScale provides chatFontScale.coerceIn(0.85f, 1.25f),
         LocalWuppClassicUi provides classicUi
     ) {

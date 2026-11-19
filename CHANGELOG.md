@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.3.4-pre.1] - 2026-11-19
+
+### ✨ Features
+- ↪️ **Forward Messages (#81):** Forward texts, media, documents, and stickers to up to 5 chats or groups from the long-press bar.
+- 💬 **Notification Quick Reply (#75):** Reply and mark messages as read directly from incoming notifications.
+- 👤 **Local Contact Name Fallback (#71):** Show saved phonebook names when no name comes from the server, plus cleaner Group Info member counts.
+- 📸 **Allow Screenshots Toggle (#60):** Toggle app screenshots on or off in Security Settings while keeping Android 13+ Recents privacy intact.
+- 🎯 **More Long-Press Actions (#59):** Show Pin, Edit, Save, Open, and Info icons directly in the selection bar.
+- ✈️ **Live / Offline Mode (#58):** Tap the header status pill or Settings switch to pause WhatsApp sync without disabling internet.
+- 🕒 **Clock Format Option (#57):** Choose between device default, 24-hour, or 12-hour message timestamps.
+- 🎞️ **Native GIF Playback (#55):** Send MP4 GIF clips with native looping WhatsApp playback.
+
+### 🛠️ Fixes
+- 🎞️ **Animated Stickers (#85):** Play animated WebP and Lottie `.was` stickers in chats and the sticker picker.
+- 📦 **APK & File Downloads (#61):** Preserve filenames with captions, fix `.apk` exports to `Downloads/Wupp`, raise download size limit, and surface clear errors.
+- 🔐 **Undecryptable & Business Message Recovery (#86):** Auto-retry failed decrypts cleanly, filter silent protocol noise, and decode interactive/template business messages.
+
 ## [0.3.3] - 2026-11-17
 
 ### ✨ Features
