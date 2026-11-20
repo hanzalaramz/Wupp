@@ -401,8 +401,6 @@ class WebCallEngine(
         settings.setSupportZoom(true)
         settings.builtInZoomControls = true
         settings.displayZoomControls = false
-        settings.builtInZoomControls = false
-        settings.displayZoomControls = false
         @Suppress("DEPRECATION")
         settings.saveFormData = false
         settings.setGeolocationEnabled(false)
@@ -1070,64 +1068,453 @@ class WebCallEngine(
               var isVideo = __IS_VIDEO__;
               var d1 = __DELAY_1__;
               var d2 = __DELAY_2__;
-              var query = digits ? ('+' + digits) : contactName;
-              if (!query) {
+              var myGen = (window.__wuppDialGen || 0) + 1;
+              window.__wuppDialGen = myGen;
+
+              function norm(s) {
+                return (s || '').replace(/\s+/g, ' ').trim();
+              }
+
+              function normLower(s) {
+                return norm(s).toLowerCase();
+              }
+
+              function digitsOnly(s) {
+                return (s || '').replace(/\D/g, '');
+              }
+
+              function isVisible(el) {
+                if (!el || el.disabled) return false;
+                try {
+                  var cs = window.getComputedStyle(el);
+                  if (!cs || cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+                  var r = el.getBoundingClientRect();
+                  return r.width > 4 && r.height > 4;
+                } catch (e) {
+                  return true;
+                }
+              }
+
+              function invokeReactHandler(nodes) {
+                for (var n = 0; n < nodes.length; n++) {
+                  var node = nodes[n];
+                  if (!node) continue;
+                  try {
+                    var keys = Object.keys(node);
+                    for (var k = 0; k < keys.length; k++) {
+                      if (keys[k].indexOf('__reactProps$') === 0) {
+                        var rp = node[keys[k]];
+                        var fn = rp && (rp.onClick || rp.onPress || rp.onMouseDown);
+                        if (typeof fn === 'function') {
+                          fn({
+                            type: 'click',
+                            target: node,
+                            currentTarget: node,
+                            preventDefault: function() {},
+                            stopPropagation: function() {},
+                            nativeEvent: new MouseEvent('click', { bubbles: true, cancelable: true })
+                          });
+                          return true;
+                        }
+                      }
+                      if (keys[k].indexOf('__reactFiber$') === 0) {
+                        var fb = node[keys[k]];
+                        var mp = fb && fb.memoizedProps;
+                        var ffn = mp && (mp.onClick || mp.onPress);
+                        if (typeof ffn === 'function') {
+                          ffn({
+                            type: 'click',
+                            target: node,
+                            currentTarget: node,
+                            preventDefault: function() {},
+                            stopPropagation: function() {},
+                            nativeEvent: new MouseEvent('click', { bubbles: true, cancelable: true })
+                          });
+                          return true;
+                        }
+                      }
+                    }
+                  } catch (e) {}
+                }
+                return false;
+              }
+
+              function clickSingle(el, withReactFallback) {
+                if (!el) return;
+                try { if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
+                try { el.focus(); } catch (e) {}
+                var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+                var cx = (r && r.width > 0) ? (r.left + r.width / 2) : 200;
+                var cy = (r && r.height > 0) ? (r.top + r.height / 2) : 200;
+                var evOpts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 1 };
+                try { el.dispatchEvent(new PointerEvent('pointerdown', evOpts)); } catch (e) {}
+                try { el.dispatchEvent(new MouseEvent('mousedown', evOpts)); } catch (e) {}
+                try { el.dispatchEvent(new PointerEvent('pointerup', evOpts)); } catch (e) {}
+                try { el.dispatchEvent(new MouseEvent('mouseup', evOpts)); } catch (e) {}
+                try { el.click(); } catch (e) {
+                  try { el.dispatchEvent(new MouseEvent('click', evOpts)); } catch (e2) {}
+                }
+                if (withReactFallback) {
+                  invokeReactHandler([el, el.parentElement]);
+                }
+              }
+
+              function findSearchBox() {
+                var sels = [
+                  '[data-testid="chat-list-search"] [contenteditable="true"]',
+                  '[aria-label*="Search input" i][contenteditable="true"]',
+                  '#side [contenteditable="true"][role="textbox"]',
+                  '#side [role="textbox"]',
+                  '#side input[type="text"]',
+                  'input[aria-label*="Search" i]'
+                ];
+                for (var i = 0; i < sels.length; i++) {
+                  var el = document.querySelector(sels[i]);
+                  if (el && isVisible(el)) return el;
+                }
+                return null;
+              }
+
+              function setSearchQuery(box, query) {
+                try {
+                  var clearBtn = document.querySelector('#side [aria-label*="Cancel search" i], #side [data-icon="x-alt"], #side button[aria-label*="Clear" i]');
+                  if (clearBtn && isVisible(clearBtn)) clearBtn.click();
+                } catch (e) {}
+                box.focus();
+                try {
+                  var sel = window.getSelection && window.getSelection();
+                  if (sel && document.createRange) {
+                    var range = document.createRange();
+                    range.selectNodeContents(box);
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                  } else {
+                    document.execCommand('selectAll', false, null);
+                  }
+                  document.execCommand('delete', false, null);
+                  document.execCommand('insertText', false, query);
+                } catch (e) {}
+                var cur = norm(box.value !== undefined ? box.value : box.textContent);
+                if (cur !== norm(query)) {
+                  try {
+                    if (box.value !== undefined) {
+                      box.value = query;
+                    } else {
+                      box.textContent = query;
+                    }
+                    box.dispatchEvent(new InputEvent('input', { bubbles: true, data: query, inputType: 'insertText' }));
+                  } catch (e) {}
+                }
+              }
+
+              function getValidChatRows() {
+                var all = document.querySelectorAll('#pane-side [role="listitem"], #pane-side [role="row"]');
+                var valid = [];
+                for (var i = 0; i < all.length; i++) {
+                  var row = all[i];
+                  try {
+                    var r = row.getBoundingClientRect();
+                    if (!r || r.height < 40 || r.width < 80) continue;
+                  } catch (e) {}
+                  var txt = norm(row.innerText || row.textContent);
+                  if (!txt || txt.length < 2) continue;
+                  if (/^(chats|contacts|messages|groups|unread|favorites|archived|locked chats|searching|looking for)/i.test(txt)) continue;
+                  if (row.querySelector('[data-testid*="cell-frame-container"], [role="gridcell"], [tabindex], span[title], img')) {
+                    valid.push(row);
+                  }
+                }
+                return valid;
+              }
+
+              function pickBestChatRow(rows) {
+                if (!rows.length) return null;
+                var tail7 = digits.length >= 7 ? digits.slice(-7) : digits;
+                var cleanName = normLower(contactName);
+                for (var i = 0; i < rows.length; i++) {
+                  var row = rows[i];
+                  var txt = norm(row.innerText || row.textContent);
+                  var rowDigits = digitsOnly(txt);
+                  if (tail7 && rowDigits.indexOf(tail7) !== -1) return row;
+                  if (cleanName.length >= 2 && normLower(txt).indexOf(cleanName) !== -1) return row;
+                }
+                return rows[0];
+              }
+
+              function hasCallEndControl() {
+                if (document.querySelector('[data-icon="call-end"], [data-icon="end-call"]')) return true;
+                var btns = document.querySelectorAll('button, [role="button"], [aria-label]');
+                for (var i = 0; i < btns.length; i++) {
+                  var al = norm(btns[i].getAttribute('aria-label') || '');
+                  if (/^(end call|hang up|leave call)/i.test(al)) return true;
+                }
+                return false;
+              }
+
+              function findHeaderButtons() {
+                var hdr = document.querySelector('#main header');
+                if (!hdr) return [];
+                return hdr.querySelectorAll('button, [role="button"], [tabindex]');
+              }
+
+              function findHeaderCallButton() {
+                var btns = findHeaderButtons();
+                if (!btns || !btns.length) return null;
+                var specificLabelRe = isVideo ? /video\s*call|start\s*video/i : /voice\s*call|audio\s*call|phone\s*call/i;
+                var specificIconSel = isVideo
+                  ? '[data-icon="video-call"],[data-icon="video-call-refreshed"],[data-icon="video"],[data-icon*="video-call"],[data-icon*="videocam"]'
+                  : '[data-icon="voice-call"],[data-icon="voice-call-refreshed"],[data-icon="audio-call"],[data-icon="call"],[data-icon="ic-call"],[data-icon="call-refreshed"],[data-icon="phone"],[data-icon*="voice"],[data-icon*="audio"]';
+
+                for (var i = 0; i < btns.length; i++) {
+                  var b = btns[i];
+                  if (!isVisible(b)) continue;
+                  var al = norm(b.getAttribute('aria-label') || b.getAttribute('title') || b.innerText || '');
+                  if (specificLabelRe.test(al)) {
+                    if (!isVideo && /video/i.test(al) && !/voice|audio/i.test(al)) continue;
+                    return { el: b, kind: 'direct' };
+                  }
+                  var ic = b.querySelector(specificIconSel);
+                  if (ic) {
+                    return { el: b, kind: 'direct' };
+                  }
+                }
+
+                for (var j = 0; j < btns.length; j++) {
+                  var u = btns[j];
+                  if (!isVisible(u)) continue;
+                  var ual = norm(u.getAttribute('aria-label') || u.getAttribute('title') || u.innerText || '');
+                  if (/^(search|menu|more options|profile|close|back|attach|mute)/i.test(ual)) continue;
+                  if (/^(call|calls|start( a)? call|make( a)? call|voice or video|video or voice)$/i.test(ual) || /\bcall\b/i.test(ual)) {
+                    return { el: u, kind: 'unified' };
+                  }
+                  var anyIcon = u.querySelector('[data-icon]');
+                  if (anyIcon) {
+                    var dn = (anyIcon.getAttribute('data-icon') || '').toLowerCase();
+                    if ((dn.indexOf('call') !== -1 || dn.indexOf('phone') !== -1 || dn.indexOf('video') !== -1) &&
+                        dn.indexOf('missed') === -1 && dn.indexOf('history') === -1) {
+                      return { el: u, kind: 'unified' };
+                    }
+                  }
+                }
+                return null;
+              }
+
+              function findCallSubmenuOrConfirmOption(excludeBtn) {
+                var nodes = document.querySelectorAll('[role="menu"] [role="menuitem"], [role="menu"] button, [role="menu"] [role="button"], [role="application"] [role="button"], [role="dialog"] button, [role="dialog"] [role="button"], div[role="menuitem"], li[role="menuitem"]');
+                var modeRe = isVideo ? /video\s*call|^video$/i : /voice\s*call|audio\s*call|^voice$|^audio$/i;
+                var iconSel = isVideo ? '[data-icon*="video"]' : '[data-icon*="voice"],[data-icon*="audio"],[data-icon="call"],[data-icon*="phone"]';
+                for (var i = 0; i < nodes.length; i++) {
+                  var n = nodes[i];
+                  if (n === excludeBtn || (excludeBtn && excludeBtn.contains(n))) continue;
+                  if (!isVisible(n)) continue;
+                  var txt = norm(n.innerText || n.textContent || n.getAttribute('aria-label') || '');
+                  if (modeRe.test(txt) || n.querySelector(iconSel)) {
+                    return n;
+                  }
+                }
+                for (var j = 0; j < nodes.length; j++) {
+                  var d = nodes[j];
+                  if (d === excludeBtn || (excludeBtn && excludeBtn.contains(d))) continue;
+                  if (!isVisible(d)) continue;
+                  if (!d.closest('[role="dialog"]')) continue;
+                  var dt = norm(d.innerText || d.textContent || d.getAttribute('aria-label') || '');
+                  if (/^(start call|call|continue|allow|ok)$/i.test(dt)) {
+                    return d;
+                  }
+                }
+                return null;
+              }
+
+              function readUnsupportedDialogReason() {
+                var dlgs = document.querySelectorAll('[role="dialog"]');
+                for (var i = 0; i < dlgs.length; i++) {
+                  if (!isVisible(dlgs[i])) continue;
+                  var txt = norm(dlgs[i].innerText || dlgs[i].textContent);
+                  if (/download whatsapp|get the app|get whatsapp|browser isn.?t supported|not available on whatsapp web/i.test(txt)) {
+                    return txt.slice(0, 120);
+                  }
+                }
+                return '';
+              }
+
+              function buildHeaderDiag(rowCount) {
+                var hdr = document.querySelector('#main header');
+                var btns = findHeaderButtons();
+                var list = [];
+                for (var i = 0; i < btns.length && i < 8; i++) {
+                  var b = btns[i];
+                  var al = norm(b.getAttribute('aria-label') || b.getAttribute('title') || '');
+                  var icEl = b.querySelector('[data-icon]');
+                  var ic = icEl ? icEl.getAttribute('data-icon') : '';
+                  var tx = norm(b.innerText || '').slice(0, 20);
+                  list.push((al || tx || '-') + '@' + (ic || '-'));
+                }
+                var dlgs = document.querySelectorAll('[role="dialog"]').length;
+                return 'w=' + window.innerWidth + 'x' + window.innerHeight +
+                  ',main=' + (!!hdr) + ',rows=' + rowCount + ',dlgs=' + dlgs + ',hdr=[' + list.join(';') + ']';
+              }
+
+              var queries = [];
+              if (digits) queries.push('+' + digits);
+              if (digits.length > 10) queries.push(digits.slice(-10));
+              if (digits) queries.push(digits);
+              if (contactName && queries.indexOf(contactName) === -1) queries.push(contactName);
+              var uniqueQueries = [];
+              for (var q = 0; q < queries.length; q++) {
+                if (queries[q] && uniqueQueries.indexOf(queries[q]) === -1) uniqueQueries.push(queries[q]);
+              }
+              if (!uniqueQueries.length) {
                 WuppCallBridge.onDialResult(false, 'No phone number available for this contact');
                 return;
               }
-              var box = document.querySelector('[data-testid="chat-list-search"] [contenteditable="true"], [aria-label*="Search input" i][contenteditable="true"], #side [role="textbox"]');
-              if (!box) {
-                WuppCallBridge.onDialResult(false, 'WhatsApp Web session not ready yet');
-                return;
+
+              var queryIdx = 0;
+              var phase = 'WAIT_SEARCH_BOX';
+              var phaseTicks = 0;
+              var rowClicked = false;
+              var lastRowCount = 0;
+              var clickedCallInfo = null;
+              var callBtnRetries = 0;
+              var submenuClicked = false;
+
+              function runSearchAttempt(box) {
+                setSearchQuery(box, uniqueQueries[queryIdx]);
+                phase = 'WAIT_ROW';
+                phaseTicks = 0;
               }
-              box.focus();
-              try {
-                document.execCommand('selectAll', false, null);
-                document.execCommand('insertText', false, query);
-              } catch (e) {
-                box.textContent = query;
-                box.dispatchEvent(new InputEvent('input', { bubbles: true }));
-              }
-              setTimeout(function() {
-                var rows = document.querySelectorAll('#pane-side [role="listitem"], #pane-side [role="row"]');
-                if (!rows.length) {
-                  WuppCallBridge.onDialResult(false, 'Contact not found in WhatsApp Web');
+
+              function tick() {
+                if (window.__wuppDialGen !== myGen) return;
+                phaseTicks++;
+
+                if (hasCallEndControl()) {
+                  WuppCallBridge.onDialResult(true, '');
                   return;
                 }
-                rows[0].click();
-                setTimeout(function() {
-                  var iconSel = isVideo ? '[data-icon="video-call"],[data-icon="video"]' : '[data-icon="call"],[data-icon="audio-call"]';
-                  var labelRe = isVideo ? /video call/i : /voice call|audio call/i;
-                  var btn = null;
-                  var headerBtns = document.querySelectorAll('#main header button, #main header [role="button"], header button, header [role="button"]');
-                  for (var i = 0; i < headerBtns.length; i++) {
-                    var al = headerBtns[i].getAttribute('aria-label') || '';
-                    if (labelRe.test(al) || headerBtns[i].querySelector(iconSel)) {
-                      btn = headerBtns[i];
-                      break;
-                    }
-                  }
-                  if (!btn) {
-                    var all = document.querySelectorAll(iconSel);
-                    if (all.length) btn = all[0].closest('button,[role="button"]') || all[0];
-                  }
-                  if (!btn) {
-                    WuppCallBridge.onDialResult(false, 'Call button unavailable in WhatsApp Web');
+
+                var unsupported = readUnsupportedDialogReason();
+                if (unsupported) {
+                  WuppCallBridge.onDialResult(false, 'WhatsApp Web calling unavailable: ' + unsupported);
+                  return;
+                }
+
+                if (phase === 'WAIT_SEARCH_BOX') {
+                  var box = findSearchBox();
+                  if (box) {
+                    runSearchAttempt(box);
+                    setTimeout(tick, Math.max(d1, 550));
                     return;
                   }
-                  btn.click();
-                  setTimeout(function() {
-                    var confirmBtns = document.querySelectorAll('[role="dialog"] button,[role="dialog"] [role="button"]');
-                    for (var c = 0; c < confirmBtns.length; c++) {
-                      if (/call|start|continue/i.test(confirmBtns[c].innerText || '')) {
-                        confirmBtns[c].click();
-                        break;
+                  if (phaseTicks >= 16) {
+                    WuppCallBridge.onDialResult(false, 'WhatsApp Web session not ready yet');
+                    return;
+                  }
+                  setTimeout(tick, 250);
+                  return;
+                }
+
+                if (phase === 'WAIT_ROW') {
+                  var rows = getValidChatRows();
+                  lastRowCount = rows.length;
+                  var row = pickBestChatRow(rows);
+                  if (row) {
+                    var clickTarget = row.querySelector('[data-testid*="cell-frame-container"], [role="gridcell"], [tabindex="-1"], [tabindex="0"]') || row;
+                    clickSingle(clickTarget, phaseTicks > 2);
+                    rowClicked = true;
+                    phase = 'WAIT_HEADER_AND_BTN';
+                    phaseTicks = 0;
+                    setTimeout(tick, Math.max(d2, 550));
+                    return;
+                  }
+                  if (phaseTicks >= 8) {
+                    if (queryIdx + 1 < uniqueQueries.length) {
+                      queryIdx++;
+                      var nextBox = findSearchBox();
+                      if (nextBox) {
+                        runSearchAttempt(nextBox);
+                        setTimeout(tick, 600);
+                        return;
                       }
                     }
-                    WuppCallBridge.onDialResult(true, '');
-                  }, 300);
-                }, d2);
-              }, d1);
+                    WuppCallBridge.onDialResult(false, 'Contact not found in WhatsApp Web');
+                    return;
+                  }
+                  setTimeout(tick, 260);
+                  return;
+                }
+
+                if (phase === 'WAIT_HEADER_AND_BTN') {
+                  var hdr = document.querySelector('#main header');
+                  if (!hdr || !isVisible(hdr)) {
+                    if (phaseTicks % 3 === 1 && rowClicked) {
+                      var rows2 = getValidChatRows();
+                      var row2 = pickBestChatRow(rows2);
+                      if (row2) {
+                        var ct2 = row2.querySelector('[data-testid*="cell-frame-container"], [role="gridcell"], [tabindex]') || row2;
+                        clickSingle(ct2, true);
+                      }
+                    }
+                    if (phaseTicks >= 18) {
+                      WuppCallBridge.onDialResult(false, 'Call button unavailable in WhatsApp Web (' + buildHeaderDiag(lastRowCount) + ')');
+                      return;
+                    }
+                    setTimeout(tick, 280);
+                    return;
+                  }
+
+                  var found = findHeaderCallButton();
+                  if (found && found.el) {
+                    clickedCallInfo = found;
+                    clickSingle(found.el, false);
+                    phase = 'WAIT_POST_CLICK';
+                    phaseTicks = 0;
+                    setTimeout(tick, 320);
+                    return;
+                  }
+
+                  if (phaseTicks >= 16) {
+                    WuppCallBridge.onDialResult(false, 'Call button unavailable in WhatsApp Web (' + buildHeaderDiag(lastRowCount) + ')');
+                    return;
+                  }
+                  setTimeout(tick, 280);
+                  return;
+                }
+
+                if (phase === 'WAIT_POST_CLICK') {
+                  if (!submenuClicked) {
+                    var subOpt = findCallSubmenuOrConfirmOption(clickedCallInfo ? clickedCallInfo.el : null);
+                    if (subOpt) {
+                      submenuClicked = true;
+                      clickSingle(subOpt, true);
+                      setTimeout(tick, 350);
+                      return;
+                    }
+                  } else {
+                    var confirmOpt = findCallSubmenuOrConfirmOption(clickedCallInfo ? clickedCallInfo.el : null);
+                    if (confirmOpt && confirmOpt.closest('[role="dialog"]')) {
+                      clickSingle(confirmOpt, true);
+                      setTimeout(tick, 350);
+                      return;
+                    }
+                  }
+
+                  if (phaseTicks === 3 && !submenuClicked && callBtnRetries === 0 && clickedCallInfo && clickedCallInfo.el) {
+                    callBtnRetries++;
+                    invokeReactHandler([clickedCallInfo.el, clickedCallInfo.el.parentElement]);
+                  }
+
+                  if (phaseTicks >= 9) {
+                    if (clickedCallInfo && clickedCallInfo.kind === 'unified' && !submenuClicked) {
+                      WuppCallBridge.onDialResult(false, 'Call menu option unavailable in WhatsApp Web (' + buildHeaderDiag(lastRowCount) + ')');
+                    } else {
+                      WuppCallBridge.onDialResult(true, '');
+                    }
+                    return;
+                  }
+                  setTimeout(tick, 280);
+                }
+              }
+
+              setTimeout(tick, 120);
             })();
         """.trimIndent()
 

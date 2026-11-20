@@ -92,8 +92,10 @@ object CallStateManager {
                             _pairingStatus.value = ""
                         } else if (state == WebLinkState.AUTHENTICATED) {
                             pairingWatchdogJob?.cancel()
+                            if (pairingInProgress) {
+                                _pairingPreviewActive.value = false
+                            }
                             pairingInProgress = false
-                            _pairingPreviewActive.value = false
                             _pairingCode.value = ""
                             _pairingStatus.value = ""
                             if (!StealthMatrixManager.config.value.callingLinked) {

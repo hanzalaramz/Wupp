@@ -371,116 +371,14 @@ fun CallingSetupCard(
                         )
                     }
                 }
-
-                if (showLivePreview) {
-                    val previewContainer = remember(context) { FrameLayout(context) }
-                    DisposableEffect(previewContainer) {
-                        CallStateManager.attachPairingPreviewHost(previewContainer)
-                        onDispose {
-                            CallStateManager.detachPairingPreviewHost(previewContainer)
-                        }
-                    }
-                    Dialog(
-                        onDismissRequest = { showLivePreview = false },
-                        properties = DialogProperties(usePlatformDefaultWidth = false)
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(22.dp),
-                            color = colors.elevatedBar,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 10.dp, vertical = 16.dp)
-                                .border(1.dp, colors.textSecondary.copy(alpha = 0.22f), RoundedCornerShape(22.dp))
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = "Live WhatsApp Web Pairing",
-                                            color = colors.textPrimary,
-                                            fontSize = 16.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        Text(
-                                            text = "If auto-click pauses, tap 'Link with phone number instead.' directly on the page below.",
-                                            color = colors.textSecondary,
-                                            fontSize = 11.sp
-                                        )
-                                    }
-                                    IconButton(onClick = { showLivePreview = false }) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Close,
-                                            contentDescription = "Close live pairing screen",
-                                            tint = colors.textSecondary
-                                        )
-                                    }
-                                }
-
-                                if (pairingCode.isNotBlank()) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(colors.brightGreen.copy(alpha = 0.14f))
-                                            .clickable {
-                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                                clipboard.setPrimaryClip(ClipData.newPlainText("WhatsApp Pairing Code", pairingCode))
-                                                Toast.makeText(context, "Pairing code copied", Toast.LENGTH_SHORT).show()
-                                            }
-                                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            text = "Code: $pairingCode",
-                                            color = colors.brightGreen,
-                                            fontSize = 18.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        Text(
-                                            text = "Tap to copy",
-                                            color = colors.textSecondary,
-                                            fontSize = 12.sp
-                                        )
-                                    }
-                                } else if (pairingStatus.isNotBlank()) {
-                                    Text(
-                                        text = pairingStatus,
-                                        color = if (linkState == WebLinkState.ERROR) colors.antiDeleteRed else colors.textSecondary,
-                                        fontSize = 12.sp
-                                    )
-                                }
-
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(500.dp)
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .border(1.dp, colors.textSecondary.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
-                                        .background(Color.White)
-                                ) {
-                                    AndroidView(
-                                        factory = { previewContainer },
-                                        update = { container ->
-                                            CallStateManager.attachPairingPreviewHost(container)
-                                        },
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
             } else {
+                OutlinedButton(
+                    onClick = { showLivePreview = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("View Linked WhatsApp Web", color = colors.textPrimary)
+                }
+
                 OutlinedButton(
                     onClick = {
                         CallStateManager.unlinkCallingEngine()
@@ -496,6 +394,119 @@ fun CallingSetupCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Unlink & Clear Calling Session", color = colors.antiDeleteRed)
+                }
+            }
+
+            if (showLivePreview) {
+                val previewContainer = remember(context) { FrameLayout(context) }
+                DisposableEffect(previewContainer) {
+                    CallStateManager.attachPairingPreviewHost(previewContainer)
+                    onDispose {
+                        CallStateManager.detachPairingPreviewHost(previewContainer)
+                    }
+                }
+                Dialog(
+                    onDismissRequest = { showLivePreview = false },
+                    properties = DialogProperties(usePlatformDefaultWidth = false)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(22.dp),
+                        color = colors.elevatedBar,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 16.dp)
+                            .border(1.dp, colors.textSecondary.copy(alpha = 0.22f), RoundedCornerShape(22.dp))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = if (isLinked) "Linked WhatsApp Web Session" else "Live WhatsApp Web Pairing",
+                                        color = colors.textPrimary,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = if (isLinked) {
+                                            "Inspect the live companion browser session below."
+                                        } else {
+                                            "If auto-click pauses, tap 'Link with phone number instead.' directly on the page below."
+                                        },
+                                        color = colors.textSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                IconButton(onClick = { showLivePreview = false }) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Close,
+                                        contentDescription = "Close live preview",
+                                        tint = colors.textSecondary
+                                    )
+                                }
+                            }
+
+                            if (!isLinked && pairingCode.isNotBlank()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(colors.brightGreen.copy(alpha = 0.14f))
+                                        .clickable {
+                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                            clipboard.setPrimaryClip(ClipData.newPlainText("WhatsApp Pairing Code", pairingCode))
+                                            Toast.makeText(context, "Pairing code copied", Toast.LENGTH_SHORT).show()
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "Code: $pairingCode",
+                                        color = colors.brightGreen,
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "Tap to copy",
+                                        color = colors.textSecondary,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            } else if (!isLinked && pairingStatus.isNotBlank()) {
+                                Text(
+                                    text = pairingStatus,
+                                    color = if (linkState == WebLinkState.ERROR) colors.antiDeleteRed else colors.textSecondary,
+                                    fontSize = 12.sp
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(500.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .border(1.dp, colors.textSecondary.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
+                                    .background(Color.White)
+                            ) {
+                                AndroidView(
+                                    factory = { previewContainer },
+                                    update = { container ->
+                                        CallStateManager.attachPairingPreviewHost(container)
+                                    },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
+                    }
                 }
             }
 

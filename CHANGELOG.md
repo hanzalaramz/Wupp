@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.10] - 2026-11-20
+
+### 🛠️ Fixes
+- 📞 **Calls Dialing:** Fixed WhatsApp Web call button detection (supports `voice-call` / `video-call` icons, unified Call menu dropdowns, and reliable chat selection) so outgoing calls start cleanly.
+
 ## [0.3.5-pre.9] - 2026-11-20
 
 ### 🛠️ Fixes
