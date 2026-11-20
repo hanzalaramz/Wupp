@@ -168,7 +168,7 @@ jobs:
 
       - name: Create GitHub Release (with CHANGELOG notes)
         if: steps.notes.outputs.has_notes == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: "Wupp ${{ steps.meta.outputs.tag }}"
@@ -180,7 +180,7 @@ jobs:
 
       - name: Create GitHub Release (generated notes fallback)
         if: steps.notes.outputs.has_notes != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: "Wupp ${{ steps.meta.outputs.tag }}"
