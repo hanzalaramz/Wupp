@@ -17,8 +17,11 @@ import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
+import android.webkit.ServiceWorkerClient
+import android.webkit.ServiceWorkerController
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -28,6 +31,10 @@ import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.Locale
 import kotlin.random.Random
 
 /**
@@ -68,6 +75,8 @@ class WebCallEngine(
     private var pendingPairingPhoneDigits: String = ""
     @Volatile
     private var pendingSwRefreshOnUpgrade: Boolean = false
+    @Volatile
+    private var desktopUserAgent: String = ""
 
     val isAttachedAndLoaded: Boolean
         get() = webView != null
@@ -509,7 +518,9 @@ class WebCallEngine(
         settings.setGeolocationEnabled(false)
         settings.allowFileAccess = false
         settings.allowContentAccess = false
-        settings.userAgentString = buildChromiumMatchedDesktopUa(WebSettings.getDefaultUserAgent(appContext))
+        val computedDesktopUa = buildChromiumMatchedDesktopUa(WebSettings.getDefaultUserAgent(appContext))
+        desktopUserAgent = computedDesktopUa
+        settings.userAgentString = computedDesktopUa
 
         if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
             runCatching {
@@ -553,6 +564,14 @@ class WebCallEngine(
             }
         }
 
+        runCatching {
+            ServiceWorkerController.getInstance().setServiceWorkerClient(object : ServiceWorkerClient() {
+                override fun shouldInterceptRequest(request: WebResourceRequest?): WebResourceResponse? {
+                    return maybeInterceptWhatsAppCoopRequest(request)
+                }
+            })
+        }
+
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
         val priority = if (isPopout) WebView.RENDERER_PRIORITY_IMPORTANT else WebView.RENDERER_PRIORITY_WAIVED
@@ -561,6 +580,10 @@ class WebCallEngine(
         wv.addJavascriptInterface(WuppCallJsBridge(), "WuppCallBridge")
         wv.setDownloadListener { _, _, _, _, _ -> }
         wv.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                return maybeInterceptWhatsAppCoopRequest(request) ?: super.shouldInterceptRequest(view, request)
+            }
+
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url ?: return false
                 val schemeOk = url.scheme.equals("https", ignoreCase = true)
@@ -735,12 +758,234 @@ class WebCallEngine(
         }
     }
 
+    /**
+     * WhatsApp Web serves `Cross-Origin-Opener-Policy: same-origin-allow-popups` paired with
+     * `Document-Isolation-Policy: isolate-and-require-corp`. On Desktop Chrome, `DocumentIsolationPolicy`
+     * is enabled and grants `crossOriginIsolated = true` + `window.SharedArrayBuffer`, whereas on Android
+     * Chromium `DocumentIsolationPolicy` is disabled (`status: { "Android": "" }`), leaving
+     * `window.crossOriginIsolated = false` and `window.SharedArrayBuffer = undefined`
+     * (`WAWebVoipGatingUtils.getUnsupportedBrowserReason() == "missing_shared_array_buffer"`).
+     *
+     * Rewriting `Cross-Origin-Opener-Policy: same-origin` on main HTML documents and prepending our
+     * `SharedArrayBuffer` / desktop-env preamble to `/static_resources/webworker.../init_script/`
+     * activates standard COOP+COEP cross-origin isolation and ensures `SharedArrayBuffer` is present
+     * in both the main window and all VoIP WebAssembly workers.
+     */
+    private fun maybeInterceptWhatsAppCoopRequest(request: WebResourceRequest?): WebResourceResponse? {
+        val req = request ?: return null
+        if (!req.method.equals("GET", ignoreCase = true)) return null
+        val uri = req.url ?: return null
+        if (!uri.scheme.equals("https", ignoreCase = true)) return null
+        val host = uri.host?.lowercase(Locale.US) ?: return null
+        if (host != "web.whatsapp.com") return null
+
+        val headers = req.requestHeaders ?: emptyMap()
+        if (headers.entries.any { it.key.equals("Upgrade", ignoreCase = true) && it.value.equals("websocket", ignoreCase = true) }) {
+            return null
+        }
+
+        val path = uri.path.orEmpty()
+        val isWorkerInit = path.contains("/static_resources/webworker") && path.contains("/init_script")
+        val acceptHeader = headers.entries.firstOrNull { it.key.equals("Accept", ignoreCase = true) }?.value.orEmpty()
+        val fetchMode = headers.entries.firstOrNull { it.key.equals("Sec-Fetch-Mode", ignoreCase = true) }?.value.orEmpty()
+        val isHtmlPath = path.isEmpty() || path == "/" || path.startsWith("/call")
+        val isMainHtmlNav = !isWorkerInit && isHtmlPath && (
+            req.isForMainFrame ||
+                fetchMode.equals("navigate", ignoreCase = true) ||
+                acceptHeader.contains("text/html", ignoreCase = true)
+            )
+
+        if (!isWorkerInit && !isMainHtmlNav) return null
+
+        val urlStr = uri.toString()
+        return runCatching {
+            val ua = desktopUserAgent.ifBlank {
+                buildChromiumMatchedDesktopUa(WebSettings.getDefaultUserAgent(appContext))
+            }
+            val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                instanceFollowRedirects = false
+                connectTimeout = 15_000
+                readTimeout = 15_000
+                setRequestProperty("User-Agent", ua)
+                for ((k, v) in headers) {
+                    if (k.equals("Accept-Encoding", ignoreCase = true) ||
+                        k.equals("User-Agent", ignoreCase = true) ||
+                        k.equals("Cookie", ignoreCase = true) ||
+                        k.equals("Host", ignoreCase = true) ||
+                        k.equals("Connection", ignoreCase = true)
+                    ) {
+                        continue
+                    }
+                    setRequestProperty(k, v)
+                }
+                val cookie = CookieManager.getInstance().getCookie(urlStr)
+                if (!cookie.isNullOrBlank()) {
+                    setRequestProperty("Cookie", cookie)
+                }
+            }
+
+            val status = conn.responseCode
+            if (status != HttpURLConnection.HTTP_OK) {
+                conn.disconnect()
+                return null
+            }
+
+            val cookieManager = CookieManager.getInstance()
+            val respHeaders = LinkedHashMap<String, String>()
+            for ((rawName, values) in conn.headerFields) {
+                val name = rawName ?: continue
+                val nonNullValues = values?.filterNotNull()?.filter { it.isNotBlank() } ?: continue
+                if (nonNullValues.isEmpty()) continue
+
+                if (name.equals("Set-Cookie", ignoreCase = true) ||
+                    name.equals("Set-Cookie2", ignoreCase = true)
+                ) {
+                    for (c in nonNullValues) {
+                        cookieManager.setCookie(urlStr, c)
+                    }
+                    continue
+                }
+
+                val lower = name.lowercase(Locale.US)
+                if (lower == "content-encoding" ||
+                    lower == "content-length" ||
+                    lower == "transfer-encoding" ||
+                    lower == "accept-ch" ||
+                    lower == "accept-ch-lifetime" ||
+                    lower == "cross-origin-opener-policy" ||
+                    lower == "cross-origin-embedder-policy" ||
+                    lower == "cross-origin-resource-policy"
+                ) {
+                    continue
+                }
+
+                if (lower == "content-security-policy" || lower == "content-security-policy-report-only") {
+                    respHeaders[name] = nonNullValues.firstOrNull { it.contains("default-src", ignoreCase = true) }
+                        ?: nonNullValues.first()
+                } else {
+                    respHeaders[name] = nonNullValues.joinToString(", ")
+                }
+            }
+
+            respHeaders["Cross-Origin-Opener-Policy"] = "same-origin"
+            respHeaders["Cross-Origin-Embedder-Policy"] = "require-corp"
+            respHeaders["Cross-Origin-Resource-Policy"] = "same-origin"
+
+            val rawBytes = conn.inputStream.use { it.readBytes() }
+            conn.disconnect()
+
+            val finalBytes = if (isWorkerInit) {
+                val bodyStr = String(rawBytes, Charsets.UTF_8)
+                (JS_WORKER_ENV_PREAMBLE + "\n" + bodyStr).toByteArray(Charsets.UTF_8)
+            } else {
+                rawBytes
+            }
+
+            val rawContentType = conn.contentType ?: if (isWorkerInit) {
+                "application/javascript; charset=utf-8"
+            } else {
+                "text/html; charset=utf-8"
+            }
+            val mimeType = rawContentType.substringBefore(';').trim().ifEmpty {
+                if (isWorkerInit) "application/javascript" else "text/html"
+            }
+
+            WebResourceResponse(
+                mimeType,
+                "utf-8",
+                status,
+                "OK",
+                respHeaders,
+                ByteArrayInputStream(finalBytes)
+            )
+        }.getOrNull()
+    }
+
     companion object {
         private const val WA_WEB_URL = "https://web.whatsapp.com/"
         const val MIN_RECONNECT_COOLDOWN_MS = 45_000L
         private const val PREFS_CALL_ENGINE = "wupp_call_engine_prefs"
         private const val KEY_ENV_REV = "calling_web_env_rev"
-        private const val CURRENT_ENV_REV = 14
+        private const val CURRENT_ENV_REV = 15
+
+        private val JS_WORKER_ENV_PREAMBLE = """
+            (function() {
+              var g = typeof globalThis !== 'undefined' ? globalThis : self;
+              if (g.__wuppWorkerEnvApplied) return;
+              g.__wuppWorkerEnvApplied = true;
+              function safeDef(obj, prop, getter) {
+                try {
+                  Object.defineProperty(obj, prop, { configurable: true, enumerable: true, get: getter });
+                  return true;
+                } catch (e) { return false; }
+              }
+              try {
+                if (typeof g.SharedArrayBuffer !== 'function' && typeof WebAssembly === 'object' && typeof WebAssembly.Memory === 'function') {
+                  var m = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+                  if (m && m.buffer && m.buffer.constructor && m.buffer.constructor !== ArrayBuffer) {
+                    g.SharedArrayBuffer = m.buffer.constructor;
+                  }
+                }
+              } catch (e) {}
+              if (typeof g.SharedArrayBuffer !== 'function') {
+                var SabShim = function SharedArrayBuffer(len) { return new ArrayBuffer(len >>> 0); };
+                SabShim.prototype = ArrayBuffer.prototype;
+                g.SharedArrayBuffer = SabShim;
+              }
+              if (g.crossOriginIsolated !== true) {
+                safeDef(g, 'crossOriginIsolated', function() { return true; });
+              }
+              var nav = g.navigator;
+              if (nav) {
+                var navProto = (typeof WorkerNavigator !== 'undefined' && WorkerNavigator.prototype) || nav;
+                if (!safeDef(navProto, 'platform', function() { return 'Win32'; })) {
+                  safeDef(nav, 'platform', function() { return 'Win32'; });
+                }
+                if (!safeDef(navProto, 'maxTouchPoints', function() { return 0; })) {
+                  safeDef(nav, 'maxTouchPoints', function() { return 0; });
+                }
+              }
+              var pmOk = false;
+              try {
+                if (typeof MessageChannel === 'function' && typeof g.SharedArrayBuffer === 'function') {
+                  var mc = new MessageChannel();
+                  mc.port1.postMessage(new g.SharedArrayBuffer(8));
+                  mc.port1.close();
+                  mc.port2.close();
+                  pmOk = true;
+                }
+              } catch (e) { pmOk = false; }
+              g.__wuppSabPmOk = pmOk;
+              if (!pmOk && typeof g.postMessage === 'function') {
+                var origPm = g.postMessage.bind(g);
+                g.postMessage = function(msg, transfer) {
+                  try {
+                    return arguments.length > 1 ? origPm(msg, transfer) : origPm(msg);
+                  } catch (err) {
+                    if (msg && typeof msg === 'object' && msg.buffer && typeof Int32Array === 'function') {
+                      try {
+                        var i32 = new Int32Array(msg.buffer);
+                        if (msg.__name === 'browserAudioProcessingStatusSyncRequest') {
+                          Atomics.store(i32, 1, 7);
+                          Atomics.store(i32, 0, 1);
+                          Atomics.notify(i32, 0, 1);
+                        } else if (msg.__name === 'contactLookupSyncRequest') {
+                          Atomics.store(i32, 1, 1);
+                          Atomics.store(i32, 0, 1);
+                          Atomics.notify(i32, 0, 1);
+                        }
+                      } catch (e2) {}
+                      var c = Object.assign({}, msg);
+                      delete c.buffer;
+                      return origPm(c);
+                    }
+                    throw err;
+                  }
+                };
+              }
+            })();
+        """.trimIndent()
 
         private val JS_DESKTOP_ENV_DOCUMENT_START = """
             (function() {
@@ -758,6 +1003,71 @@ class WebCallEngine(
                 } catch (e) {
                   return false;
                 }
+              }
+
+              var nativeCoi = window.crossOriginIsolated === true;
+              window.__wuppNativeCoi = nativeCoi;
+              var sabMode = 'none';
+              try {
+                if (typeof window.SharedArrayBuffer === 'function') {
+                  sabMode = 'native';
+                } else if (typeof WebAssembly === 'object' && typeof WebAssembly.Memory === 'function') {
+                  var probeMem = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+                  if (probeMem && probeMem.buffer && probeMem.buffer.constructor && probeMem.buffer.constructor !== ArrayBuffer) {
+                    window.SharedArrayBuffer = probeMem.buffer.constructor;
+                    sabMode = 'wasm-ctor';
+                  }
+                }
+              } catch (e) {
+                sabMode = 'wasm-err';
+              }
+              if (typeof window.SharedArrayBuffer !== 'function') {
+                var SabShim = function SharedArrayBuffer(len) {
+                  return new ArrayBuffer(len >>> 0);
+                };
+                SabShim.prototype = ArrayBuffer.prototype;
+                window.SharedArrayBuffer = SabShim;
+                sabMode = 'ab-shim';
+              }
+              window.__wuppSabMode = sabMode;
+              if (!nativeCoi) {
+                safeDefine(window, 'crossOriginIsolated', function() { return true; });
+              }
+              var sabPmOk = false;
+              try {
+                if (typeof MessageChannel === 'function' && typeof window.SharedArrayBuffer === 'function') {
+                  var mc = new MessageChannel();
+                  mc.port1.postMessage(new window.SharedArrayBuffer(8));
+                  mc.port1.close();
+                  mc.port2.close();
+                  sabPmOk = true;
+                }
+              } catch (e) {
+                sabPmOk = false;
+              }
+              window.__wuppSabPmOk = sabPmOk;
+
+              if (!nativeCoi) {
+                try {
+                  if (window.sessionStorage && !sessionStorage.getItem('__wupp_coi_sw_purged')) {
+                    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+                      navigator.serviceWorker.getRegistrations().then(function(regs) {
+                        if (regs && regs.length > 0) {
+                          sessionStorage.setItem('__wupp_coi_sw_purged', '1');
+                          Promise.all(regs.map(function(r) { return r.unregister(); })).then(function() {
+                            if (window.caches && caches.keys) {
+                              caches.keys().then(function(ks) {
+                                return Promise.all(ks.map(function(k) { return caches.delete(k); }));
+                              }).finally(function() { location.reload(true); });
+                            } else {
+                              location.reload(true);
+                            }
+                          });
+                        }
+                      });
+                    }
+                  }
+                } catch (e) {}
               }
 
               var navProto = (typeof Navigator !== 'undefined' && Navigator.prototype) || navigator;
@@ -1094,28 +1404,41 @@ class WebCallEngine(
                       var uaMod = window.require('WAWebUA');
                       var u = uaMod && (uaMod.UA || uaMod.default || uaMod);
                       if (u) {
-                        out += ' waOS=' + u.os + '/br=' + u.browser + '/mob=' + (u.isMobile !== undefined ? u.isMobile : u.device);
+                        out += ' waOS=' + u.os + '/br=' + u.browser;
                       }
                     } catch (e) {}
                     try {
                       var gMod = window.require('WAWebVoipGatingUtils');
                       if (gMod) {
-                        var falseFns = [];
-                        var gKeys = Object.keys(gMod);
-                        for (var i = 0; i < gKeys.length && falseFns.length < 8; i++) {
-                          var k = gKeys[i];
+                        var unSup = typeof gMod.getUnsupportedBrowserReason === 'function' ? gMod.getUnsupportedBrowserReason() : '?';
+                        if (unSup !== null && typeof window.SharedArrayBuffer === 'function') {
                           try {
-                            if (typeof gMod[k] === 'function' && gMod[k].length === 0) {
-                              var val = gMod[k]();
-                              if (val === false) falseFns.push(k);
+                            if (gMod.getUnsupportedBrowserReason && typeof gMod.getUnsupportedBrowserReason.reset === 'function') {
+                              gMod.getUnsupportedBrowserReason.reset();
+                              unSup = gMod.getUnsupportedBrowserReason();
                             }
                           } catch (e2) {}
                         }
-                        if (falseFns.length) {
-                          out += ' gateFalse=[' + falseFns.join(',') + ']';
-                        } else {
-                          out += ' gateKeys=' + gKeys.length;
+                        var dl = typeof gMod.isVoipDownloadEnabled === 'function' ? gMod.isVoipDownloadEnabled() : '?';
+                        var en = typeof gMod.isCallingEnabled === 'function' ? gMod.isCallingEnabled() : '?';
+                        var grp = typeof gMod.isWebGroupCallingUsable === 'function' ? gMod.isWebGroupCallingUsable() : '?';
+                        var chr = '?';
+                        try {
+                          var chrMod = window.require('WAWebVoipChromiumDesktopBrowser');
+                          if (chrMod && typeof chrMod.isChromiumDesktopBrowser === 'function') {
+                            chr = chrMod.isChromiumDesktopBrowser();
+                          }
+                        } catch (e3) {}
+                        if (unSup === null && dl === true && !window.__wuppVoipBooted) {
+                          window.__wuppVoipBooted = true;
+                          try {
+                            var bMod = window.require('WAWebVoipBackendLoadable');
+                            if (bMod && typeof bMod.initializeVoipFromBootGate === 'function') {
+                              bMod.initializeVoipFromBootGate('wupp_boot');
+                            }
+                          } catch (e4) {}
                         }
+                        out += ' voip=[unSup:' + String(unSup) + ',dl:' + String(dl) + ',en:' + String(en) + ',grp:' + String(grp) + ',chr:' + String(chr) + ']';
                       }
                     } catch (e) {}
                   }
@@ -1164,56 +1487,18 @@ class WebCallEngine(
                 }
               }
 
-              var cachedWorkerInfo = '';
-              function probeWorkerOnce(cb) {
-                if (cachedWorkerInfo) { cb(cachedWorkerInfo); return; }
-                try {
-                  if (typeof Worker !== 'function' || typeof Blob !== 'function' || !window.URL || !URL.createObjectURL) {
-                    cachedWorkerInfo = 'no-worker';
-                    cb(cachedWorkerInfo);
-                    return;
-                  }
-                  var code = "var ua=navigator.userAgentData?(navigator.userAgentData.mobile+'/'+navigator.userAgentData.platform):'none';postMessage((navigator.platform||'-')+'|'+ua);close();";
-                  var url = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
-                  var wk = new Worker(url);
-                  var done = false;
-                  wk.onmessage = function(ev) {
-                    if (done) return;
-                    done = true;
-                    cachedWorkerInfo = String(ev.data || '?');
-                    try { URL.revokeObjectURL(url); } catch (e) {}
-                    cb(cachedWorkerInfo);
-                  };
-                  wk.onerror = function() {
-                    if (done) return;
-                    done = true;
-                    cachedWorkerInfo = 'wk-err';
-                    cb(cachedWorkerInfo);
-                  };
-                  setTimeout(function() {
-                    if (!done) {
-                      done = true;
-                      cachedWorkerInfo = 'wk-to';
-                      cb(cachedWorkerInfo);
-                    }
-                  }, 500);
-                } catch (e) {
-                  cachedWorkerInfo = 'wk-ex';
-                  cb(cachedWorkerInfo);
-                }
-              }
-
               var lastEnvStr = '';
               function reportEnv() {
                 try {
                   var uad = navigator.userAgentData ? (navigator.userAgentData.mobile + '/' + navigator.userAgentData.platform) : 'none';
+                  var coiInfo = window.crossOriginIsolated ? (window.__wuppNativeCoi ? '1(nat)' : '1(js)') : '0';
+                  var sabInfo = (window.__wuppSabMode || (typeof SharedArrayBuffer === 'function' ? 'nat' : '0')) + '/' + (window.__wuppSabPmOk ? 'pm1' : 'pm0');
                   var apis = 'RTC=' + (typeof RTCPeerConnection === 'function' ? 1 : 0) +
                     ',VF=' + (typeof VideoFrame === 'function' ? 1 : 0) +
                     ',VE=' + (typeof VideoEncoder === 'function' ? 1 : 0) +
                     ',AW=' + (typeof AudioWorkletNode === 'function' ? 1 : 0) +
-                    ',SWk=' + (typeof SharedWorker !== 'undefined' ? 1 : 0) +
-                    ',GPU=' + (navigator.gpu ? 1 : 0) +
-                    ',ots=' + (('ontouchstart' in window) ? 1 : 0);
+                    ',coi=' + coiInfo +
+                    ',sab=' + sabInfo;
                   var base = 'plt=' + (navigator.platform || '-') +
                     ' | ua=' + uad +
                     ' | touch=' + navigator.maxTouchPoints +
@@ -1223,9 +1508,8 @@ class WebCallEngine(
                     readDisabledCallTooltipDiag();
                   var micSt = '?';
                   var devInfo = '?';
-                  var wkInfo = '?';
                   var emit = function() {
-                    var full = base + ' | wk=' + wkInfo + ' | mic=' + micSt + ' | devs=' + devInfo;
+                    var full = base + ' | mic=' + micSt + ' | devs=' + devInfo;
                     if (full !== lastEnvStr) {
                       lastEnvStr = full;
                       try { WuppCallBridge.onEnvDiagnostics(full); } catch (e) {}
@@ -1246,10 +1530,7 @@ class WebCallEngine(
                         devInfo = ai + 'a/' + vi + 'v/' + ao + 'o';
                       }).catch(function() { devInfo = 'err'; })
                     : Promise.resolve();
-                  var p3 = new Promise(function(resolve) {
-                    probeWorkerOnce(function(wi) { wkInfo = wi; resolve(); });
-                  });
-                  Promise.all([p1, p2, p3]).then(emit, emit);
+                  Promise.all([p1, p2]).then(emit, emit);
                 } catch (e) {}
               }
               setTimeout(reportEnv, 800);

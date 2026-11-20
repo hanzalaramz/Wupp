@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.15] - 2026-11-20
+
+### 🛠️ Fixes
+- 📞 **Calls Cross-Origin Isolation & SharedArrayBuffer:** Fixed greyed-out voice and video call buttons by enabling `SharedArrayBuffer` and `Cross-Origin-Opener-Policy: same-origin` isolation required by WhatsApp Web's VoIP engine.
+
 ## [0.3.5-pre.14] - 2026-11-20
 
 ### 🛠️ Fixes
