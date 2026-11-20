@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.12] - 2026-11-20
+
+### 🛠️ Fixes
+- 📞 **Calls Compatibility:** Aligned Chromium Client Hints (`User-AgentMetadata`) to Windows Desktop so WhatsApp Web treats the session like a laptop browser instead of greying out call buttons, and prevented opening group chats before search filters finish.
+
 ## [0.3.5-pre.11] - 2026-11-20
 
 ### 🛠️ Fixes

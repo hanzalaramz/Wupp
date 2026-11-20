@@ -22,6 +22,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.core.content.ContextCompat
+import androidx.webkit.UserAgentMetadata
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
@@ -424,6 +425,32 @@ class WebCallEngine(
         settings.allowFileAccess = false
         settings.allowContentAccess = false
         settings.userAgentString = buildChromiumMatchedDesktopUa(WebSettings.getDefaultUserAgent(appContext))
+
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
+            runCatching {
+                val currentMeta = WebSettingsCompat.getUserAgentMetadata(settings)
+                val desktopBrands = currentMeta.brandVersionList.map { bv ->
+                    if (bv.brand.contains("WebView", ignoreCase = true)) {
+                        UserAgentMetadata.BrandVersion.Builder(bv)
+                            .setBrand("Google Chrome")
+                            .build()
+                    } else {
+                        bv
+                    }
+                }
+                val desktopMeta = UserAgentMetadata.Builder(currentMeta)
+                    .setBrandVersionList(desktopBrands)
+                    .setPlatform("Windows")
+                    .setPlatformVersion("10.0.0")
+                    .setArchitecture("x86")
+                    .setBitness(64)
+                    .setModel("")
+                    .setMobile(false)
+                    .setWow64(false)
+                    .build()
+                WebSettingsCompat.setUserAgentMetadata(settings, desktopMeta)
+            }
+        }
 
         if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
             runCatching {
@@ -1266,19 +1293,40 @@ class WebCallEngine(
                 return valid;
               }
 
-              function pickBestChatRow(rows, allowTopFallback) {
+              function rowTitleText(row) {
+                var spans = row ? row.querySelectorAll('span[title]') : [];
+                var out = '';
+                for (var i = 0; i < spans.length; i++) {
+                  var t = norm(spans[i].getAttribute('title') || spans[i].innerText || '');
+                  if (t) out += ' ' + t;
+                }
+                return norm(out);
+              }
+
+              function pickBestChatRow(rows, allowBodyAndFallback, preSearchRows) {
                 if (!rows.length) return null;
                 var tail7 = digits.length >= 7 ? digits.slice(-7) : digits;
                 var cleanName = normLower(contactName);
+                var listFiltered = rows.length <= 5 || (preSearchRows > 5 && rows.length < preSearchRows);
+
                 for (var i = 0; i < rows.length; i++) {
                   var row = rows[i];
-                  var txt = norm(row.innerText || row.textContent);
-                  var rowDigits = digitsOnly(txt);
-                  if (tail7 && rowDigits.indexOf(tail7) !== -1) return row;
-                  if (cleanName.length >= 2 && normLower(txt).indexOf(cleanName) !== -1) return row;
+                  var titleTxt = rowTitleText(row);
+                  var titleDigits = digitsOnly(titleTxt);
+                  if (tail7 && titleDigits.indexOf(tail7) !== -1) return row;
+                  if (listFiltered && cleanName.length >= 2 && normLower(titleTxt).indexOf(cleanName) !== -1) return row;
                 }
-                if (allowTopFallback && rows.length <= 3) {
-                  return rows[0];
+                if (allowBodyAndFallback && listFiltered) {
+                  for (var j = 0; j < rows.length; j++) {
+                    var rowB = rows[j];
+                    var txt = norm(rowB.innerText || rowB.textContent);
+                    var rowDigits = digitsOnly(txt);
+                    if (tail7 && rowDigits.indexOf(tail7) !== -1) return rowB;
+                    if (cleanName.length >= 2 && normLower(txt).indexOf(cleanName) !== -1) return rowB;
+                  }
+                  if (rows.length <= 3) {
+                    return rows[0];
+                  }
                 }
                 return null;
               }
@@ -1303,46 +1351,72 @@ class WebCallEngine(
                 return hdr.querySelectorAll('button, [role="button"], [tabindex]');
               }
 
+              function isButtonDisabled(el) {
+                if (!el) return true;
+                if (el.disabled || el.getAttribute('aria-disabled') === 'true') return true;
+                try {
+                  var cs = window.getComputedStyle(el);
+                  if (cs && parseFloat(cs.opacity || '1') < 0.6) return true;
+                  var pe = cs ? cs.pointerEvents : '';
+                  if (pe === 'none') return true;
+                } catch (e) {}
+                return false;
+              }
+
+              function buttonLabelAndIcon(b) {
+                var al = norm(b.getAttribute('aria-label') || b.getAttribute('title') || b.innerText || '');
+                if (!al) {
+                  var svgTitle = b.querySelector('svg title');
+                  if (svgTitle) al = norm(svgTitle.textContent || '');
+                }
+                var icEl = b.querySelector('[data-icon]');
+                var ic = icEl ? (icEl.getAttribute('data-icon') || '').toLowerCase() : '';
+                return { al: al, ic: ic };
+              }
+
               function findHeaderCallButton() {
                 var btns = findHeaderButtons();
                 if (!btns || !btns.length) return null;
-                var specificLabelRe = isVideo ? /video\s*call|start\s*video/i : /voice\s*call|audio\s*call|phone\s*call/i;
+                var specificLabelRe = isVideo ? /video\s*call|start\s*video|video/i : /voice\s*call|audio\s*call|phone\s*call/i;
                 var specificIconSel = isVideo
                   ? '[data-icon="video-call"],[data-icon="video-call-refreshed"],[data-icon="video"],[data-icon*="video-call"],[data-icon*="videocam"]'
                   : '[data-icon="voice-call"],[data-icon="voice-call-refreshed"],[data-icon="audio-call"],[data-icon="call"],[data-icon="ic-call"],[data-icon="call-refreshed"],[data-icon="phone"],[data-icon*="voice"],[data-icon*="audio"]';
 
+                var disabledMatch = null;
                 for (var i = 0; i < btns.length; i++) {
                   var b = btns[i];
-                  if (!isVisible(b)) continue;
-                  var al = norm(b.getAttribute('aria-label') || b.getAttribute('title') || b.innerText || '');
-                  if (specificLabelRe.test(al)) {
-                    if (!isVideo && /video/i.test(al) && !/voice|audio/i.test(al)) continue;
-                    return { el: b, kind: 'direct' };
-                  }
-                  var ic = b.querySelector(specificIconSel);
-                  if (ic) {
-                    return { el: b, kind: 'direct' };
+                  try {
+                    var r = b.getBoundingClientRect();
+                    if (!r || r.width < 4 || r.height < 4) continue;
+                  } catch (e) {}
+                  var info = buttonLabelAndIcon(b);
+                  if (/^(search|menu|more options|profile|group info|close|back|attach|mute)/i.test(info.al)) continue;
+                  var matchesDirect = specificLabelRe.test(info.al) || !!b.querySelector(specificIconSel);
+                  if (!isVideo && /video/i.test(info.al) && !/voice|audio/i.test(info.al)) matchesDirect = false;
+                  if (matchesDirect) {
+                    if (!isButtonDisabled(b)) return { el: b, kind: 'direct', disabled: false };
+                    disabledMatch = { el: b, kind: 'direct', disabled: true };
                   }
                 }
 
                 for (var j = 0; j < btns.length; j++) {
                   var u = btns[j];
-                  if (!isVisible(u)) continue;
-                  var ual = norm(u.getAttribute('aria-label') || u.getAttribute('title') || u.innerText || '');
-                  if (/^(search|menu|more options|profile|close|back|attach|mute)/i.test(ual)) continue;
-                  if (/^(call|calls|start( a)? call|make( a)? call|voice or video|video or voice)$/i.test(ual) || /\bcall\b/i.test(ual)) {
-                    return { el: u, kind: 'unified' };
-                  }
-                  var anyIcon = u.querySelector('[data-icon]');
-                  if (anyIcon) {
-                    var dn = (anyIcon.getAttribute('data-icon') || '').toLowerCase();
-                    if ((dn.indexOf('call') !== -1 || dn.indexOf('phone') !== -1 || dn.indexOf('video') !== -1) &&
-                        dn.indexOf('missed') === -1 && dn.indexOf('history') === -1) {
-                      return { el: u, kind: 'unified' };
-                    }
+                  try {
+                    var r2 = u.getBoundingClientRect();
+                    if (!r2 || r2.width < 4 || r2.height < 4) continue;
+                  } catch (e) {}
+                  var uInfo = buttonLabelAndIcon(u);
+                  if (/^(search|menu|more options|profile|group info|close|back|attach|mute)/i.test(uInfo.al)) continue;
+                  var matchesUnified = /^(call|calls|start( a)? call|make( a)? call|voice or video|video or voice)$/i.test(uInfo.al) ||
+                    /\bcall\b/i.test(uInfo.al) ||
+                    ((uInfo.ic.indexOf('call') !== -1 || uInfo.ic.indexOf('phone') !== -1 || uInfo.ic.indexOf('video') !== -1) &&
+                      uInfo.ic.indexOf('missed') === -1 && uInfo.ic.indexOf('history') === -1);
+                  if (matchesUnified) {
+                    if (!isButtonDisabled(u)) return { el: u, kind: 'unified', disabled: false };
+                    if (!disabledMatch) disabledMatch = { el: u, kind: 'unified', disabled: true };
                   }
                 }
-                return null;
+                return disabledMatch;
               }
 
               function findCallSubmenuOrConfirmOption(excludeBtn) {
@@ -1390,16 +1464,17 @@ class WebCallEngine(
                 var list = [];
                 for (var i = 0; i < btns.length && i < 8; i++) {
                   var b = btns[i];
-                  var al = norm(b.getAttribute('aria-label') || b.getAttribute('title') || '');
-                  var icEl = b.querySelector('[data-icon]');
-                  var ic = icEl ? icEl.getAttribute('data-icon') : '';
-                  var tx = norm(b.innerText || '').slice(0, 20);
-                  list.push((al || tx || '-') + '@' + (ic || '-'));
+                  var info = buttonLabelAndIcon(b);
+                  var tx = norm(b.innerText || '').slice(0, 16);
+                  var dis = isButtonDisabled(b) ? '(dis)' : '';
+                  list.push((info.al || tx || '-') + '@' + (info.ic || '-') + dis);
                 }
                 var box = findSearchBox();
                 var boxVal = readBoxText(box).slice(0, 18);
                 var dlgs = document.querySelectorAll('[role="dialog"]').length;
+                var ua = navigator.userAgentData ? (navigator.userAgentData.mobile + '/' + navigator.userAgentData.platform) : 'none';
                 return 'w=' + window.innerWidth + 'x' + window.innerHeight +
+                  ',ua=' + ua + ',plt=' + (navigator.platform || '-') +
                   ',main=' + (!!hdr) + '/' + mainAny + ',rows=' + rowCount + ',box=' + boxVal + ',dlgs=' + dlgs + ',hdr=[' + list.join(';') + ']';
               }
 
@@ -1421,13 +1496,15 @@ class WebCallEngine(
               var phase = 'WAIT_SEARCH_BOX';
               var phaseTicks = 0;
               var rowClicked = false;
-              var lastRowCount = 0;
+              var initialRowCount = getValidChatRows().length;
+              var lastRowCount = initialRowCount;
               var matchedQueryPrefix = '';
               var clickedCallInfo = null;
               var callBtnRetries = 0;
               var submenuClicked = false;
 
               function runSearchAttempt(box) {
+                initialRowCount = Math.max(initialRowCount, getValidChatRows().length);
                 matchedQueryPrefix = normLower(uniqueQueries[queryIdx]).slice(0, 4);
                 setSearchQuery(box, uniqueQueries[queryIdx]);
                 phase = 'WAIT_ROW';
@@ -1461,7 +1538,7 @@ class WebCallEngine(
                   var box = findSearchBox();
                   if (box) {
                     runSearchAttempt(box);
-                    setTimeout(tick, Math.max(d1, 650));
+                    setTimeout(tick, Math.max(d1, 850));
                     return;
                   }
                   if (phaseTicks >= 16) {
@@ -1478,7 +1555,8 @@ class WebCallEngine(
                   var boxHasQuery = !!matchedQueryPrefix && boxText.indexOf(matchedQueryPrefix) !== -1;
                   var rows = getValidChatRows();
                   lastRowCount = rows.length;
-                  var row = pickBestChatRow(rows, boxHasQuery);
+                  var settled = boxHasQuery && (phaseTicks >= 2 || rows.length <= 5);
+                  var row = settled ? pickBestChatRow(rows, boxHasQuery, initialRowCount) : null;
                   if (row) {
                     openChatRow(row, true);
                     rowClicked = true;
@@ -1487,19 +1565,19 @@ class WebCallEngine(
                     setTimeout(tick, Math.max(d2, 650));
                     return;
                   }
-                  if (phaseTicks >= 9) {
+                  if (phaseTicks >= 10) {
                     if (queryIdx + 1 < uniqueQueries.length) {
                       queryIdx++;
                       if (curBox) {
                         runSearchAttempt(curBox);
-                        setTimeout(tick, 700);
+                        setTimeout(tick, 750);
                         return;
                       }
                     }
                     WuppCallBridge.onDialResult(false, 'Contact not found in WhatsApp Web (' + buildHeaderDiag(lastRowCount) + ')');
                     return;
                   }
-                  setTimeout(tick, 280);
+                  setTimeout(tick, 300);
                   return;
                 }
 
@@ -1510,7 +1588,7 @@ class WebCallEngine(
                       var curBox2 = findSearchBox();
                       var boxOk2 = !!matchedQueryPrefix && normLower(readBoxText(curBox2)).indexOf(matchedQueryPrefix) !== -1;
                       var rows2 = getValidChatRows();
-                      var row2 = pickBestChatRow(rows2, boxOk2);
+                      var row2 = pickBestChatRow(rows2, boxOk2, initialRowCount);
                       if (row2) {
                         openChatRow(row2, true);
                       }
@@ -1524,7 +1602,7 @@ class WebCallEngine(
                   }
 
                   var found = findHeaderCallButton();
-                  if (found && found.el) {
+                  if (found && found.el && !found.disabled) {
                     clickedCallInfo = found;
                     if (!nativeTapEl(found.el)) {
                       clickSingle(found.el, false);
@@ -1532,6 +1610,11 @@ class WebCallEngine(
                     phase = 'WAIT_POST_CLICK';
                     phaseTicks = 0;
                     setTimeout(tick, 340);
+                    return;
+                  }
+
+                  if (found && found.disabled && phaseTicks >= 6) {
+                    WuppCallBridge.onDialResult(false, 'WhatsApp Web disabled calling in Android WebView (' + buildHeaderDiag(lastRowCount) + ')');
                     return;
                   }
 
