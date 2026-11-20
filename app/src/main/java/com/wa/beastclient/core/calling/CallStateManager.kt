@@ -49,6 +49,9 @@ object CallStateManager {
     private val _pairingPreviewActive = MutableStateFlow(false)
     val pairingPreviewActive: StateFlow<Boolean> = _pairingPreviewActive.asStateFlow()
 
+    private val _webEnvDiag = MutableStateFlow("")
+    val webEnvDiag: StateFlow<String> = _webEnvDiag.asStateFlow()
+
     @Volatile
     private var pairingInProgress: Boolean = false
     @Volatile
@@ -147,6 +150,12 @@ object CallStateManager {
                             failCall(reason.ifBlank { "Couldn't place call in WhatsApp Web" })
                         }
                     }
+
+                    override fun onEnvDiagnostics(diag: String) {
+                        if (diag.isNotBlank()) {
+                            _webEnvDiag.value = diag
+                        }
+                    }
                 }
             )
         }
@@ -171,6 +180,10 @@ object CallStateManager {
     fun detachPairingPreviewHost(container: ViewGroup) {
         _pairingPreviewActive.value = false
         engine?.detachIfHostedBy(container)
+    }
+
+    fun reloadCallingEngine() {
+        engine?.reloadCleanPreservingLogin()
     }
 
     fun onConfigChanged(config: GlobalStealthConfig) {

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.13] - 2026-11-20
+
+### 🛠️ Fixes
+- 📞 **Calls PC Mode:** Added early PC browser environment alignment (`Win32`, non-touch, 1024px desktop viewport, permission status sync, and `/call/popout` call window support) plus a live Reload button in Linked Session view.
+
 ## [0.3.5-pre.12] - 2026-11-20
 
 ### 🛠️ Fixes

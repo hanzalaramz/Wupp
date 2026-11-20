@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.LinkOff
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -112,6 +113,7 @@ fun CallingSetupCard(
     val linkState by CallStateManager.linkState.collectAsState()
     val pairingCode by CallStateManager.pairingCode.collectAsState()
     val pairingStatus by CallStateManager.pairingStatus.collectAsState()
+    val webEnvDiag by CallStateManager.webEnvDiag.collectAsState()
 
     val initialPhone = remember(ownJid) {
         ownJid.substringBefore("@").substringBefore(":").filter { it.isDigit() }
@@ -445,6 +447,13 @@ fun CallingSetupCard(
                                         fontSize = 11.sp
                                     )
                                 }
+                                IconButton(onClick = { CallStateManager.reloadCallingEngine() }) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Refresh,
+                                        contentDescription = "Reload PC mode",
+                                        tint = colors.textSecondary
+                                    )
+                                }
                                 IconButton(onClick = { showLivePreview = false }) {
                                     Icon(
                                         imageVector = Icons.Rounded.Close,
@@ -452,6 +461,15 @@ fun CallingSetupCard(
                                         tint = colors.textSecondary
                                     )
                                 }
+                            }
+
+                            if (webEnvDiag.isNotBlank()) {
+                                Text(
+                                    text = "Env: $webEnvDiag",
+                                    color = colors.textSecondary,
+                                    fontFamily = mono,
+                                    fontSize = 10.sp
+                                )
                             }
 
                             if (!isLinked && pairingCode.isNotBlank()) {
