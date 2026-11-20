@@ -66,6 +66,8 @@ class WebCallEngine(
     private var pendingWarmRunnable: Runnable? = null
     @Volatile
     private var pendingPairingPhoneDigits: String = ""
+    @Volatile
+    private var pendingSwRefreshOnUpgrade: Boolean = false
 
     val isAttachedAndLoaded: Boolean
         get() = webView != null
@@ -462,6 +464,13 @@ class WebCallEngine(
 
         val viewContext = hostContainer?.context ?: backgroundHostContainer?.context ?: appContext
         val wv = runCatching { WuppWebView(viewContext) }.getOrNull() ?: return null
+        val prefs = appContext.getSharedPreferences(PREFS_CALL_ENGINE, Context.MODE_PRIVATE)
+        val savedRev = prefs.getInt(KEY_ENV_REV, 0)
+        if (savedRev < CURRENT_ENV_REV) {
+            runCatching { wv.clearCache(false) }
+            prefs.edit().putInt(KEY_ENV_REV, CURRENT_ENV_REV).apply()
+            pendingSwRefreshOnUpgrade = true
+        }
         configureDesktopWebView(wv, isPopout = false)
 
         webView = wv
@@ -563,6 +572,27 @@ class WebCallEngine(
                 super.onPageFinished(view, url)
                 val loadedUrl = url.orEmpty()
                 if (!loadedUrl.startsWith("https://web.whatsapp.com")) return
+                if (!isPopout && pendingSwRefreshOnUpgrade) {
+                    pendingSwRefreshOnUpgrade = false
+                    view?.evaluateJavascript(
+                        """
+                        (function() {
+                          try {
+                            if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+                              navigator.serviceWorker.getRegistrations().then(function(regs) {
+                                if (regs && regs.length > 0) {
+                                  Promise.all(regs.map(function(r) { return r.unregister(); })).then(function() {
+                                    location.reload(true);
+                                  });
+                                }
+                              });
+                            }
+                          } catch (e) {}
+                        })();
+                        """.trimIndent(),
+                        null
+                    )
+                }
                 view?.evaluateJavascript(JS_DESKTOP_ENV_DOCUMENT_START, null)
                 view?.evaluateJavascript(JS_INSTALL_PASSIVE_OBSERVER, null)
                 if (videoOverlayCssActive) {
@@ -708,6 +738,9 @@ class WebCallEngine(
     companion object {
         private const val WA_WEB_URL = "https://web.whatsapp.com/"
         const val MIN_RECONNECT_COOLDOWN_MS = 45_000L
+        private const val PREFS_CALL_ENGINE = "wupp_call_engine_prefs"
+        private const val KEY_ENV_REV = "calling_web_env_rev"
+        private const val CURRENT_ENV_REV = 14
 
         private val JS_DESKTOP_ENV_DOCUMENT_START = """
             (function() {
@@ -734,6 +767,12 @@ class WebCallEngine(
               if (!safeDefine(navProto, 'maxTouchPoints', function() { return 0; })) {
                 safeDefine(navigator, 'maxTouchPoints', function() { return 0; });
               }
+              try {
+                delete window.ontouchstart;
+                if (typeof Window !== 'undefined' && Window.prototype) delete Window.prototype.ontouchstart;
+                if (typeof Document !== 'undefined' && Document.prototype) delete Document.prototype.ontouchstart;
+                if (typeof HTMLElement !== 'undefined' && HTMLElement.prototype) delete HTMLElement.prototype.ontouchstart;
+              } catch (e) {}
 
               try {
                 var uad = navigator.userAgentData;
@@ -1047,29 +1086,174 @@ class WebCallEngine(
               setInterval(function() { try { inspectDom(); } catch (e) {} }, 900);
               inspectDom();
 
+              function readWaModulesDiag() {
+                var out = '';
+                try {
+                  if (typeof window.require === 'function') {
+                    try {
+                      var uaMod = window.require('WAWebUA');
+                      var u = uaMod && (uaMod.UA || uaMod.default || uaMod);
+                      if (u) {
+                        out += ' waOS=' + u.os + '/br=' + u.browser + '/mob=' + (u.isMobile !== undefined ? u.isMobile : u.device);
+                      }
+                    } catch (e) {}
+                    try {
+                      var gMod = window.require('WAWebVoipGatingUtils');
+                      if (gMod) {
+                        var falseFns = [];
+                        var gKeys = Object.keys(gMod);
+                        for (var i = 0; i < gKeys.length && falseFns.length < 8; i++) {
+                          var k = gKeys[i];
+                          try {
+                            if (typeof gMod[k] === 'function' && gMod[k].length === 0) {
+                              var val = gMod[k]();
+                              if (val === false) falseFns.push(k);
+                            }
+                          } catch (e2) {}
+                        }
+                        if (falseFns.length) {
+                          out += ' gateFalse=[' + falseFns.join(',') + ']';
+                        } else {
+                          out += ' gateKeys=' + gKeys.length;
+                        }
+                      }
+                    } catch (e) {}
+                  }
+                } catch (e) {}
+                return out;
+              }
+
+              function readDisabledCallTooltipDiag() {
+                try {
+                  var hdr = document.querySelector('#main header, [data-testid="conversation-header"]');
+                  if (!hdr) return '';
+                  var btns = hdr.querySelectorAll('button, [role="button"], [tabindex]');
+                  var res = [];
+                  for (var i = 0; i < btns.length; i++) {
+                    var b = btns[i];
+                    var al = (b.getAttribute('aria-label') || b.getAttribute('title') || '').trim();
+                    var cs = window.getComputedStyle ? window.getComputedStyle(b) : null;
+                    var dis = !!b.disabled || b.getAttribute('aria-disabled') === 'true' || (cs && parseFloat(cs.opacity || '1') < 0.7);
+                    var extra = '';
+                    try {
+                      var fKey = Object.keys(b).find(function(k) { return k.indexOf('__reactFiber$') === 0; });
+                      var cur = fKey ? b[fKey] : null;
+                      var depth = 0;
+                      while (cur && depth < 10) {
+                        var mp = cur.memoizedProps;
+                        if (mp) {
+                          if (mp.tooltip || mp.tooltipContent || mp.disabledReason || mp.label) {
+                            var tip = mp.tooltipContent || mp.tooltip || mp.disabledReason || mp.label;
+                            if (typeof tip === 'string' && tip.length > 0 && tip.length < 80) {
+                              extra += ' tip=' + tip;
+                              break;
+                            }
+                          }
+                        }
+                        cur = cur.return;
+                        depth++;
+                      }
+                    } catch (e2) {}
+                    if (dis || /call|video|voice/i.test(al)) {
+                      res.push((al || '?') + (dis ? '(dis)' : '(ok)') + extra);
+                    }
+                  }
+                  return res.length ? (' btns=[' + res.join(';') + ']') : '';
+                } catch (e) {
+                  return '';
+                }
+              }
+
+              var cachedWorkerInfo = '';
+              function probeWorkerOnce(cb) {
+                if (cachedWorkerInfo) { cb(cachedWorkerInfo); return; }
+                try {
+                  if (typeof Worker !== 'function' || typeof Blob !== 'function' || !window.URL || !URL.createObjectURL) {
+                    cachedWorkerInfo = 'no-worker';
+                    cb(cachedWorkerInfo);
+                    return;
+                  }
+                  var code = "var ua=navigator.userAgentData?(navigator.userAgentData.mobile+'/'+navigator.userAgentData.platform):'none';postMessage((navigator.platform||'-')+'|'+ua);close();";
+                  var url = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+                  var wk = new Worker(url);
+                  var done = false;
+                  wk.onmessage = function(ev) {
+                    if (done) return;
+                    done = true;
+                    cachedWorkerInfo = String(ev.data || '?');
+                    try { URL.revokeObjectURL(url); } catch (e) {}
+                    cb(cachedWorkerInfo);
+                  };
+                  wk.onerror = function() {
+                    if (done) return;
+                    done = true;
+                    cachedWorkerInfo = 'wk-err';
+                    cb(cachedWorkerInfo);
+                  };
+                  setTimeout(function() {
+                    if (!done) {
+                      done = true;
+                      cachedWorkerInfo = 'wk-to';
+                      cb(cachedWorkerInfo);
+                    }
+                  }, 500);
+                } catch (e) {
+                  cachedWorkerInfo = 'wk-ex';
+                  cb(cachedWorkerInfo);
+                }
+              }
+
+              var lastEnvStr = '';
               function reportEnv() {
                 try {
                   var uad = navigator.userAgentData ? (navigator.userAgentData.mobile + '/' + navigator.userAgentData.platform) : 'none';
+                  var apis = 'RTC=' + (typeof RTCPeerConnection === 'function' ? 1 : 0) +
+                    ',VF=' + (typeof VideoFrame === 'function' ? 1 : 0) +
+                    ',VE=' + (typeof VideoEncoder === 'function' ? 1 : 0) +
+                    ',AW=' + (typeof AudioWorkletNode === 'function' ? 1 : 0) +
+                    ',SWk=' + (typeof SharedWorker !== 'undefined' ? 1 : 0) +
+                    ',GPU=' + (navigator.gpu ? 1 : 0) +
+                    ',ots=' + (('ontouchstart' in window) ? 1 : 0);
                   var base = 'plt=' + (navigator.platform || '-') +
                     ' | ua=' + uad +
                     ' | touch=' + navigator.maxTouchPoints +
-                    ' | vw=' + window.innerWidth + 'x' + window.innerHeight;
-                  var emit = function(extra) {
-                    try { WuppCallBridge.onEnvDiagnostics(base + extra); } catch (e) {}
-                  };
+                    ' | vw=' + window.innerWidth + 'x' + window.innerHeight +
+                    ' | ' + apis +
+                    readWaModulesDiag() +
+                    readDisabledCallTooltipDiag();
                   var micSt = '?';
-                  var devCnt = '?';
-                  var finish = function() { emit(' | mic=' + micSt + ' | devs=' + devCnt); };
+                  var devInfo = '?';
+                  var wkInfo = '?';
+                  var emit = function() {
+                    var full = base + ' | wk=' + wkInfo + ' | mic=' + micSt + ' | devs=' + devInfo;
+                    if (full !== lastEnvStr) {
+                      lastEnvStr = full;
+                      try { WuppCallBridge.onEnvDiagnostics(full); } catch (e) {}
+                    }
+                  };
                   var p1 = (navigator.permissions && navigator.permissions.query)
                     ? navigator.permissions.query({ name: 'microphone' }).then(function(s) { micSt = s ? s.state : '?'; }).catch(function() { micSt = 'err'; })
                     : Promise.resolve();
                   var p2 = (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices)
-                    ? navigator.mediaDevices.enumerateDevices().then(function(ds) { devCnt = ds ? ds.length : 0; }).catch(function() { devCnt = 'err'; })
+                    ? navigator.mediaDevices.enumerateDevices().then(function(ds) {
+                        if (!ds) { devInfo = '0'; return; }
+                        var ai = 0, vi = 0, ao = 0;
+                        for (var d = 0; d < ds.length; d++) {
+                          if (ds[d].kind === 'audioinput') ai++;
+                          else if (ds[d].kind === 'videoinput') vi++;
+                          else if (ds[d].kind === 'audiooutput') ao++;
+                        }
+                        devInfo = ai + 'a/' + vi + 'v/' + ao + 'o';
+                      }).catch(function() { devInfo = 'err'; })
                     : Promise.resolve();
-                  Promise.all([p1, p2]).then(finish, finish);
+                  var p3 = new Promise(function(resolve) {
+                    probeWorkerOnce(function(wi) { wkInfo = wi; resolve(); });
+                  });
+                  Promise.all([p1, p2, p3]).then(emit, emit);
                 } catch (e) {}
               }
-              setTimeout(reportEnv, 700);
+              setTimeout(reportEnv, 800);
+              setInterval(reportEnv, 2500);
             })();
         """.trimIndent()
 

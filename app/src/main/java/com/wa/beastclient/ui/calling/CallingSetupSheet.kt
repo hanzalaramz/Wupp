@@ -465,10 +465,20 @@ fun CallingSetupCard(
 
                             if (webEnvDiag.isNotBlank()) {
                                 Text(
-                                    text = "Env: $webEnvDiag",
+                                    text = "Env (tap to copy): $webEnvDiag",
                                     color = colors.textSecondary,
                                     fontFamily = mono,
-                                    fontSize = 10.sp
+                                    fontSize = 10.sp,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(colors.textSecondary.copy(alpha = 0.08f))
+                                        .clickable {
+                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                            clipboard.setPrimaryClip(ClipData.newPlainText("Wupp WebView Env", webEnvDiag))
+                                            Toast.makeText(context, "Diagnostics copied", Toast.LENGTH_SHORT).show()
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp)
                                 )
                             }
 

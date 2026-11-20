@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.14] - 2026-11-20
+
+### 🛠️ Fixes
+- 📞 **Calls Diagnostics & Cache Reset:** Automatically clears stale Service Worker cache once after update, removes legacy `ontouchstart` detection where allowed, and reports detailed browser/Worker/gating capability status in Linked Session view.
+
 ## [0.3.5-pre.13] - 2026-11-20
 
 ### 🛠️ Fixes
