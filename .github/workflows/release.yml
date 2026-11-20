@@ -33,7 +33,7 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: whatsbridge/go.mod
 
