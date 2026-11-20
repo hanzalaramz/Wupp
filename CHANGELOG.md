@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.11] - 2026-11-20
+
+### 🛠️ Fixes
+- 📞 **Calls Warmup & Dialing:** Increased cold-start wait for WhatsApp Web, fixed the Activity focus race on dial start, and used trusted Android taps and keys so chat search and chat selection open cleanly.
+
 ## [0.3.5-pre.10] - 2026-11-20
 
 ### 🛠️ Fixes

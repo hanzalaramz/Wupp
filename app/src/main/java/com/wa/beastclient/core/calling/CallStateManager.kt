@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
  */
 object CallStateManager {
     private const val SMART_WARM_IDLE_DESTROY_MS = 10 * 60 * 1000L
-    private const val DIAL_TIMEOUT_MS = 15_000L
+    private const val DIAL_TIMEOUT_MS = 35_000L
     private const val TERMINATION_GRACE_MS = 320L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -304,15 +304,36 @@ object CallStateManager {
         pendingDialRunnable = scope.launch {
             engine?.ensureWarm(respectCooldown = false)
             var waited = 0L
-            while (waited < 8000L && _linkState.value != WebLinkState.AUTHENTICATED) {
+            var needsPairingMs = 0L
+            while (waited < 22_000L && _linkState.value != WebLinkState.AUTHENTICATED) {
+                if (_linkState.value == WebLinkState.ERROR) break
+                if (_linkState.value == WebLinkState.NEEDS_PAIRING_CODE) {
+                    needsPairingMs += 250L
+                    if (needsPairingMs >= 5_000L) break
+                } else {
+                    needsPairingMs = 0L
+                }
+                if (waited == 1_500L && _uiState.value.phase == CallPhase.DIALING) {
+                    _uiState.update { it.copy(statusText = "Connecting calling session…") }
+                }
                 delay(250L)
                 waited += 250L
             }
             if (_uiState.value.phase != CallPhase.DIALING) return@launch
             if (_linkState.value != WebLinkState.AUTHENTICATED) {
-                failCall("WhatsApp Web session not linked or still loading")
+                val msg = if (_linkState.value == WebLinkState.NEEDS_PAIRING_CODE) {
+                    "WhatsApp Web session needs re-linking — open Settings → Voice & Video Calling"
+                } else {
+                    "WhatsApp Web session is still loading — please try again in a few seconds"
+                }
+                failCall(msg)
                 return@launch
             }
+            // Wait for CallActivity to finish reparenting WebView & acquiring window focus
+            if (waited < 750L) {
+                delay(750L - waited)
+            }
+            if (_uiState.value.phase != CallPhase.DIALING) return@launch
             engine?.dialContactInWeb(phoneDigits, peerName, isVideo)
         }
 

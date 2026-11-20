@@ -96,7 +96,7 @@ class WebCallEngine(
                 )
             }
             wv.setBackgroundColor(if (visible) Color.WHITE else Color.TRANSPARENT)
-            wv.isClickable = visible
+            wv.isClickable = true
             wv.isFocusable = true
             wv.isFocusableInTouchMode = true
             wv.onResume()
@@ -347,11 +347,28 @@ class WebCallEngine(
 
         fun dispatchSyntheticKeyText(text: String, sendEnter: Boolean) {
             requestFocus()
+            if (text == "__CLEAR__") {
+                val now = SystemClock.uptimeMillis()
+                super.dispatchKeyEvent(
+                    KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A, 0, KeyEvent.META_CTRL_ON)
+                )
+                super.dispatchKeyEvent(
+                    KeyEvent(now, now + 20L, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_A, 0, KeyEvent.META_CTRL_ON)
+                )
+                super.dispatchKeyEvent(KeyEvent(now + 30L, now + 30L, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL, 0))
+                super.dispatchKeyEvent(KeyEvent(now + 30L, now + 50L, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL, 0))
+                return
+            }
             val kcm = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
             val chars = text.toCharArray()
             if (chars.isNotEmpty()) {
-                kcm.getEvents(chars)?.forEach { ev ->
-                    super.dispatchKeyEvent(ev)
+                val events = kcm.getEvents(chars)
+                if (events != null) {
+                    events.forEach { ev -> super.dispatchKeyEvent(ev) }
+                } else {
+                    chars.forEach { ch ->
+                        kcm.getEvents(charArrayOf(ch))?.forEach { ev -> super.dispatchKeyEvent(ev) }
+                    }
                 }
             }
             if (sendEnter) {
@@ -1159,6 +1176,23 @@ class WebCallEngine(
                 }
               }
 
+              function nativeTapEl(el) {
+                if (!el) return false;
+                try { if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
+                try {
+                  var r = el.getBoundingClientRect();
+                  if (r && r.width > 0 && r.height > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
+                    var xr = (r.left + r.width / 2) / window.innerWidth;
+                    var yr = (r.top + r.height / 2) / window.innerHeight;
+                    if (xr > 0 && xr < 1 && yr > 0 && yr < 1) {
+                      WuppCallBridge.requestNativeTap(xr, yr);
+                      return true;
+                    }
+                  }
+                } catch (e) {}
+                return false;
+              }
+
               function findSearchBox() {
                 var sels = [
                   '[data-testid="chat-list-search"] [contenteditable="true"]',
@@ -1175,11 +1209,19 @@ class WebCallEngine(
                 return null;
               }
 
+              function readBoxText(box) {
+                if (!box) return '';
+                return norm(box.value !== undefined ? box.value : box.textContent);
+              }
+
               function setSearchQuery(box, query) {
                 try {
                   var clearBtn = document.querySelector('#side [aria-label*="Cancel search" i], #side [data-icon="x-alt"], #side button[aria-label*="Clear" i]');
-                  if (clearBtn && isVisible(clearBtn)) clearBtn.click();
+                  if (clearBtn && isVisible(clearBtn)) {
+                    clearBtn.click();
+                  }
                 } catch (e) {}
+                nativeTapEl(box);
                 box.focus();
                 try {
                   var sel = window.getSelection && window.getSelection();
@@ -1194,16 +1236,14 @@ class WebCallEngine(
                   document.execCommand('delete', false, null);
                   document.execCommand('insertText', false, query);
                 } catch (e) {}
-                var cur = norm(box.value !== undefined ? box.value : box.textContent);
+                var cur = readBoxText(box);
                 if (cur !== norm(query)) {
-                  try {
-                    if (box.value !== undefined) {
-                      box.value = query;
-                    } else {
-                      box.textContent = query;
-                    }
-                    box.dispatchEvent(new InputEvent('input', { bubbles: true, data: query, inputType: 'insertText' }));
-                  } catch (e) {}
+                  setTimeout(function() {
+                    if (window.__wuppDialGen !== myGen) return;
+                    box.focus();
+                    try { WuppCallBridge.requestNativeKeyText('__CLEAR__', false); } catch (e) {}
+                    try { WuppCallBridge.requestNativeKeyText(query, false); } catch (e) {}
+                  }, 140);
                 }
               }
 
@@ -1226,7 +1266,7 @@ class WebCallEngine(
                 return valid;
               }
 
-              function pickBestChatRow(rows) {
+              function pickBestChatRow(rows, allowTopFallback) {
                 if (!rows.length) return null;
                 var tail7 = digits.length >= 7 ? digits.slice(-7) : digits;
                 var cleanName = normLower(contactName);
@@ -1237,7 +1277,14 @@ class WebCallEngine(
                   if (tail7 && rowDigits.indexOf(tail7) !== -1) return row;
                   if (cleanName.length >= 2 && normLower(txt).indexOf(cleanName) !== -1) return row;
                 }
-                return rows[0];
+                if (allowTopFallback && rows.length <= 3) {
+                  return rows[0];
+                }
+                return null;
+              }
+
+              function findMainHeader() {
+                return document.querySelector('#main header, [data-testid="conversation-header"], [data-testid="conversation-panel-wrapper"] header, #main [role="banner"]');
               }
 
               function hasCallEndControl() {
@@ -1251,7 +1298,7 @@ class WebCallEngine(
               }
 
               function findHeaderButtons() {
-                var hdr = document.querySelector('#main header');
+                var hdr = findMainHeader();
                 if (!hdr) return [];
                 return hdr.querySelectorAll('button, [role="button"], [tabindex]');
               }
@@ -1337,7 +1384,8 @@ class WebCallEngine(
               }
 
               function buildHeaderDiag(rowCount) {
-                var hdr = document.querySelector('#main header');
+                var hdr = findMainHeader();
+                var mainAny = !!document.querySelector('#main, [data-testid="conversation-panel-wrapper"], [role="main"]');
                 var btns = findHeaderButtons();
                 var list = [];
                 for (var i = 0; i < btns.length && i < 8; i++) {
@@ -1348,9 +1396,11 @@ class WebCallEngine(
                   var tx = norm(b.innerText || '').slice(0, 20);
                   list.push((al || tx || '-') + '@' + (ic || '-'));
                 }
+                var box = findSearchBox();
+                var boxVal = readBoxText(box).slice(0, 18);
                 var dlgs = document.querySelectorAll('[role="dialog"]').length;
                 return 'w=' + window.innerWidth + 'x' + window.innerHeight +
-                  ',main=' + (!!hdr) + ',rows=' + rowCount + ',dlgs=' + dlgs + ',hdr=[' + list.join(';') + ']';
+                  ',main=' + (!!hdr) + '/' + mainAny + ',rows=' + rowCount + ',box=' + boxVal + ',dlgs=' + dlgs + ',hdr=[' + list.join(';') + ']';
               }
 
               var queries = [];
@@ -1372,14 +1422,24 @@ class WebCallEngine(
               var phaseTicks = 0;
               var rowClicked = false;
               var lastRowCount = 0;
+              var matchedQueryPrefix = '';
               var clickedCallInfo = null;
               var callBtnRetries = 0;
               var submenuClicked = false;
 
               function runSearchAttempt(box) {
+                matchedQueryPrefix = normLower(uniqueQueries[queryIdx]).slice(0, 4);
                 setSearchQuery(box, uniqueQueries[queryIdx]);
                 phase = 'WAIT_ROW';
                 phaseTicks = 0;
+              }
+
+              function openChatRow(row, useNative) {
+                var clickTarget = row.querySelector('[data-testid*="cell-frame-container"], [role="gridcell"], [tabindex="-1"], [tabindex="0"]') || row;
+                clickSingle(clickTarget, true);
+                if (useNative) {
+                  nativeTapEl(clickTarget);
+                }
               }
 
               function tick() {
@@ -1401,7 +1461,7 @@ class WebCallEngine(
                   var box = findSearchBox();
                   if (box) {
                     runSearchAttempt(box);
-                    setTimeout(tick, Math.max(d1, 550));
+                    setTimeout(tick, Math.max(d1, 650));
                     return;
                   }
                   if (phaseTicks >= 16) {
@@ -1413,61 +1473,65 @@ class WebCallEngine(
                 }
 
                 if (phase === 'WAIT_ROW') {
+                  var curBox = findSearchBox();
+                  var boxText = normLower(readBoxText(curBox));
+                  var boxHasQuery = !!matchedQueryPrefix && boxText.indexOf(matchedQueryPrefix) !== -1;
                   var rows = getValidChatRows();
                   lastRowCount = rows.length;
-                  var row = pickBestChatRow(rows);
+                  var row = pickBestChatRow(rows, boxHasQuery);
                   if (row) {
-                    var clickTarget = row.querySelector('[data-testid*="cell-frame-container"], [role="gridcell"], [tabindex="-1"], [tabindex="0"]') || row;
-                    clickSingle(clickTarget, phaseTicks > 2);
+                    openChatRow(row, true);
                     rowClicked = true;
                     phase = 'WAIT_HEADER_AND_BTN';
                     phaseTicks = 0;
-                    setTimeout(tick, Math.max(d2, 550));
+                    setTimeout(tick, Math.max(d2, 650));
                     return;
                   }
-                  if (phaseTicks >= 8) {
+                  if (phaseTicks >= 9) {
                     if (queryIdx + 1 < uniqueQueries.length) {
                       queryIdx++;
-                      var nextBox = findSearchBox();
-                      if (nextBox) {
-                        runSearchAttempt(nextBox);
-                        setTimeout(tick, 600);
+                      if (curBox) {
+                        runSearchAttempt(curBox);
+                        setTimeout(tick, 700);
                         return;
                       }
                     }
-                    WuppCallBridge.onDialResult(false, 'Contact not found in WhatsApp Web');
+                    WuppCallBridge.onDialResult(false, 'Contact not found in WhatsApp Web (' + buildHeaderDiag(lastRowCount) + ')');
                     return;
                   }
-                  setTimeout(tick, 260);
+                  setTimeout(tick, 280);
                   return;
                 }
 
                 if (phase === 'WAIT_HEADER_AND_BTN') {
-                  var hdr = document.querySelector('#main header');
+                  var hdr = findMainHeader();
                   if (!hdr || !isVisible(hdr)) {
                     if (phaseTicks % 3 === 1 && rowClicked) {
+                      var curBox2 = findSearchBox();
+                      var boxOk2 = !!matchedQueryPrefix && normLower(readBoxText(curBox2)).indexOf(matchedQueryPrefix) !== -1;
                       var rows2 = getValidChatRows();
-                      var row2 = pickBestChatRow(rows2);
+                      var row2 = pickBestChatRow(rows2, boxOk2);
                       if (row2) {
-                        var ct2 = row2.querySelector('[data-testid*="cell-frame-container"], [role="gridcell"], [tabindex]') || row2;
-                        clickSingle(ct2, true);
+                        openChatRow(row2, true);
                       }
                     }
                     if (phaseTicks >= 18) {
                       WuppCallBridge.onDialResult(false, 'Call button unavailable in WhatsApp Web (' + buildHeaderDiag(lastRowCount) + ')');
                       return;
                     }
-                    setTimeout(tick, 280);
+                    setTimeout(tick, 300);
                     return;
                   }
 
                   var found = findHeaderCallButton();
                   if (found && found.el) {
                     clickedCallInfo = found;
-                    clickSingle(found.el, false);
+                    if (!nativeTapEl(found.el)) {
+                      clickSingle(found.el, false);
+                    }
                     phase = 'WAIT_POST_CLICK';
                     phaseTicks = 0;
-                    setTimeout(tick, 320);
+                    setTimeout(tick, 340);
                     return;
                   }
 
@@ -1499,7 +1563,7 @@ class WebCallEngine(
 
                   if (phaseTicks === 3 && !submenuClicked && callBtnRetries === 0 && clickedCallInfo && clickedCallInfo.el) {
                     callBtnRetries++;
-                    invokeReactHandler([clickedCallInfo.el, clickedCallInfo.el.parentElement]);
+                    clickSingle(clickedCallInfo.el, true);
                   }
 
                   if (phaseTicks >= 9) {
