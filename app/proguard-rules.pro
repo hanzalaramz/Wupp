@@ -4,6 +4,11 @@
 -keep class whatsbridge.** { *; }
 -dontwarn whatsbridge.**
 
+# Keep Mozilla GeckoView engine & JNI bindings
+-keep class org.mozilla.geckoview.** { *; }
+-keep class org.mozilla.gecko.** { *; }
+-dontwarn org.mozilla.**
+
 # Keep Room database & entities
 -keep class * extends androidx.room.RoomDatabase
 -keep @androidx.room.Entity class *

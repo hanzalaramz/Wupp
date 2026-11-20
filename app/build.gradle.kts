@@ -52,7 +52,11 @@ val hasLocalSigningKey: Boolean = signingProps.getProperty("storeFile")?.let {
 
 android {
     namespace = "com.wa.beastclient"
-    compileSdk = 37
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 2
+        }
+    }
 
     defaultConfig {
         applicationId = "com.wupp.app"
@@ -85,7 +89,7 @@ android {
             isEnable = true
             reset()
             include("arm64-v8a")
-            isUniversalApk = true
+            isUniversalApk = false
         }
     }
 
@@ -161,7 +165,7 @@ dependencies {
     implementation("androidx.compose.animation:animation")
 
     implementation("androidx.core:core-ktx:1.19.1")
-    implementation("androidx.webkit:webkit:1.13.0")
+    implementation("org.mozilla.geckoview:geckoview-omni-arm64-v8a:160.0.20261116130455")
     implementation("androidx.emoji2:emoji2-emojipicker:1.7.0")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.activity:activity-compose:1.13.0")

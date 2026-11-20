@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.16] - 2026-11-21
+
+### 🛠️ Fixes
+- 📞 **Calls Engine Upgrade:** Switched internal calling to Mozilla GeckoView so native `SharedArrayBuffer` threads and voice/video calling connect cleanly on device.
+
 ## [0.3.5-pre.15] - 2026-11-20
 
 ### 🛠️ Fixes

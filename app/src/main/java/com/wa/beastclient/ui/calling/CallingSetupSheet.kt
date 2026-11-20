@@ -475,7 +475,7 @@ fun CallingSetupCard(
                                         .background(colors.textSecondary.copy(alpha = 0.08f))
                                         .clickable {
                                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                            clipboard.setPrimaryClip(ClipData.newPlainText("Wupp WebView Env", webEnvDiag))
+                                            clipboard.setPrimaryClip(ClipData.newPlainText("Wupp Calling Env", webEnvDiag))
                                             Toast.makeText(context, "Diagnostics copied", Toast.LENGTH_SHORT).show()
                                         }
                                         .padding(horizontal = 8.dp, vertical = 6.dp)

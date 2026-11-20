@@ -26,6 +26,26 @@ class CallingEnginePolicyTest {
     }
 
     @Test
+    fun buildDesktopFirefoxUaPreservesGeckoFirefoxVersion() {
+        val mobileGeckoUa =
+            "Mozilla/5.0 (Android 15; Mobile; rv:160.0) Gecko/160.0 Firefox/160.0"
+        val desktopUa = buildDesktopFirefoxUa(mobileGeckoUa)
+
+        assertTrue(desktopUa.contains("Windows NT 10.0; Win64; x64; rv:160.0"))
+        assertTrue(desktopUa.contains("Gecko/20100101 Firefox/160.0"))
+        assertFalse(desktopUa.contains("Android"))
+    }
+
+    @Test
+    fun buildDesktopFirefoxUaFallsBackWhenTokenMissing() {
+        val desktopUa = buildDesktopFirefoxUa("CustomGecko/1.0")
+        assertEquals(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:160.0) Gecko/20100101 Firefox/160.0",
+            desktopUa
+        )
+    }
+
+    @Test
     fun isAllowedWhatsAppPermissionOriginAllowsOnlyHttpsWhatsAppHosts() {
         assertTrue(isAllowedWhatsAppPermissionOrigin("https://web.whatsapp.com"))
         assertTrue(isAllowedWhatsAppPermissionOrigin("https://web.whatsapp.com/"))

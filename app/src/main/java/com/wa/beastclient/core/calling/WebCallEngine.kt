@@ -1,46 +1,38 @@
 package com.wa.beastclient.core.calling
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
-import android.os.Message
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewGroup
-import android.webkit.CookieManager
-import android.webkit.JavascriptInterface
-import android.webkit.PermissionRequest
-import android.webkit.ServiceWorkerClient
-import android.webkit.ServiceWorkerController
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.core.content.ContextCompat
-import androidx.webkit.UserAgentMetadata
-import androidx.webkit.WebSettingsCompat
-import androidx.webkit.WebViewCompat
-import androidx.webkit.WebViewFeature
 import org.json.JSONObject
-import java.io.ByteArrayInputStream
-import java.net.HttpURLConnection
-import java.net.URL
+import org.mozilla.geckoview.AllowOrDeny
+import org.mozilla.geckoview.GeckoResult
+import org.mozilla.geckoview.GeckoRuntime
+import org.mozilla.geckoview.GeckoRuntimeSettings
+import org.mozilla.geckoview.GeckoSession
+import org.mozilla.geckoview.GeckoSessionSettings
+import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.StorageController
+import org.mozilla.geckoview.WebExtension
+import java.io.File
+import java.net.URI
 import java.util.Locale
 import kotlin.random.Random
 
 /**
- * Isolated hidden System WebView engine powering `web.whatsapp.com` WebRTC calls.
- * Preserves authentic Chromium fingerprints, avoids JS bundle/prototype tampering,
- * and communicates strictly via read-only ARIA/data-icon DOM observation.
+ * Isolated Mozilla GeckoView engine powering `web.whatsapp.com` WebRTC calls with
+ * native Cross-Origin Isolation (`COOP: same-origin` + `COEP: require-corp`),
+ * multi-threaded `SharedArrayBuffer` / Emscripten PThreads support, and built-in
+ * WebExtension native-port observation & call control.
  */
 class WebCallEngine(
     context: Context,
@@ -63,29 +55,32 @@ class WebCallEngine(
 
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var webView: WuppWebView? = null
-    private var popoutWebView: WuppWebView? = null
+
+    private var mainSession: GeckoSession? = null
+    private var popoutSession: GeckoSession? = null
+    private var mainView: WuppGeckoView? = null
+    private var popoutView: WuppGeckoView? = null
+    private var mainPort: WebExtension.Port? = null
+    private var popoutPort: WebExtension.Port? = null
+    private val pendingMainCommands = mutableListOf<JSONObject>()
+    private val pendingPopoutCommands = mutableListOf<JSONObject>()
+
     private var hostContainer: ViewGroup? = null
     private var backgroundHostContainer: ViewGroup? = null
     private var allowTouchThrough = false
     private var videoOverlayCssActive = false
+    private var webRingingMuted = false
     private var lastTeardownMs = 0L
     private var pendingWarmRunnable: Runnable? = null
     @Volatile
     private var pendingPairingPhoneDigits: String = ""
-    @Volatile
-    private var pendingSwRefreshOnUpgrade: Boolean = false
-    @Volatile
-    private var desktopUserAgent: String = ""
 
     val isAttachedAndLoaded: Boolean
-        get() = webView != null
-
-    private fun activeCallWebView(): WuppWebView? = popoutWebView ?: webView
+        get() = mainSession != null
 
     /**
-     * Ensures the hidden WebView is created, hardened, and attached into [container]
-     * at full layout size (never 1x1dp, never GONE) so Chromium reports authentic viewport telemetry.
+     * Ensures the GeckoSession is created and attached into [container] at full viewport size
+     * so WhatsApp Web maintains desktop layout and active WebRTC pipelines.
      */
     fun attachToContainer(
         container: ViewGroup,
@@ -99,62 +94,92 @@ class WebCallEngine(
             }
             val visible = showVideoSurface || showPairingSurface
             allowTouchThrough = visible
-            val wv = ensureCreatedLocked() ?: return@post
-            attachChildView(wv, container, visible)
-            popoutWebView?.let { popup ->
-                attachChildView(popup, container, visible)
+            val session = ensureSessionCreatedLocked() ?: return@post
+
+            attachSessionToContainer(
+                session = session,
+                isPopout = false,
+                container = container,
+                visible = visible
+            )
+            popoutSession?.let { popup ->
+                attachSessionToContainer(
+                    session = popup,
+                    isPopout = true,
+                    container = container,
+                    visible = visible
+                )
             }
             setVideoCssActive(showVideoSurface)
             if (showPairingSurface) {
-                wv.postDelayed({
-                    runCatching {
-                        wv.evaluateJavascript(
-                            """
-                            (function() {
-                              var t = document.querySelector('input:not([type="hidden"]), [data-link-code], canvas, [role="button"]');
-                              if (t && t.scrollIntoView) {
-                                t.scrollIntoView({ block: 'center', inline: 'center' });
-                              }
-                            })();
-                            """.trimIndent(),
-                            null
-                        )
-                    }
+                mainHandler.postDelayed({
+                    sendCommand(isPopout = false, JSONObject().put("cmd", "scrollPairing"))
                 }, 250L)
             }
         }
     }
 
-    private fun attachChildView(wv: WuppWebView, container: ViewGroup, visible: Boolean) {
-        val currentParent = wv.parent as? ViewGroup
-        if (currentParent != null && currentParent !== container) {
-            currentParent.removeView(wv)
+    private fun attachSessionToContainer(
+        session: GeckoSession,
+        isPopout: Boolean,
+        container: ViewGroup,
+        visible: Boolean
+    ) {
+        val currentView = if (isPopout) popoutView else mainView
+        if (currentView != null && currentView.parent !== container) {
+            runCatching {
+                if (currentView.session != null) {
+                    currentView.releaseSession()
+                }
+            }
+            (currentView.parent as? ViewGroup)?.removeView(currentView)
         }
-        if (wv.parent == null) {
-            container.addView(
-                wv,
-                ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
+
+        val targetView = if (currentView != null && currentView.parent === container) {
+            currentView
+        } else {
+            val viewContext = container.context
+            WuppGeckoView(viewContext).apply {
+                setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW)
+                isClickable = true
+                isFocusable = true
+                isFocusableInTouchMode = true
+            }.also { gv ->
+                container.addView(
+                    gv,
+                    ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
                 )
-            )
+                if (isPopout) {
+                    popoutView = gv
+                } else {
+                    mainView = gv
+                }
+            }
         }
-        wv.setBackgroundColor(if (visible) Color.WHITE else Color.TRANSPARENT)
-        wv.isClickable = true
-        wv.isFocusable = true
-        wv.isFocusableInTouchMode = true
-        wv.onResume()
-        wv.resumeTimers()
-        wv.alpha = if (visible) 1f else 0.01f
-        wv.requestLayout()
-        wv.invalidate()
+
+        if (targetView.session !== session) {
+            if (targetView.session != null) {
+                runCatching { targetView.releaseSession() }
+            }
+            targetView.setSession(session)
+        }
+        targetView.setBackgroundColor(if (visible) Color.BLACK else Color.TRANSPARENT)
+        targetView.alpha = if (visible) 1f else 0.01f
+        runCatching { session.setActive(true) }
+        targetView.requestLayout()
+        targetView.invalidate()
     }
 
     fun detachIfHostedBy(container: ViewGroup) {
         mainHandler.post {
-            popoutWebView?.let { popup ->
-                if (popup.parent === container) {
-                    container.removeView(popup)
+            popoutView?.let { pv ->
+                if (pv.parent === container) {
+                    runCatching { if (pv.session != null) pv.releaseSession() }
+                    container.removeView(pv)
+                    popoutView = null
                 }
             }
             if (hostContainer === container) {
@@ -163,9 +188,11 @@ class WebCallEngine(
             if (backgroundHostContainer === container) {
                 backgroundHostContainer = null
             }
-            val wv = webView ?: return@post
-            if (wv.parent === container) {
-                container.removeView(wv)
+            val mv = mainView ?: return@post
+            if (mv.parent === container) {
+                runCatching { if (mv.session != null) mv.releaseSession() }
+                container.removeView(mv)
+                mainView = null
                 val bg = backgroundHostContainer
                 if (bg != null && bg !== container && bg.isAttachedToWindow) {
                     attachToContainer(bg, showVideoSurface = false, showPairingSurface = false)
@@ -179,73 +206,66 @@ class WebCallEngine(
             pendingWarmRunnable?.let { mainHandler.removeCallbacks(it) }
             pendingWarmRunnable = null
             val elapsed = System.currentTimeMillis() - lastTeardownMs
-            if (respectCooldown && webView == null && lastTeardownMs > 0L && elapsed < MIN_RECONNECT_COOLDOWN_MS) {
+            if (respectCooldown && mainSession == null && lastTeardownMs > 0L && elapsed < MIN_RECONNECT_COOLDOWN_MS) {
                 val delayMs = MIN_RECONNECT_COOLDOWN_MS - elapsed
-                val task = Runnable { ensureCreatedLocked() }
+                val task = Runnable { ensureSessionCreatedLocked() }
                 pendingWarmRunnable = task
                 mainHandler.postDelayed(task, delayMs)
                 return@post
             }
-            ensureCreatedLocked()
+            ensureSessionCreatedLocked()
         }
     }
 
     fun setHighPriorityRenderer(highPriority: Boolean) {
         mainHandler.post {
-            val wv = webView ?: return@post
-            val policy = if (highPriority) {
-                WebView.RENDERER_PRIORITY_IMPORTANT
-            } else {
-                WebView.RENDERER_PRIORITY_WAIVED
+            val priority = if (highPriority) GeckoSession.PRIORITY_HIGH else GeckoSession.PRIORITY_DEFAULT
+            runCatching { mainSession?.setPriorityHint(priority) }
+            runCatching { popoutSession?.setPriorityHint(priority) }
+            if (highPriority) {
+                runCatching { mainSession?.setActive(true) }
+                runCatching { popoutSession?.setActive(true) }
             }
-            runCatching { wv.setRendererPriorityPolicy(policy, false) }
         }
     }
 
     fun setVideoCssActive(active: Boolean) {
         mainHandler.post {
             videoOverlayCssActive = active
-            val wv = activeCallWebView() ?: return@post
-            wv.alpha = if (active || allowTouchThrough) 1f else 0.01f
-            val js = if (active) JS_ENABLE_VIDEO_CSS else JS_DISABLE_VIDEO_CSS
-            wv.evaluateJavascript(js, null)
-            if (popoutWebView != null && webView != null) {
-                webView?.evaluateJavascript(JS_DISABLE_VIDEO_CSS, null)
+            val activeIsPopout = popoutSession != null
+            val targetView = if (activeIsPopout) popoutView else mainView
+            targetView?.alpha = if (active || allowTouchThrough) 1f else 0.01f
+            sendCommand(
+                isPopout = activeIsPopout,
+                JSONObject().put("cmd", "videoCss").put("active", active)
+            )
+            if (activeIsPopout) {
+                sendCommand(
+                    isPopout = false,
+                    JSONObject().put("cmd", "videoCss").put("active", false)
+                )
             }
         }
     }
 
     fun setWebRingingMuted(muted: Boolean) {
         mainHandler.post {
-            val js = "try{document.querySelectorAll('audio').forEach(function(a){a.muted=${if (muted) "true" else "false"};});}catch(e){}"
-            webView?.evaluateJavascript(js, null)
-            popoutWebView?.evaluateJavascript(js, null)
+            webRingingMuted = muted
+            val payload = JSONObject().put("cmd", "ringMute").put("muted", muted)
+            sendCommand(isPopout = false, payload)
+            if (popoutSession != null) {
+                sendCommand(isPopout = true, payload)
+            }
         }
     }
 
     fun reloadCleanPreservingLogin() {
         mainHandler.post {
-            destroyPopoutWindow()
-            val wv = ensureCreatedLocked() ?: return@post
+            destroyPopoutSession()
+            val session = ensureSessionCreatedLocked() ?: return@post
             listener.onLinkStateChanged(WebLinkState.LOADING, "")
-            wv.clearCache(false)
-            val unregisterAndReload = """
-                (function() {
-                  try {
-                    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
-                      navigator.serviceWorker.getRegistrations().then(function(regs) {
-                        for (var i = 0; i < regs.length; i++) {
-                          try { regs[i].unregister(); } catch (e) {}
-                        }
-                        location.reload(true);
-                      }).catch(function() { location.reload(true); });
-                      return;
-                    }
-                  } catch (e) {}
-                  location.reload(true);
-                })();
-            """.trimIndent()
-            wv.evaluateJavascript(unregisterAndReload, null)
+            sendCommand(isPopout = false, JSONObject().put("cmd", "forceReloadClean"))
+            runCatching { session.reload(GeckoSession.LOAD_FLAGS_BYPASS_CACHE) }
         }
     }
 
@@ -253,84 +273,89 @@ class WebCallEngine(
         val cleanDigits = phoneDigits.filter { it.isDigit() }
         pendingPairingPhoneDigits = cleanDigits
         mainHandler.post {
-            val wv = ensureCreatedLocked() ?: return@post
+            ensureSessionCreatedLocked() ?: return@post
             setHighPriorityRenderer(true)
             listener.onPairingStatusChanged("Loading WhatsApp Web engine…")
-            val currentUrl = wv.url.orEmpty()
-            if (currentUrl.startsWith("https://web.whatsapp.com") && cleanDigits.isNotEmpty()) {
-                injectPairingAutomation(wv, cleanDigits)
+            if (cleanDigits.isNotEmpty()) {
+                sendCommand(
+                    isPopout = false,
+                    JSONObject().put("cmd", "pairing").put("phoneDigits", cleanDigits)
+                )
             }
         }
     }
 
-    private fun injectPairingAutomation(wv: WebView, cleanDigits: String) {
-        val safeDigits = JSONObject.quote(cleanDigits)
-        wv.evaluateJavascript(JS_INSTALL_PASSIVE_OBSERVER, null)
-        val js = JS_REQUEST_PAIRING_CODE_TEMPLATE.replace("__PHONE_DIGITS__", safeDigits)
-        wv.evaluateJavascript(js, null)
-    }
-
     fun dialContactInWeb(phoneDigits: String, fallbackName: String, isVideo: Boolean) {
         mainHandler.post {
-            val wv = ensureCreatedLocked()
-            if (wv == null) {
-                listener.onDialAttemptFinished(false, "Calling WebView unavailable")
+            val session = ensureSessionCreatedLocked()
+            if (session == null) {
+                listener.onDialAttemptFinished(false, "Calling GeckoView session unavailable")
                 return@post
             }
             setHighPriorityRenderer(true)
+            syncPermissionsToExtension(isPopout = false)
             val stepDelay1 = Random.nextLong(380L, 640L)
             val stepDelay2 = Random.nextLong(420L, 740L)
-            val safeDigits = JSONObject.quote(phoneDigits.filter { it.isDigit() })
-            val safeName = JSONObject.quote(fallbackName.trim())
-            val js = JS_DIAL_CONTACT_TEMPLATE
-                .replace("__PHONE_DIGITS__", safeDigits)
-                .replace("__CONTACT_NAME__", safeName)
-                .replace("__IS_VIDEO__", if (isVideo) "true" else "false")
-                .replace("__DELAY_1__", stepDelay1.toString())
-                .replace("__DELAY_2__", stepDelay2.toString())
-            wv.evaluateJavascript(js, null)
+            val cmd = JSONObject()
+                .put("cmd", "dial")
+                .put("digits", phoneDigits.filter { it.isDigit() })
+                .put("contactName", fallbackName.trim())
+                .put("isVideo", isVideo)
+                .put("delay1", stepDelay1)
+                .put("delay2", stepDelay2)
+            sendCommand(isPopout = false, cmd)
         }
     }
 
     fun answerIncomingCall(audioOnly: Boolean = false) {
         mainHandler.post {
             setHighPriorityRenderer(true)
-            val js = JS_ANSWER_CALL_TEMPLATE.replace("__AUDIO_ONLY__", if (audioOnly) "true" else "false")
-            activeCallWebView()?.evaluateJavascript(js, null)
+            syncPermissionsToExtension(isPopout = false)
+            val activeIsPopout = popoutSession != null
+            if (activeIsPopout) syncPermissionsToExtension(isPopout = true)
+            sendCommand(
+                isPopout = activeIsPopout,
+                JSONObject().put("cmd", "answer").put("audioOnly", audioOnly)
+            )
         }
     }
 
     fun declineOrEndCall() {
         mainHandler.post {
-            activeCallWebView()?.evaluateJavascript(JS_END_OR_DECLINE_CALL, null)
-            mainHandler.postDelayed({ destroyPopoutWindow() }, 500L)
+            val activeIsPopout = popoutSession != null
+            sendCommand(isPopout = activeIsPopout, JSONObject().put("cmd", "end"))
+            mainHandler.postDelayed({ destroyPopoutSession() }, 500L)
             returnToNeutralLandingAfterDelay()
         }
     }
 
     fun toggleMuteInWeb(targetMuted: Boolean) {
         mainHandler.post {
-            val js = JS_TOGGLE_MUTE_TEMPLATE.replace("__MUTED__", if (targetMuted) "true" else "false")
-            activeCallWebView()?.evaluateJavascript(js, null)
+            sendCommand(
+                isPopout = popoutSession != null,
+                JSONObject().put("cmd", "mute").put("muted", targetMuted)
+            )
         }
     }
 
     fun toggleCameraInWeb(cameraOff: Boolean) {
         mainHandler.post {
-            val js = JS_TOGGLE_CAMERA_TEMPLATE.replace("__CAM_OFF__", if (cameraOff) "true" else "false")
-            activeCallWebView()?.evaluateJavascript(js, null)
+            sendCommand(
+                isPopout = popoutSession != null,
+                JSONObject().put("cmd", "camera").put("camOff", cameraOff)
+            )
         }
     }
 
     fun flipCameraInWeb() {
         mainHandler.post {
-            activeCallWebView()?.evaluateJavascript(JS_FLIP_CAMERA, null)
+            sendCommand(isPopout = popoutSession != null, JSONObject().put("cmd", "flip"))
         }
     }
 
     fun upgradeAudioCallToVideo() {
         mainHandler.post {
-            activeCallWebView()?.evaluateJavascript(JS_UPGRADE_TO_VIDEO, null)
+            sendCommand(isPopout = popoutSession != null, JSONObject().put("cmd", "upgradeVideo"))
         }
     }
 
@@ -341,19 +366,24 @@ class WebCallEngine(
     fun returnToNeutralLandingAfterDelay() {
         val delayMs = Random.nextLong(450L, 850L)
         mainHandler.postDelayed({
-            webView?.evaluateJavascript(JS_RETURN_NEUTRAL_LANDING, null)
+            sendCommand(isPopout = false, JSONObject().put("cmd", "neutral"))
         }, delayMs)
     }
 
-    private fun destroyPopoutWindow() {
-        val popup = popoutWebView ?: return
-        popoutWebView = null
+    private fun destroyPopoutSession() {
+        val popup = popoutSession ?: return
+        popoutSession = null
+        popoutPort = null
+        pendingPopoutCommands.clear()
+        popoutView?.let { pv ->
+            popoutView = null
+            runCatching {
+                if (pv.session != null) pv.releaseSession()
+                (pv.parent as? ViewGroup)?.removeView(pv)
+            }
+        }
         runCatching {
-            (popup.parent as? ViewGroup)?.removeView(popup)
-            popup.stopLoading()
-            popup.removeJavascriptInterface("WuppCallBridge")
-            popup.loadUrl("about:blank")
-            popup.destroy()
+            popup.close()
         }
     }
 
@@ -362,37 +392,455 @@ class WebCallEngine(
         mainHandler.post {
             pendingWarmRunnable?.let { mainHandler.removeCallbacks(it) }
             pendingWarmRunnable = null
-            destroyPopoutWindow()
-            val wv = webView
-            webView = null
+            destroyPopoutSession()
+            val session = mainSession
+            mainSession = null
+            mainPort = null
+            pendingMainCommands.clear()
             lastTeardownMs = System.currentTimeMillis()
-            if (wv != null) {
+            mainView?.let { mv ->
+                mainView = null
                 runCatching {
-                    (wv.parent as? ViewGroup)?.removeView(wv)
-                    wv.stopLoading()
-                    wv.removeJavascriptInterface("WuppCallBridge")
-                    if (clearSessionData) {
-                        wv.clearCache(true)
-                        wv.clearHistory()
-                    }
-                    wv.loadUrl("about:blank")
-                    wv.destroy()
+                    if (mv.session != null) mv.releaseSession()
+                    (mv.parent as? ViewGroup)?.removeView(mv)
                 }
+            }
+            if (session != null) {
+                runCatching { session.close() }
             }
             if (clearSessionData) {
                 runCatching {
-                    CookieManager.getInstance().removeAllCookies(null)
-                    CookieManager.getInstance().flush()
-                    android.webkit.WebStorage.getInstance().deleteAllData()
+                    sharedRuntime?.storageController?.clearDataFromBaseDomain(
+                        "whatsapp.com",
+                        StorageController.ClearFlags.ALL
+                    )
                 }
             }
             listener.onLinkStateChanged(WebLinkState.UNINITIALIZED, "")
         }
     }
 
-    private inner class WuppWebView(context: Context) : WebView(context) {
+    private fun ensureRuntimeAndExtension(): GeckoRuntime? {
+        val existing = sharedRuntime
+        val runtime = existing ?: synchronized(runtimeLock) {
+            sharedRuntime ?: createRuntimeInternal().also { sharedRuntime = it }
+        }
+        if (runtime != null && installedExtension == null && !extensionInstallStarted) {
+            extensionInstallStarted = true
+            runCatching {
+                runtime.webExtensionController
+                    .ensureBuiltIn("resource://android/assets/wupp_bridge/", "wupp-call-bridge@wupp.app")
+                    .accept(
+                        { ext ->
+                            mainHandler.post {
+                                installedExtension = ext
+                                if (ext != null) {
+                                    mainSession?.let { bindExtensionToSession(ext, it, isPopout = false) }
+                                    popoutSession?.let { bindExtensionToSession(ext, it, isPopout = true) }
+                                }
+                            }
+                        },
+                        { err ->
+                            extensionInstallStarted = false
+                            mainHandler.post {
+                                listener.onEnvDiagnostics("eng=gecko ext_err=${err?.message ?: "unknown"}")
+                            }
+                        }
+                    )
+            }.onFailure {
+                extensionInstallStarted = false
+            }
+        }
+        return runtime
+    }
+
+    private fun createRuntimeInternal(): GeckoRuntime? {
+        return runCatching {
+            val desktopUa = buildDesktopFirefoxUa(GeckoSession.getDefaultUserAgent())
+            val configFile = File(appContext.filesDir, "wupp_geckoview_config.yaml")
+            val yaml = buildString {
+                appendLine("prefs:")
+                appendLine("  general.useragent.override: \"${desktopUa.replace("\"", "\\\"")}\"")
+                appendLine("  general.platform.override: \"Win32\"")
+                appendLine("  general.oscpu.override: \"Windows NT 10.0; Win64; x64\"")
+                appendLine("  dom.w3c_touch_events.enabled: 0")
+                appendLine("  media.autoplay.default: 0")
+                appendLine("  media.autoplay.blocking_policy: 0")
+                appendLine("  media.setsinkid.enabled: true")
+            }
+            configFile.writeText(yaml, Charsets.UTF_8)
+
+            val settings = GeckoRuntimeSettings.Builder()
+                .configFilePath(configFile.absolutePath)
+                .javaScriptEnabled(true)
+                .webFontsEnabled(true)
+                .automaticFontSizeAdjustment(false)
+                .inputAutoZoomEnabled(false)
+                .doubleTapZoomingEnabled(false)
+                .consoleOutput(false)
+                .build()
+            GeckoRuntime.create(appContext, settings)
+        }.getOrNull()
+    }
+
+    private fun ensureSessionCreatedLocked(): GeckoSession? {
+        mainSession?.let { existing ->
+            hostContainer?.let { container ->
+                val mv = mainView
+                if (mv == null || mv.parent !== container) {
+                    attachSessionToContainer(
+                        session = existing,
+                        isPopout = false,
+                        container = container,
+                        visible = allowTouchThrough || videoOverlayCssActive
+                    )
+                }
+            }
+            return existing
+        }
+
+        val runtime = ensureRuntimeAndExtension() ?: return null
+        val session = createConfiguredSession(runtime = runtime, isPopout = false)
+        mainSession = session
+        hostContainer?.let { container ->
+            attachSessionToContainer(
+                session = session,
+                isPopout = false,
+                container = container,
+                visible = allowTouchThrough || videoOverlayCssActive
+            )
+        }
+        listener.onLinkStateChanged(WebLinkState.LOADING, "")
+        session.loadUri(WA_WEB_URL)
+        return session
+    }
+
+    private fun createConfiguredSession(runtime: GeckoRuntime, isPopout: Boolean): GeckoSession {
+        val desktopUa = buildDesktopFirefoxUa(GeckoSession.getDefaultUserAgent())
+        val settings = GeckoSessionSettings.Builder()
+            .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP)
+            .userAgentOverride(desktopUa)
+            .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP)
+            .suspendMediaWhenInactive(false)
+            .useTrackingProtection(false)
+            .allowJavascript(true)
+            .build()
+
+        val session = GeckoSession(settings)
+        configureSessionDelegates(session, runtime, isPopout)
+        session.open(runtime)
+        session.setPriorityHint(if (isPopout) GeckoSession.PRIORITY_HIGH else GeckoSession.PRIORITY_DEFAULT)
+        session.setActive(true)
+        installedExtension?.let { ext ->
+            bindExtensionToSession(ext, session, isPopout)
+        }
+        return session
+    }
+
+    private fun bindExtensionToSession(ext: WebExtension, session: GeckoSession, isPopout: Boolean) {
+        val msgDelegate = object : WebExtension.MessageDelegate {
+            override fun onConnect(port: WebExtension.Port) {
+                mainHandler.post {
+                    if (isPopout) {
+                        popoutPort = port
+                    } else {
+                        mainPort = port
+                    }
+                    port.setDelegate(createPortDelegate(isPopout))
+                    syncPermissionsToExtension(isPopout)
+                    flushPendingCommands(isPopout)
+                }
+            }
+        }
+        session.webExtensionController.setMessageDelegate(ext, msgDelegate, NATIVE_PORT_APP_ID)
+    }
+
+    private fun createPortDelegate(isPopout: Boolean): WebExtension.PortDelegate {
+        return object : WebExtension.PortDelegate {
+            override fun onPortMessage(message: Any, port: WebExtension.Port) {
+                val json = message as? JSONObject ?: return
+                handleExtensionMessage(json, isPopout)
+            }
+
+            override fun onDisconnect(port: WebExtension.Port) {
+                mainHandler.post {
+                    if (isPopout && popoutPort === port) {
+                        popoutPort = null
+                    } else if (!isPopout && mainPort === port) {
+                        mainPort = null
+                    }
+                }
+            }
+        }
+    }
+
+    private fun handleExtensionMessage(json: JSONObject, isPopout: Boolean) {
+        val type = json.optString("type")
+        mainHandler.post {
+            when (type) {
+                "linkUpdate" -> {
+                    val stateName = json.optString("state")
+                    val code = json.optString("code")
+                    val parsed = when (stateName) {
+                        "NEEDS_PAIRING_CODE" -> WebLinkState.NEEDS_PAIRING_CODE
+                        "PAIRING_CODE_READY" -> WebLinkState.PAIRING_CODE_READY
+                        "AUTHENTICATED" -> WebLinkState.AUTHENTICATED
+                        "ERROR" -> WebLinkState.ERROR
+                        else -> WebLinkState.LOADING
+                    }
+                    if (parsed == WebLinkState.AUTHENTICATED) {
+                        pendingPairingPhoneDigits = ""
+                    }
+                    listener.onLinkStateChanged(parsed, code)
+                }
+                "pairingStatus" -> {
+                    val status = json.optString("status")
+                    if (status.isNotBlank()) listener.onPairingStatusChanged(status)
+                }
+                "webCallEvent" -> {
+                    listener.onWebCallEvent(
+                        state = json.optString("state"),
+                        callerHint = json.optString("callerHint"),
+                        isVideo = json.optBoolean("isVideo"),
+                        canAnswer = json.optBoolean("canAnswer"),
+                        hasActiveVideo = json.optBoolean("hasActiveVideo")
+                    )
+                }
+                "dialResult" -> {
+                    listener.onDialAttemptFinished(
+                        dispatched = json.optBoolean("dispatched"),
+                        reason = json.optString("reason")
+                    )
+                }
+                "envDiag" -> {
+                    val diag = json.optString("diag")
+                    if (diag.isNotBlank()) listener.onEnvDiagnostics(diag)
+                }
+                "nativeTap" -> {
+                    val view = if (isPopout) popoutView else mainView
+                    view?.dispatchSyntheticTap(
+                        json.optDouble("xRatio", 0.5).toFloat(),
+                        json.optDouble("yRatio", 0.5).toFloat()
+                    )
+                }
+                "nativeKeyText" -> {
+                    val view = if (isPopout) popoutView else mainView
+                    val text = json.optString("text")
+                    val sendEnter = json.optBoolean("sendEnter")
+                    view?.dispatchSyntheticKeyText(text, sendEnter)
+                }
+            }
+        }
+    }
+
+    private fun sendCommand(isPopout: Boolean, cmd: JSONObject) {
+        val port = if (isPopout) popoutPort else mainPort
+        if (port != null) {
+            runCatching { port.postMessage(cmd) }.onFailure {
+                queueCommand(isPopout, cmd)
+            }
+        } else {
+            queueCommand(isPopout, cmd)
+        }
+    }
+
+    private fun queueCommand(isPopout: Boolean, cmd: JSONObject) {
+        val queue = if (isPopout) pendingPopoutCommands else pendingMainCommands
+        if (queue.size < 16) {
+            queue.add(cmd)
+        }
+    }
+
+    private fun flushPendingCommands(isPopout: Boolean) {
+        val port = (if (isPopout) popoutPort else mainPort) ?: return
+        val queue = if (isPopout) pendingPopoutCommands else pendingMainCommands
+        if (queue.isEmpty()) return
+        val copy = queue.toList()
+        queue.clear()
+        copy.forEach { cmd ->
+            runCatching { port.postMessage(cmd) }
+        }
+    }
+
+    private fun syncPermissionsToExtension(isPopout: Boolean) {
+        val hasMic = ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        val hasCam = ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        sendCommand(
+            isPopout = isPopout,
+            JSONObject()
+                .put("cmd", "syncPermissions")
+                .put("mic", hasMic)
+                .put("cam", hasCam)
+        )
+    }
+
+    private fun configureSessionDelegates(session: GeckoSession, runtime: GeckoRuntime, isPopout: Boolean) {
+        session.navigationDelegate = object : GeckoSession.NavigationDelegate {
+            override fun onLoadRequest(
+                sess: GeckoSession,
+                request: GeckoSession.NavigationDelegate.LoadRequest
+            ): GeckoResult<AllowOrDeny> {
+                val parsed = runCatching { URI(request.uri) }.getOrNull()
+                val schemeOk = parsed?.scheme.equals("https", ignoreCase = true)
+                val hostOk = parsed?.host?.lowercase(Locale.ROOT)?.trimEnd('.') == "web.whatsapp.com"
+                return if (schemeOk && hostOk) GeckoResult.allow() else GeckoResult.deny()
+            }
+
+            override fun onNewSession(sess: GeckoSession, uri: String): GeckoResult<GeckoSession> {
+                val originOk = isAllowedWhatsAppPermissionOrigin(uri) || uri == "about:blank" || uri.isBlank()
+                if (!originOk) {
+                    return GeckoResult.fromValue(null)
+                }
+                destroyPopoutSession()
+                val popup = createConfiguredSession(runtime = runtime, isPopout = true)
+                popoutSession = popup
+                val targetContainer = hostContainer ?: backgroundHostContainer
+                if (targetContainer != null) {
+                    attachSessionToContainer(
+                        session = popup,
+                        isPopout = true,
+                        container = targetContainer,
+                        visible = allowTouchThrough || videoOverlayCssActive
+                    )
+                }
+                return GeckoResult.fromValue(popup)
+            }
+        }
+
+        session.progressDelegate = object : GeckoSession.ProgressDelegate {
+            override fun onPageStop(sess: GeckoSession, success: Boolean) {
+                if (!success) return
+                syncPermissionsToExtension(isPopout)
+                if (videoOverlayCssActive) {
+                    sendCommand(isPopout, JSONObject().put("cmd", "videoCss").put("active", true))
+                }
+                if (webRingingMuted) {
+                    sendCommand(isPopout, JSONObject().put("cmd", "ringMute").put("muted", true))
+                }
+                if (!isPopout) {
+                    val digits = pendingPairingPhoneDigits
+                    if (digits.isNotEmpty()) {
+                        setHighPriorityRenderer(true)
+                        sendCommand(
+                            isPopout = false,
+                            JSONObject().put("cmd", "pairing").put("phoneDigits", digits)
+                        )
+                    }
+                }
+            }
+        }
+
+        session.contentDelegate = object : GeckoSession.ContentDelegate {
+            override fun onCloseRequest(sess: GeckoSession) {
+                if (isPopout && popoutSession === sess) {
+                    destroyPopoutSession()
+                }
+            }
+
+            override fun onCrash(sess: GeckoSession) {
+                if (isPopout) {
+                    destroyPopoutSession()
+                } else {
+                    mainSession = null
+                    mainPort = null
+                }
+            }
+
+            override fun onKill(sess: GeckoSession) {
+                if (isPopout) {
+                    destroyPopoutSession()
+                } else {
+                    mainSession = null
+                    mainPort = null
+                }
+            }
+        }
+
+        session.permissionDelegate = object : GeckoSession.PermissionDelegate {
+            override fun onAndroidPermissionsRequest(
+                sess: GeckoSession,
+                permissions: Array<out String>?,
+                callback: GeckoSession.PermissionDelegate.Callback
+            ) {
+                val perms = permissions.orEmpty()
+                val allGranted = perms.all { p ->
+                    ContextCompat.checkSelfPermission(appContext, p) == PackageManager.PERMISSION_GRANTED
+                }
+                if (allGranted) callback.grant() else callback.reject()
+            }
+
+            override fun onContentPermissionRequest(
+                sess: GeckoSession,
+                perm: GeckoSession.PermissionDelegate.ContentPermission
+            ): GeckoResult<Int> {
+                val originOk = isAllowedWhatsAppPermissionOrigin(perm.uri)
+                val allow = originOk && when (perm.permission) {
+                    GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_AUDIBLE,
+                    GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_INAUDIBLE,
+                    GeckoSession.PermissionDelegate.PERMISSION_PERSISTENT_STORAGE,
+                    GeckoSession.PermissionDelegate.PERMISSION_MEDIA_KEY_SYSTEM_ACCESS -> true
+                    else -> false
+                }
+                return GeckoResult.fromValue(
+                    if (allow) {
+                        GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW
+                    } else {
+                        GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY
+                    }
+                )
+            }
+
+            override fun onMediaPermissionRequest(
+                sess: GeckoSession,
+                uri: String,
+                video: Array<out GeckoSession.PermissionDelegate.MediaSource>?,
+                audio: Array<out GeckoSession.PermissionDelegate.MediaSource>?,
+                callback: GeckoSession.PermissionDelegate.MediaCallback
+            ) {
+                if (!isAllowedWhatsAppPermissionOrigin(uri)) {
+                    callback.reject()
+                    return
+                }
+                val hasMic = ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) ==
+                    PackageManager.PERMISSION_GRANTED
+                val hasCam = ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) ==
+                    PackageManager.PERMISSION_GRANTED
+
+                val selectedAudio = if (hasMic && !audio.isNullOrEmpty()) {
+                    audio.firstOrNull { it.source == GeckoSession.PermissionDelegate.MediaSource.SOURCE_MICROPHONE }
+                        ?: audio.first()
+                } else {
+                    null
+                }
+                val selectedVideo = if (hasCam && !video.isNullOrEmpty()) {
+                    video.firstOrNull {
+                        it.source == GeckoSession.PermissionDelegate.MediaSource.SOURCE_CAMERA &&
+                            it.name?.contains("front", ignoreCase = true) == true
+                    } ?: video.firstOrNull {
+                        it.source == GeckoSession.PermissionDelegate.MediaSource.SOURCE_CAMERA
+                    } ?: video.first()
+                } else {
+                    null
+                }
+
+                if (selectedAudio == null && selectedVideo == null) {
+                    callback.reject()
+                    return
+                }
+                callback.grant(selectedVideo, selectedAudio)
+                listener.onWebRtcMediaCapture(selectedVideo != null)
+            }
+        }
+    }
+
+    private inner class WuppGeckoView(context: Context) : GeckoView(context) {
+        @Volatile
+        private var allowSyntheticTouch: Boolean = false
+
         override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
-            return if (allowTouchThrough) super.dispatchTouchEvent(ev) else false
+            return if (allowTouchThrough || allowSyntheticTouch) super.dispatchTouchEvent(ev) else false
         }
 
         fun dispatchSyntheticTap(xRatio: Float, yRatio: Float) {
@@ -405,7 +853,9 @@ class WebCallEngine(
             val down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, px, py, 0).apply {
                 source = InputDevice.SOURCE_TOUCHSCREEN
             }
-            super.dispatchTouchEvent(down)
+            allowSyntheticTouch = true
+            runCatching { super.dispatchTouchEvent(down) }
+            allowSyntheticTouch = false
             down.recycle()
 
             mainHandler.postDelayed({
@@ -413,7 +863,9 @@ class WebCallEngine(
                 val up = MotionEvent.obtain(downTime, upTime, MotionEvent.ACTION_UP, px, py, 0).apply {
                     source = InputDevice.SOURCE_TOUCHSCREEN
                 }
-                super.dispatchTouchEvent(up)
+                allowSyntheticTouch = true
+                runCatching { super.dispatchTouchEvent(up) }
+                allowSyntheticTouch = false
                 up.recycle()
             }, 50L)
         }
@@ -454,2101 +906,17 @@ class WebCallEngine(
         }
     }
 
-    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
-    private fun ensureCreatedLocked(): WuppWebView? {
-        webView?.let { existing ->
-            hostContainer?.let { container ->
-                if (existing.parent == null) {
-                    container.addView(
-                        existing,
-                        ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                    )
-                }
-            }
-            return existing
-        }
-
-        val viewContext = hostContainer?.context ?: backgroundHostContainer?.context ?: appContext
-        val wv = runCatching { WuppWebView(viewContext) }.getOrNull() ?: return null
-        val prefs = appContext.getSharedPreferences(PREFS_CALL_ENGINE, Context.MODE_PRIVATE)
-        val savedRev = prefs.getInt(KEY_ENV_REV, 0)
-        if (savedRev < CURRENT_ENV_REV) {
-            runCatching { wv.clearCache(false) }
-            prefs.edit().putInt(KEY_ENV_REV, CURRENT_ENV_REV).apply()
-            pendingSwRefreshOnUpgrade = true
-        }
-        configureDesktopWebView(wv, isPopout = false)
-
-        webView = wv
-        hostContainer?.let { container ->
-            attachChildView(wv, container, allowTouchThrough || videoOverlayCssActive)
-        }
-        listener.onLinkStateChanged(WebLinkState.LOADING, "")
-        wv.loadUrl(WA_WEB_URL)
-        return wv
-    }
-
-    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
-    private fun configureDesktopWebView(wv: WuppWebView, isPopout: Boolean) {
-        wv.setBackgroundColor(if (allowTouchThrough) Color.WHITE else Color.TRANSPARENT)
-        wv.alpha = if (allowTouchThrough || videoOverlayCssActive) 1f else 0.01f
-        wv.isClickable = true
-        wv.isFocusable = true
-        wv.isFocusableInTouchMode = true
-
-        val settings = wv.settings
-        settings.javaScriptEnabled = true
-        settings.domStorageEnabled = true
-        @Suppress("DEPRECATION")
-        settings.databaseEnabled = true
-        settings.cacheMode = WebSettings.LOAD_DEFAULT
-        settings.mediaPlaybackRequiresUserGesture = false
-        settings.useWideViewPort = true
-        settings.loadWithOverviewMode = true
-        settings.setSupportZoom(true)
-        settings.builtInZoomControls = true
-        settings.displayZoomControls = false
-        settings.setSupportMultipleWindows(true)
-        settings.javaScriptCanOpenWindowsAutomatically = true
-        @Suppress("DEPRECATION")
-        settings.saveFormData = false
-        settings.setGeolocationEnabled(false)
-        settings.allowFileAccess = false
-        settings.allowContentAccess = false
-        val computedDesktopUa = buildChromiumMatchedDesktopUa(WebSettings.getDefaultUserAgent(appContext))
-        desktopUserAgent = computedDesktopUa
-        settings.userAgentString = computedDesktopUa
-
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
-            runCatching {
-                val currentMeta = WebSettingsCompat.getUserAgentMetadata(settings)
-                val desktopBrands = currentMeta.brandVersionList.map { bv ->
-                    if (bv.brand.contains("WebView", ignoreCase = true)) {
-                        UserAgentMetadata.BrandVersion.Builder(bv)
-                            .setBrand("Google Chrome")
-                            .build()
-                    } else {
-                        bv
-                    }
-                }
-                val desktopMeta = UserAgentMetadata.Builder(currentMeta)
-                    .setBrandVersionList(desktopBrands)
-                    .setPlatform("Windows")
-                    .setPlatformVersion("10.0.0")
-                    .setArchitecture("x86")
-                    .setBitness(64)
-                    .setModel("")
-                    .setMobile(false)
-                    .setWow64(false)
-                    .build()
-                WebSettingsCompat.setUserAgentMetadata(settings, desktopMeta)
-            }
-        }
-
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
-            runCatching {
-                WebSettingsCompat.setRequestedWithHeaderOriginAllowList(settings, emptySet())
-            }
-        }
-
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-            runCatching {
-                WebViewCompat.addDocumentStartJavaScript(
-                    wv,
-                    JS_DESKTOP_ENV_DOCUMENT_START,
-                    setOf("https://web.whatsapp.com")
-                )
-            }
-        }
-
-        runCatching {
-            ServiceWorkerController.getInstance().setServiceWorkerClient(object : ServiceWorkerClient() {
-                override fun shouldInterceptRequest(request: WebResourceRequest?): WebResourceResponse? {
-                    return maybeInterceptWhatsAppCoopRequest(request)
-                }
-            })
-        }
-
-        CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
-        val priority = if (isPopout) WebView.RENDERER_PRIORITY_IMPORTANT else WebView.RENDERER_PRIORITY_WAIVED
-        runCatching { wv.setRendererPriorityPolicy(priority, false) }
-
-        wv.addJavascriptInterface(WuppCallJsBridge(), "WuppCallBridge")
-        wv.setDownloadListener { _, _, _, _, _ -> }
-        wv.webViewClient = object : WebViewClient() {
-            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                return maybeInterceptWhatsAppCoopRequest(request) ?: super.shouldInterceptRequest(view, request)
-            }
-
-            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                val url = request?.url ?: return false
-                val schemeOk = url.scheme.equals("https", ignoreCase = true)
-                val hostOk = url.host?.lowercase() == "web.whatsapp.com"
-                return !(schemeOk && hostOk)
-            }
-
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                val loadedUrl = url.orEmpty()
-                if (!loadedUrl.startsWith("https://web.whatsapp.com")) return
-                if (!isPopout && pendingSwRefreshOnUpgrade) {
-                    pendingSwRefreshOnUpgrade = false
-                    view?.evaluateJavascript(
-                        """
-                        (function() {
-                          try {
-                            if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
-                              navigator.serviceWorker.getRegistrations().then(function(regs) {
-                                if (regs && regs.length > 0) {
-                                  Promise.all(regs.map(function(r) { return r.unregister(); })).then(function() {
-                                    location.reload(true);
-                                  });
-                                }
-                              });
-                            }
-                          } catch (e) {}
-                        })();
-                        """.trimIndent(),
-                        null
-                    )
-                }
-                view?.evaluateJavascript(JS_DESKTOP_ENV_DOCUMENT_START, null)
-                view?.evaluateJavascript(JS_INSTALL_PASSIVE_OBSERVER, null)
-                if (videoOverlayCssActive) {
-                    view?.evaluateJavascript(JS_ENABLE_VIDEO_CSS, null)
-                }
-                if (!isPopout) {
-                    val digits = pendingPairingPhoneDigits
-                    if (digits.isNotEmpty() && view != null) {
-                        setHighPriorityRenderer(true)
-                        injectPairingAutomation(view, digits)
-                    }
-                }
-            }
-        }
-        wv.webChromeClient = object : WebChromeClient() {
-            override fun onPermissionRequest(request: PermissionRequest?) {
-                val req = request ?: return
-                val originOk = isAllowedWhatsAppPermissionOrigin(req.origin?.toString())
-                if (!originOk) {
-                    req.deny()
-                    return
-                }
-                val hasMic = ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) ==
-                    PackageManager.PERMISSION_GRANTED
-                val hasCam = ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) ==
-                    PackageManager.PERMISSION_GRANTED
-                val granted = req.resources.filter { res ->
-                    when (res) {
-                        PermissionRequest.RESOURCE_AUDIO_CAPTURE -> hasMic
-                        PermissionRequest.RESOURCE_VIDEO_CAPTURE -> hasCam
-                        else -> false
-                    }
-                }.toTypedArray()
-
-                if (granted.isEmpty()) {
-                    req.deny()
-                } else {
-                    req.grant(granted)
-                    listener.onWebRtcMediaCapture(PermissionRequest.RESOURCE_VIDEO_CAPTURE in granted)
-                }
-            }
-
-            override fun onCreateWindow(
-                view: WebView?,
-                isDialog: Boolean,
-                isUserGesture: Boolean,
-                resultMsg: Message?
-            ): Boolean {
-                val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
-                destroyPopoutWindow()
-                val ctx = hostContainer?.context ?: backgroundHostContainer?.context ?: appContext
-                val popup = runCatching { WuppWebView(ctx) }.getOrNull() ?: return false
-                configureDesktopWebView(popup, isPopout = true)
-                popoutWebView = popup
-                hostContainer?.let { container ->
-                    attachChildView(popup, container, allowTouchThrough || videoOverlayCssActive)
-                }
-                transport.webView = popup
-                resultMsg.sendToTarget()
-                return true
-            }
-
-            override fun onCloseWindow(window: WebView?) {
-                if (window === popoutWebView) {
-                    destroyPopoutWindow()
-                }
-            }
-        }
-    }
-
-    private inner class WuppCallJsBridge {
-        @JavascriptInterface
-        fun onLinkUpdate(state: String, code: String) {
-            val parsed = when (state.uppercase()) {
-                "AUTHENTICATED" -> WebLinkState.AUTHENTICATED
-                "PAIRING_CODE_READY" -> WebLinkState.PAIRING_CODE_READY
-                "NEEDS_PAIRING_CODE" -> WebLinkState.NEEDS_PAIRING_CODE
-                "ERROR" -> WebLinkState.ERROR
-                else -> WebLinkState.LOADING
-            }
-            if (parsed == WebLinkState.AUTHENTICATED || parsed == WebLinkState.PAIRING_CODE_READY || parsed == WebLinkState.ERROR) {
-                pendingPairingPhoneDigits = ""
-            }
-            mainHandler.post { listener.onLinkStateChanged(parsed, code.trim()) }
-        }
-
-        @JavascriptInterface
-        fun onPairingStatus(status: String) {
-            mainHandler.post { listener.onPairingStatusChanged(status.trim()) }
-        }
-
-        @JavascriptInterface
-        fun requestNativeTap(xRatio: Double, yRatio: Double) {
-            mainHandler.post {
-                webView?.dispatchSyntheticTap(xRatio.toFloat(), yRatio.toFloat())
-            }
-        }
-
-        @JavascriptInterface
-        fun requestNativeKeyText(text: String, sendEnter: Boolean) {
-            mainHandler.post {
-                webView?.dispatchSyntheticKeyText(text, sendEnter)
-            }
-        }
-
-        @JavascriptInterface
-        fun onWebCallEvent(
-            state: String,
-            callerHint: String,
-            isVideo: Boolean,
-            canAnswer: Boolean,
-            hasActiveVideo: Boolean
-        ) {
-            mainHandler.post {
-                listener.onWebCallEvent(state, callerHint, isVideo, canAnswer, hasActiveVideo)
-            }
-        }
-
-        @JavascriptInterface
-        fun onDialResult(dispatched: Boolean, reason: String) {
-            mainHandler.post {
-                listener.onDialAttemptFinished(dispatched, reason)
-            }
-        }
-
-        @JavascriptInterface
-        fun hasMediaPermission(kind: String): Boolean {
-            val perm = when (kind.lowercase()) {
-                "camera", "video" -> Manifest.permission.CAMERA
-                else -> Manifest.permission.RECORD_AUDIO
-            }
-            return ContextCompat.checkSelfPermission(appContext, perm) == PackageManager.PERMISSION_GRANTED
-        }
-
-        @JavascriptInterface
-        fun onEnvDiagnostics(diag: String) {
-            mainHandler.post {
-                listener.onEnvDiagnostics(diag)
-            }
-        }
-    }
-
-    /**
-     * WhatsApp Web serves `Cross-Origin-Opener-Policy: same-origin-allow-popups` paired with
-     * `Document-Isolation-Policy: isolate-and-require-corp`. On Desktop Chrome, `DocumentIsolationPolicy`
-     * is enabled and grants `crossOriginIsolated = true` + `window.SharedArrayBuffer`, whereas on Android
-     * Chromium `DocumentIsolationPolicy` is disabled (`status: { "Android": "" }`), leaving
-     * `window.crossOriginIsolated = false` and `window.SharedArrayBuffer = undefined`
-     * (`WAWebVoipGatingUtils.getUnsupportedBrowserReason() == "missing_shared_array_buffer"`).
-     *
-     * Rewriting `Cross-Origin-Opener-Policy: same-origin` on main HTML documents and prepending our
-     * `SharedArrayBuffer` / desktop-env preamble to `/static_resources/webworker.../init_script/`
-     * activates standard COOP+COEP cross-origin isolation and ensures `SharedArrayBuffer` is present
-     * in both the main window and all VoIP WebAssembly workers.
-     */
-    private fun maybeInterceptWhatsAppCoopRequest(request: WebResourceRequest?): WebResourceResponse? {
-        val req = request ?: return null
-        if (!req.method.equals("GET", ignoreCase = true)) return null
-        val uri = req.url ?: return null
-        if (!uri.scheme.equals("https", ignoreCase = true)) return null
-        val host = uri.host?.lowercase(Locale.US) ?: return null
-        if (host != "web.whatsapp.com") return null
-
-        val headers = req.requestHeaders ?: emptyMap()
-        if (headers.entries.any { it.key.equals("Upgrade", ignoreCase = true) && it.value.equals("websocket", ignoreCase = true) }) {
-            return null
-        }
-
-        val path = uri.path.orEmpty()
-        val isWorkerInit = path.contains("/static_resources/webworker") && path.contains("/init_script")
-        val acceptHeader = headers.entries.firstOrNull { it.key.equals("Accept", ignoreCase = true) }?.value.orEmpty()
-        val fetchMode = headers.entries.firstOrNull { it.key.equals("Sec-Fetch-Mode", ignoreCase = true) }?.value.orEmpty()
-        val isHtmlPath = path.isEmpty() || path == "/" || path.startsWith("/call")
-        val isMainHtmlNav = !isWorkerInit && isHtmlPath && (
-            req.isForMainFrame ||
-                fetchMode.equals("navigate", ignoreCase = true) ||
-                acceptHeader.contains("text/html", ignoreCase = true)
-            )
-
-        if (!isWorkerInit && !isMainHtmlNav) return null
-
-        val urlStr = uri.toString()
-        return runCatching {
-            val ua = desktopUserAgent.ifBlank {
-                buildChromiumMatchedDesktopUa(WebSettings.getDefaultUserAgent(appContext))
-            }
-            val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                instanceFollowRedirects = false
-                connectTimeout = 15_000
-                readTimeout = 15_000
-                setRequestProperty("User-Agent", ua)
-                for ((k, v) in headers) {
-                    if (k.equals("Accept-Encoding", ignoreCase = true) ||
-                        k.equals("User-Agent", ignoreCase = true) ||
-                        k.equals("Cookie", ignoreCase = true) ||
-                        k.equals("Host", ignoreCase = true) ||
-                        k.equals("Connection", ignoreCase = true)
-                    ) {
-                        continue
-                    }
-                    setRequestProperty(k, v)
-                }
-                val cookie = CookieManager.getInstance().getCookie(urlStr)
-                if (!cookie.isNullOrBlank()) {
-                    setRequestProperty("Cookie", cookie)
-                }
-            }
-
-            val status = conn.responseCode
-            if (status != HttpURLConnection.HTTP_OK) {
-                conn.disconnect()
-                return null
-            }
-
-            val cookieManager = CookieManager.getInstance()
-            val respHeaders = LinkedHashMap<String, String>()
-            for ((rawName, values) in conn.headerFields) {
-                val name = rawName ?: continue
-                val nonNullValues = values?.filterNotNull()?.filter { it.isNotBlank() } ?: continue
-                if (nonNullValues.isEmpty()) continue
-
-                if (name.equals("Set-Cookie", ignoreCase = true) ||
-                    name.equals("Set-Cookie2", ignoreCase = true)
-                ) {
-                    for (c in nonNullValues) {
-                        cookieManager.setCookie(urlStr, c)
-                    }
-                    continue
-                }
-
-                val lower = name.lowercase(Locale.US)
-                if (lower == "content-encoding" ||
-                    lower == "content-length" ||
-                    lower == "transfer-encoding" ||
-                    lower == "accept-ch" ||
-                    lower == "accept-ch-lifetime" ||
-                    lower == "cross-origin-opener-policy" ||
-                    lower == "cross-origin-embedder-policy" ||
-                    lower == "cross-origin-resource-policy"
-                ) {
-                    continue
-                }
-
-                if (lower == "content-security-policy" || lower == "content-security-policy-report-only") {
-                    respHeaders[name] = nonNullValues.firstOrNull { it.contains("default-src", ignoreCase = true) }
-                        ?: nonNullValues.first()
-                } else {
-                    respHeaders[name] = nonNullValues.joinToString(", ")
-                }
-            }
-
-            respHeaders["Cross-Origin-Opener-Policy"] = "same-origin"
-            respHeaders["Cross-Origin-Embedder-Policy"] = "require-corp"
-            respHeaders["Cross-Origin-Resource-Policy"] = "same-origin"
-
-            val rawBytes = conn.inputStream.use { it.readBytes() }
-            conn.disconnect()
-
-            val finalBytes = if (isWorkerInit) {
-                val bodyStr = String(rawBytes, Charsets.UTF_8)
-                (JS_WORKER_ENV_PREAMBLE + "\n" + bodyStr).toByteArray(Charsets.UTF_8)
-            } else {
-                rawBytes
-            }
-
-            val rawContentType = conn.contentType ?: if (isWorkerInit) {
-                "application/javascript; charset=utf-8"
-            } else {
-                "text/html; charset=utf-8"
-            }
-            val mimeType = rawContentType.substringBefore(';').trim().ifEmpty {
-                if (isWorkerInit) "application/javascript" else "text/html"
-            }
-
-            WebResourceResponse(
-                mimeType,
-                "utf-8",
-                status,
-                "OK",
-                respHeaders,
-                ByteArrayInputStream(finalBytes)
-            )
-        }.getOrNull()
-    }
-
     companion object {
         private const val WA_WEB_URL = "https://web.whatsapp.com/"
+        private const val NATIVE_PORT_APP_ID = "wuppBridge"
         const val MIN_RECONNECT_COOLDOWN_MS = 45_000L
-        private const val PREFS_CALL_ENGINE = "wupp_call_engine_prefs"
-        private const val KEY_ENV_REV = "calling_web_env_rev"
-        private const val CURRENT_ENV_REV = 15
 
-        private val JS_WORKER_ENV_PREAMBLE = """
-            (function() {
-              var g = typeof globalThis !== 'undefined' ? globalThis : self;
-              if (g.__wuppWorkerEnvApplied) return;
-              g.__wuppWorkerEnvApplied = true;
-              function safeDef(obj, prop, getter) {
-                try {
-                  Object.defineProperty(obj, prop, { configurable: true, enumerable: true, get: getter });
-                  return true;
-                } catch (e) { return false; }
-              }
-              try {
-                if (typeof g.SharedArrayBuffer !== 'function' && typeof WebAssembly === 'object' && typeof WebAssembly.Memory === 'function') {
-                  var m = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
-                  if (m && m.buffer && m.buffer.constructor && m.buffer.constructor !== ArrayBuffer) {
-                    g.SharedArrayBuffer = m.buffer.constructor;
-                  }
-                }
-              } catch (e) {}
-              if (typeof g.SharedArrayBuffer !== 'function') {
-                var SabShim = function SharedArrayBuffer(len) { return new ArrayBuffer(len >>> 0); };
-                SabShim.prototype = ArrayBuffer.prototype;
-                g.SharedArrayBuffer = SabShim;
-              }
-              if (g.crossOriginIsolated !== true) {
-                safeDef(g, 'crossOriginIsolated', function() { return true; });
-              }
-              var nav = g.navigator;
-              if (nav) {
-                var navProto = (typeof WorkerNavigator !== 'undefined' && WorkerNavigator.prototype) || nav;
-                if (!safeDef(navProto, 'platform', function() { return 'Win32'; })) {
-                  safeDef(nav, 'platform', function() { return 'Win32'; });
-                }
-                if (!safeDef(navProto, 'maxTouchPoints', function() { return 0; })) {
-                  safeDef(nav, 'maxTouchPoints', function() { return 0; });
-                }
-              }
-              var pmOk = false;
-              try {
-                if (typeof MessageChannel === 'function' && typeof g.SharedArrayBuffer === 'function') {
-                  var mc = new MessageChannel();
-                  mc.port1.postMessage(new g.SharedArrayBuffer(8));
-                  mc.port1.close();
-                  mc.port2.close();
-                  pmOk = true;
-                }
-              } catch (e) { pmOk = false; }
-              g.__wuppSabPmOk = pmOk;
-              if (!pmOk && typeof g.postMessage === 'function') {
-                var origPm = g.postMessage.bind(g);
-                g.postMessage = function(msg, transfer) {
-                  try {
-                    return arguments.length > 1 ? origPm(msg, transfer) : origPm(msg);
-                  } catch (err) {
-                    if (msg && typeof msg === 'object' && msg.buffer && typeof Int32Array === 'function') {
-                      try {
-                        var i32 = new Int32Array(msg.buffer);
-                        if (msg.__name === 'browserAudioProcessingStatusSyncRequest') {
-                          Atomics.store(i32, 1, 7);
-                          Atomics.store(i32, 0, 1);
-                          Atomics.notify(i32, 0, 1);
-                        } else if (msg.__name === 'contactLookupSyncRequest') {
-                          Atomics.store(i32, 1, 1);
-                          Atomics.store(i32, 0, 1);
-                          Atomics.notify(i32, 0, 1);
-                        }
-                      } catch (e2) {}
-                      var c = Object.assign({}, msg);
-                      delete c.buffer;
-                      return origPm(c);
-                    }
-                    throw err;
-                  }
-                };
-              }
-            })();
-        """.trimIndent()
-
-        private val JS_DESKTOP_ENV_DOCUMENT_START = """
-            (function() {
-              if (window.__wuppEnvApplied) return;
-              window.__wuppEnvApplied = true;
-
-              function safeDefine(obj, prop, getter) {
-                try {
-                  Object.defineProperty(obj, prop, {
-                    configurable: true,
-                    enumerable: true,
-                    get: getter
-                  });
-                  return true;
-                } catch (e) {
-                  return false;
-                }
-              }
-
-              var nativeCoi = window.crossOriginIsolated === true;
-              window.__wuppNativeCoi = nativeCoi;
-              var sabMode = 'none';
-              try {
-                if (typeof window.SharedArrayBuffer === 'function') {
-                  sabMode = 'native';
-                } else if (typeof WebAssembly === 'object' && typeof WebAssembly.Memory === 'function') {
-                  var probeMem = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
-                  if (probeMem && probeMem.buffer && probeMem.buffer.constructor && probeMem.buffer.constructor !== ArrayBuffer) {
-                    window.SharedArrayBuffer = probeMem.buffer.constructor;
-                    sabMode = 'wasm-ctor';
-                  }
-                }
-              } catch (e) {
-                sabMode = 'wasm-err';
-              }
-              if (typeof window.SharedArrayBuffer !== 'function') {
-                var SabShim = function SharedArrayBuffer(len) {
-                  return new ArrayBuffer(len >>> 0);
-                };
-                SabShim.prototype = ArrayBuffer.prototype;
-                window.SharedArrayBuffer = SabShim;
-                sabMode = 'ab-shim';
-              }
-              window.__wuppSabMode = sabMode;
-              if (!nativeCoi) {
-                safeDefine(window, 'crossOriginIsolated', function() { return true; });
-              }
-              var sabPmOk = false;
-              try {
-                if (typeof MessageChannel === 'function' && typeof window.SharedArrayBuffer === 'function') {
-                  var mc = new MessageChannel();
-                  mc.port1.postMessage(new window.SharedArrayBuffer(8));
-                  mc.port1.close();
-                  mc.port2.close();
-                  sabPmOk = true;
-                }
-              } catch (e) {
-                sabPmOk = false;
-              }
-              window.__wuppSabPmOk = sabPmOk;
-
-              if (!nativeCoi) {
-                try {
-                  if (window.sessionStorage && !sessionStorage.getItem('__wupp_coi_sw_purged')) {
-                    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
-                      navigator.serviceWorker.getRegistrations().then(function(regs) {
-                        if (regs && regs.length > 0) {
-                          sessionStorage.setItem('__wupp_coi_sw_purged', '1');
-                          Promise.all(regs.map(function(r) { return r.unregister(); })).then(function() {
-                            if (window.caches && caches.keys) {
-                              caches.keys().then(function(ks) {
-                                return Promise.all(ks.map(function(k) { return caches.delete(k); }));
-                              }).finally(function() { location.reload(true); });
-                            } else {
-                              location.reload(true);
-                            }
-                          });
-                        }
-                      });
-                    }
-                  }
-                } catch (e) {}
-              }
-
-              var navProto = (typeof Navigator !== 'undefined' && Navigator.prototype) || navigator;
-              if (!safeDefine(navProto, 'platform', function() { return 'Win32'; })) {
-                safeDefine(navigator, 'platform', function() { return 'Win32'; });
-              }
-              if (!safeDefine(navProto, 'maxTouchPoints', function() { return 0; })) {
-                safeDefine(navigator, 'maxTouchPoints', function() { return 0; });
-              }
-              try {
-                delete window.ontouchstart;
-                if (typeof Window !== 'undefined' && Window.prototype) delete Window.prototype.ontouchstart;
-                if (typeof Document !== 'undefined' && Document.prototype) delete Document.prototype.ontouchstart;
-                if (typeof HTMLElement !== 'undefined' && HTMLElement.prototype) delete HTMLElement.prototype.ontouchstart;
-              } catch (e) {}
-
-              try {
-                var uad = navigator.userAgentData;
-                if (!uad || uad.mobile || uad.platform !== 'Windows') {
-                  var m = (navigator.userAgent || '').match(/Chrome\/(\d+)(?:\.(\d+\.\d+\.\d+))?/);
-                  var major = (m && m[1]) ? m[1] : '131';
-                  var fullVer = (m && m[2]) ? (major + '.' + m[2]) : (major + '.0.0.0');
-                  var brands = [
-                    { brand: 'Not-A.Brand', version: '99' },
-                    { brand: 'Google Chrome', version: major },
-                    { brand: 'Chromium', version: major }
-                  ];
-                  var fullBrands = [
-                    { brand: 'Not-A.Brand', version: '99.0.0.0' },
-                    { brand: 'Google Chrome', version: fullVer },
-                    { brand: 'Chromium', version: fullVer }
-                  ];
-                  var pcUad = {
-                    brands: brands,
-                    mobile: false,
-                    platform: 'Windows',
-                    getHighEntropyValues: function(hints) {
-                      return Promise.resolve({
-                        brands: brands,
-                        mobile: false,
-                        platform: 'Windows',
-                        platformVersion: '10.0.0',
-                        architecture: 'x86',
-                        bitness: '64',
-                        model: '',
-                        uaFullVersion: fullVer,
-                        fullVersionList: fullBrands,
-                        wow64: false
-                      });
-                    },
-                    toJSON: function() {
-                      return { brands: brands, mobile: false, platform: 'Windows' };
-                    }
-                  };
-                  if (!safeDefine(navProto, 'userAgentData', function() { return pcUad; })) {
-                    safeDefine(navigator, 'userAgentData', function() { return pcUad; });
-                  }
-                }
-              } catch (e) {}
-
-              try {
-                var scrProto = (typeof Screen !== 'undefined' && Screen.prototype) || window.screen;
-                safeDefine(scrProto, 'width', function() { return 1366; });
-                safeDefine(scrProto, 'height', function() { return 768; });
-                safeDefine(scrProto, 'availWidth', function() { return 1366; });
-                safeDefine(scrProto, 'availHeight', function() { return 728; });
-                safeDefine(scrProto, 'colorDepth', function() { return 24; });
-                safeDefine(scrProto, 'pixelDepth', function() { return 24; });
-              } catch (e) {}
-
-              try {
-                var origMatchMedia = window.matchMedia && window.matchMedia.bind(window);
-                if (origMatchMedia) {
-                  window.matchMedia = function(q) {
-                    var res = origMatchMedia(q);
-                    if (typeof q === 'string') {
-                      var ql = q.toLowerCase();
-                      var forced = null;
-                      if (ql.indexOf('pointer: fine') !== -1 || ql.indexOf('any-pointer: fine') !== -1 ||
-                          ql.indexOf('hover: hover') !== -1 || ql.indexOf('any-hover: hover') !== -1) {
-                        forced = true;
-                      } else if (ql.indexOf('pointer: coarse') !== -1 || ql.indexOf('any-pointer: coarse') !== -1 ||
-                          ql.indexOf('hover: none') !== -1 || ql.indexOf('any-hover: none') !== -1) {
-                        forced = false;
-                      }
-                      if (forced !== null) {
-                        return {
-                          matches: forced,
-                          media: q,
-                          onchange: null,
-                          addListener: function() {},
-                          removeListener: function() {},
-                          addEventListener: function() {},
-                          removeEventListener: function() {},
-                          dispatchEvent: function() { return false; }
-                        };
-                      }
-                    }
-                    return res;
-                  };
-                }
-              } catch (e) {}
-
-              try {
-                if (navigator.permissions && typeof navigator.permissions.query === 'function') {
-                  var origPermQuery = navigator.permissions.query.bind(navigator.permissions);
-                  navigator.permissions.query = function(desc) {
-                    var nm = (desc && desc.name ? String(desc.name) : '').toLowerCase();
-                    if (nm === 'microphone' || nm === 'camera') {
-                      var hasNative = false;
-                      try { hasNative = !!(window.WuppCallBridge && WuppCallBridge.hasMediaPermission(nm)); } catch (e) {}
-                      return origPermQuery(desc).then(function(status) {
-                        if (status && status.state === 'granted') return status;
-                        if (hasNative) {
-                          return {
-                            state: 'granted',
-                            name: nm,
-                            onchange: null,
-                            addEventListener: function() {},
-                            removeEventListener: function() {},
-                            dispatchEvent: function() { return false; }
-                          };
-                        }
-                        if (status && status.state === 'denied') {
-                          return {
-                            state: 'prompt',
-                            name: nm,
-                            onchange: null,
-                            addEventListener: function() {},
-                            removeEventListener: function() {},
-                            dispatchEvent: function() { return false; }
-                          };
-                        }
-                        return status;
-                      }).catch(function() {
-                        return {
-                          state: hasNative ? 'granted' : 'prompt',
-                          name: nm,
-                          onchange: null,
-                          addEventListener: function() {},
-                          removeEventListener: function() {},
-                          dispatchEvent: function() { return false; }
-                        };
-                      });
-                    }
-                    return origPermQuery(desc);
-                  };
-                }
-              } catch (e) {}
-
-              function enforceDesktopViewport() {
-                try {
-                  var vp = document.querySelector('meta[name="viewport"]');
-                  if (vp) {
-                    var cur = vp.getAttribute('content') || '';
-                    if (cur !== 'width=1024') {
-                      vp.setAttribute('content', 'width=1024');
-                    }
-                  } else if (document.head) {
-                    var m = document.createElement('meta');
-                    m.name = 'viewport';
-                    m.content = 'width=1024';
-                    document.head.appendChild(m);
-                  }
-                } catch (e) {}
-              }
-
-              enforceDesktopViewport();
-              try {
-                var vpObs = new MutationObserver(function() { enforceDesktopViewport(); });
-                vpObs.observe(document.documentElement || document, {
-                  childList: true,
-                  subtree: true,
-                  attributes: true,
-                  attributeFilter: ['content', 'name']
-                });
-                if (document.readyState === 'loading') {
-                  document.addEventListener('DOMContentLoaded', enforceDesktopViewport);
-                }
-              } catch (e) {}
-            })();
-        """.trimIndent()
-
-        private val JS_INSTALL_PASSIVE_OBSERVER = """
-            (function() {
-              if (window.__wuppObserverInstalled) { return; }
-              window.__wuppObserverInstalled = true;
-              var lastAuth = '';
-              var lastCode = '';
-              var lastCallSig = '';
-
-              function textOf(el) {
-                return (el && (el.innerText || el.textContent) || '').trim();
-              }
-              function hasIcon(name) {
-                return !!document.querySelector('[data-icon="' + name + '"]');
-              }
-              function findBtnByLabel(re) {
-                var els = document.querySelectorAll('button,[role="button"],[aria-label]');
-                for (var i = 0; i < els.length; i++) {
-                  var al = els[i].getAttribute('aria-label') || '';
-                  if (re.test(al) || re.test(textOf(els[i]))) return els[i];
-                }
-                return null;
-              }
-              function readPairingCode() {
-                var attrEl = document.querySelector('[data-link-code]');
-                if (attrEl) {
-                  var rawAttr = (attrEl.getAttribute('data-link-code') || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
-                  if (/^[A-Z0-9]{8}$/.test(rawAttr)) {
-                    return rawAttr.slice(0, 4) + '-' + rawAttr.slice(4, 8);
-                  }
-                }
-                var boxes = document.querySelectorAll('[data-testid*="link-device-phone-number-code"], [aria-details*="link-device-phone-number-code"], [aria-label*="Enter code" i], [aria-label*="pairing code" i], [data-ref]');
-                for (var b = 0; b < boxes.length; b++) {
-                  var raw = textOf(boxes[b]).replace(/[^A-Z0-9-]/gi, '').toUpperCase();
-                  var m = raw.match(/([A-Z0-9]{4}-?[A-Z0-9]{4})/);
-                  if (m && m[1] && !/LINK|CODE|WHAT|PHON|NUMB/.test(m[1])) {
-                    var c = m[1].replace(/-/g, '');
-                    if (c.length === 8) return c.slice(0, 4) + '-' + c.slice(4, 8);
-                  }
-                }
-                var singleEls = document.querySelectorAll('span, div, strong, b');
-                var bucket = [];
-                var keys = [];
-                for (var j = 0; j < singleEls.length; j++) {
-                  var el = singleEls[j];
-                  if (el.children.length > 0) continue;
-                  var t = textOf(el).toUpperCase();
-                  if (!/^[A-Z0-9]{1}$/.test(t)) continue;
-                  var parent = (el.parentElement && el.parentElement.parentElement) || el.parentElement;
-                  if (!parent) continue;
-                  var idx = keys.indexOf(parent);
-                  if (idx === -1) {
-                    idx = keys.length;
-                    keys.push(parent);
-                    bucket.push('');
-                  }
-                  bucket[idx] += t;
-                }
-                for (var k = 0; k < bucket.length; k++) {
-                  if (/^[A-Z0-9]{8}$/.test(bucket[k])) {
-                    return bucket[k].slice(0, 4) + '-' + bucket[k].slice(4, 8);
-                  }
-                }
-                return '';
-              }
-              window.__wuppReadPairingCode = readPairingCode;
-
-              function inspectDom() {
-                var authenticated = !!(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list-search"]') || document.querySelector('[aria-label*="Search input" i]'));
-                if (authenticated) {
-                  if (lastAuth !== 'AUTHENTICATED') {
-                    lastAuth = 'AUTHENTICATED';
-                    lastCode = '';
-                    WuppCallBridge.onLinkUpdate('AUTHENTICATED', '');
-                  }
-                } else {
-                  var code = readPairingCode();
-                  if (code) {
-                    if (lastAuth !== 'PAIRING_CODE_READY' || lastCode !== code) {
-                      lastAuth = 'PAIRING_CODE_READY';
-                      lastCode = code;
-                      WuppCallBridge.onLinkUpdate('PAIRING_CODE_READY', code);
-                    }
-                  } else if (document.querySelector('canvas[aria-label]') || findBtnByLabel(/link with phone/i)) {
-                    if (lastAuth !== 'NEEDS_PAIRING_CODE') {
-                      lastAuth = 'NEEDS_PAIRING_CODE';
-                      WuppCallBridge.onLinkUpdate('NEEDS_PAIRING_CODE', '');
-                    }
-                  }
-                }
-
-                var acceptBtn = findBtnByLabel(/^(accept|answer|join call)/i) || (hasIcon('call-accept') ? document.querySelector('[data-icon="call-accept"]') : null);
-                var declineBtn = findBtnByLabel(/^(decline|reject|ignore)/i);
-                var endBtn = findBtnByLabel(/^(end call|hang up|leave call)/i) || document.querySelector('[data-icon="call-end"],[data-icon="end-call"]');
-                var videos = document.querySelectorAll('video');
-                var activeVid = false;
-                for (var v = 0; v < videos.length; v++) {
-                  if (!videos[v].muted && videos[v].readyState >= 2 && videos[v].videoWidth > 0) {
-                    activeVid = true;
-                  }
-                  if (videos[v].muted) {
-                    videos[v].setAttribute('data-wupp-self', '1');
-                  } else {
-                    videos[v].removeAttribute('data-wupp-self');
-                  }
-                }
-                var isVideo = activeVid || videos.length > 0 || !!findBtnByLabel(/turn off camera|turn on camera|flip camera/i);
-                var state = 'IDLE';
-                if (acceptBtn) {
-                  state = 'INCOMING_RINGING';
-                } else if (endBtn) {
-                  var bodyTxt = textOf(document.body);
-                  if (/ringing|calling/i.test(bodyTxt) && !activeVid) {
-                    state = 'DIALING';
-                  } else if (/connecting|reconnecting/i.test(bodyTxt) && !activeVid) {
-                    state = 'CONNECTING';
-                  } else {
-                    state = 'ACTIVE';
-                  }
-                }
-                var callerHint = '';
-                var dialog = document.querySelector('[role="dialog"], [aria-label*="call" i]');
-                if (dialog) {
-                  var heading = dialog.querySelector('h1,h2,span[title],span[dir="auto"]');
-                  callerHint = textOf(heading);
-                }
-                var sig = state + '|' + callerHint + '|' + isVideo + '|' + !!acceptBtn + '|' + activeVid;
-                if (sig !== lastCallSig) {
-                  lastCallSig = sig;
-                  WuppCallBridge.onWebCallEvent(state, callerHint, isVideo, !!acceptBtn, activeVid);
-                }
-              }
-
-              var pending = false;
-              var obs = new MutationObserver(function() {
-                if (pending) return;
-                pending = true;
-                setTimeout(function() {
-                  pending = false;
-                  try { inspectDom(); } catch (e) {}
-                }, 140);
-              });
-              obs.observe(document.documentElement || document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-label', 'data-icon', 'src'] });
-              setInterval(function() { try { inspectDom(); } catch (e) {} }, 900);
-              inspectDom();
-
-              function readWaModulesDiag() {
-                var out = '';
-                try {
-                  if (typeof window.require === 'function') {
-                    try {
-                      var uaMod = window.require('WAWebUA');
-                      var u = uaMod && (uaMod.UA || uaMod.default || uaMod);
-                      if (u) {
-                        out += ' waOS=' + u.os + '/br=' + u.browser;
-                      }
-                    } catch (e) {}
-                    try {
-                      var gMod = window.require('WAWebVoipGatingUtils');
-                      if (gMod) {
-                        var unSup = typeof gMod.getUnsupportedBrowserReason === 'function' ? gMod.getUnsupportedBrowserReason() : '?';
-                        if (unSup !== null && typeof window.SharedArrayBuffer === 'function') {
-                          try {
-                            if (gMod.getUnsupportedBrowserReason && typeof gMod.getUnsupportedBrowserReason.reset === 'function') {
-                              gMod.getUnsupportedBrowserReason.reset();
-                              unSup = gMod.getUnsupportedBrowserReason();
-                            }
-                          } catch (e2) {}
-                        }
-                        var dl = typeof gMod.isVoipDownloadEnabled === 'function' ? gMod.isVoipDownloadEnabled() : '?';
-                        var en = typeof gMod.isCallingEnabled === 'function' ? gMod.isCallingEnabled() : '?';
-                        var grp = typeof gMod.isWebGroupCallingUsable === 'function' ? gMod.isWebGroupCallingUsable() : '?';
-                        var chr = '?';
-                        try {
-                          var chrMod = window.require('WAWebVoipChromiumDesktopBrowser');
-                          if (chrMod && typeof chrMod.isChromiumDesktopBrowser === 'function') {
-                            chr = chrMod.isChromiumDesktopBrowser();
-                          }
-                        } catch (e3) {}
-                        if (unSup === null && dl === true && !window.__wuppVoipBooted) {
-                          window.__wuppVoipBooted = true;
-                          try {
-                            var bMod = window.require('WAWebVoipBackendLoadable');
-                            if (bMod && typeof bMod.initializeVoipFromBootGate === 'function') {
-                              bMod.initializeVoipFromBootGate('wupp_boot');
-                            }
-                          } catch (e4) {}
-                        }
-                        out += ' voip=[unSup:' + String(unSup) + ',dl:' + String(dl) + ',en:' + String(en) + ',grp:' + String(grp) + ',chr:' + String(chr) + ']';
-                      }
-                    } catch (e) {}
-                  }
-                } catch (e) {}
-                return out;
-              }
-
-              function readDisabledCallTooltipDiag() {
-                try {
-                  var hdr = document.querySelector('#main header, [data-testid="conversation-header"]');
-                  if (!hdr) return '';
-                  var btns = hdr.querySelectorAll('button, [role="button"], [tabindex]');
-                  var res = [];
-                  for (var i = 0; i < btns.length; i++) {
-                    var b = btns[i];
-                    var al = (b.getAttribute('aria-label') || b.getAttribute('title') || '').trim();
-                    var cs = window.getComputedStyle ? window.getComputedStyle(b) : null;
-                    var dis = !!b.disabled || b.getAttribute('aria-disabled') === 'true' || (cs && parseFloat(cs.opacity || '1') < 0.7);
-                    var extra = '';
-                    try {
-                      var fKey = Object.keys(b).find(function(k) { return k.indexOf('__reactFiber$') === 0; });
-                      var cur = fKey ? b[fKey] : null;
-                      var depth = 0;
-                      while (cur && depth < 10) {
-                        var mp = cur.memoizedProps;
-                        if (mp) {
-                          if (mp.tooltip || mp.tooltipContent || mp.disabledReason || mp.label) {
-                            var tip = mp.tooltipContent || mp.tooltip || mp.disabledReason || mp.label;
-                            if (typeof tip === 'string' && tip.length > 0 && tip.length < 80) {
-                              extra += ' tip=' + tip;
-                              break;
-                            }
-                          }
-                        }
-                        cur = cur.return;
-                        depth++;
-                      }
-                    } catch (e2) {}
-                    if (dis || /call|video|voice/i.test(al)) {
-                      res.push((al || '?') + (dis ? '(dis)' : '(ok)') + extra);
-                    }
-                  }
-                  return res.length ? (' btns=[' + res.join(';') + ']') : '';
-                } catch (e) {
-                  return '';
-                }
-              }
-
-              var lastEnvStr = '';
-              function reportEnv() {
-                try {
-                  var uad = navigator.userAgentData ? (navigator.userAgentData.mobile + '/' + navigator.userAgentData.platform) : 'none';
-                  var coiInfo = window.crossOriginIsolated ? (window.__wuppNativeCoi ? '1(nat)' : '1(js)') : '0';
-                  var sabInfo = (window.__wuppSabMode || (typeof SharedArrayBuffer === 'function' ? 'nat' : '0')) + '/' + (window.__wuppSabPmOk ? 'pm1' : 'pm0');
-                  var apis = 'RTC=' + (typeof RTCPeerConnection === 'function' ? 1 : 0) +
-                    ',VF=' + (typeof VideoFrame === 'function' ? 1 : 0) +
-                    ',VE=' + (typeof VideoEncoder === 'function' ? 1 : 0) +
-                    ',AW=' + (typeof AudioWorkletNode === 'function' ? 1 : 0) +
-                    ',coi=' + coiInfo +
-                    ',sab=' + sabInfo;
-                  var base = 'plt=' + (navigator.platform || '-') +
-                    ' | ua=' + uad +
-                    ' | touch=' + navigator.maxTouchPoints +
-                    ' | vw=' + window.innerWidth + 'x' + window.innerHeight +
-                    ' | ' + apis +
-                    readWaModulesDiag() +
-                    readDisabledCallTooltipDiag();
-                  var micSt = '?';
-                  var devInfo = '?';
-                  var emit = function() {
-                    var full = base + ' | mic=' + micSt + ' | devs=' + devInfo;
-                    if (full !== lastEnvStr) {
-                      lastEnvStr = full;
-                      try { WuppCallBridge.onEnvDiagnostics(full); } catch (e) {}
-                    }
-                  };
-                  var p1 = (navigator.permissions && navigator.permissions.query)
-                    ? navigator.permissions.query({ name: 'microphone' }).then(function(s) { micSt = s ? s.state : '?'; }).catch(function() { micSt = 'err'; })
-                    : Promise.resolve();
-                  var p2 = (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices)
-                    ? navigator.mediaDevices.enumerateDevices().then(function(ds) {
-                        if (!ds) { devInfo = '0'; return; }
-                        var ai = 0, vi = 0, ao = 0;
-                        for (var d = 0; d < ds.length; d++) {
-                          if (ds[d].kind === 'audioinput') ai++;
-                          else if (ds[d].kind === 'videoinput') vi++;
-                          else if (ds[d].kind === 'audiooutput') ao++;
-                        }
-                        devInfo = ai + 'a/' + vi + 'v/' + ao + 'o';
-                      }).catch(function() { devInfo = 'err'; })
-                    : Promise.resolve();
-                  Promise.all([p1, p2]).then(emit, emit);
-                } catch (e) {}
-              }
-              setTimeout(reportEnv, 800);
-              setInterval(reportEnv, 2500);
-            })();
-        """.trimIndent()
-
-        private val JS_ENABLE_VIDEO_CSS = """
-            (function() {
-              var id = 'wupp-call-video-css';
-              var st = document.getElementById(id);
-              if (!st) {
-                st = document.createElement('style');
-                st.id = id;
-                document.head.appendChild(st);
-              }
-              st.textContent =
-                'html, body { background: #000 !important; overflow: hidden !important; }' +
-                '#side, header, footer, [data-testid="chat-list-search"] { opacity: 0 !important; pointer-events: none !important; }' +
-                'button, [role="button"] { opacity: 0 !important; pointer-events: none !important; }' +
-                'video:not([data-wupp-self="1"]):not([muted]) { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important; object-fit: cover !important; z-index: 9998 !important; background: #000 !important; }' +
-                'video[data-wupp-self="1"], video[muted] { position: fixed !important; top: 72px !important; right: 16px !important; width: 108px !important; height: 156px !important; border-radius: 18px !important; object-fit: cover !important; z-index: 9999 !important; box-shadow: 0 8px 24px rgba(0,0,0,0.45) !important; }';
-            })();
-        """.trimIndent()
-
-        private val JS_DISABLE_VIDEO_CSS = """
-            (function() {
-              var st = document.getElementById('wupp-call-video-css');
-              if (st) st.remove();
-            })();
-        """.trimIndent()
-
-        private val JS_REQUEST_PAIRING_CODE_TEMPLATE = """
-            (function() {
-              var digits = __PHONE_DIGITS__;
-              var myGen = (window.__wuppPairGen || 0) + 1;
-              window.__wuppPairGen = myGen;
-              var attempts = 0;
-              var submitted = false;
-              var submittedAt = 0;
-              var lastStatus = '';
-              var lastAltClickAt = 0;
-              var altClickCount = 0;
-              var hasClickedAltLink = false;
-              var lastClickedDesc = 'none';
-
-              function reportStatus(msg) {
-                if (msg && msg !== lastStatus) {
-                  lastStatus = msg;
-                  try { WuppCallBridge.onPairingStatus(msg); } catch (e) {}
-                }
-              }
-
-              function normText(el) {
-                return ((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
-              }
-
-              function isBlockedText(s) {
-                return /terms|privacy|policy|download|get the app|windows|mac|microsoft|help/i.test(s || '');
-              }
-
-              function isElementUsable(el) {
-                if (!el || el.disabled) return false;
-                try {
-                  var cs = window.getComputedStyle(el);
-                  if (!cs || cs.display === 'none' || cs.visibility === 'hidden') return false;
-                  var r = el.getBoundingClientRect();
-                  return r.width > 10 && r.height > 10;
-                } catch (e) {
-                  return true;
-                }
-              }
-
-              function readCodeFallback() {
-                if (typeof window.__wuppReadPairingCode === 'function') {
-                  var fromObs = window.__wuppReadPairingCode();
-                  if (fromObs) return fromObs;
-                }
-                var attrEl = document.querySelector('[data-link-code]');
-                if (attrEl) {
-                  var rawAttr = (attrEl.getAttribute('data-link-code') || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
-                  if (/^[A-Z0-9]{8}$/.test(rawAttr)) {
-                    return rawAttr.slice(0, 4) + '-' + rawAttr.slice(4, 8);
-                  }
-                }
-                return '';
-              }
-
-              function findVisiblePhoneInput() {
-                var selectors = [
-                  'input[aria-label*="phone" i]',
-                  'input[aria-label*="number" i]',
-                  'input[type="tel"]',
-                  'input[inputmode="tel"]',
-                  '[data-testid*="phone"] input',
-                  'input[type="text"]',
-                  'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"])'
-                ];
-                for (var s = 0; s < selectors.length; s++) {
-                  var list = document.querySelectorAll(selectors[s]);
-                  for (var i = 0; i < list.length; i++) {
-                    var el = list[i];
-                    var t = (el.type || '').toLowerCase();
-                    if (t === 'checkbox' || t === 'radio' || t === 'hidden') continue;
-                    var ph = (el.getAttribute('placeholder') || el.getAttribute('aria-label') || '').toLowerCase();
-                    if (ph.indexOf('search') !== -1 || ph.indexOf('country') !== -1) continue;
-                    if (isElementUsable(el)) return el;
-                  }
-                }
-                return null;
-              }
-
-              function findAltLinkingElement() {
-                var phoneRe = /link with phone number|log in with phone number|use phone number|phone number instead/i;
-                if (document.body && document.createTreeWalker) {
-                  var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-                  var node;
-                  while ((node = walker.nextNode())) {
-                    var t = (node.nodeValue || '').replace(/\s+/g, ' ').trim();
-                    if (t.length < 12 || t.length > 60) continue;
-                    if (isBlockedText(t)) continue;
-                    if (!phoneRe.test(t)) continue;
-                    var el = node.parentElement;
-                    if (!el) continue;
-                    var cur = el;
-                    var bestClickable = el;
-                    var depth = 0;
-                    while (cur && cur !== document.body && depth < 5) {
-                      var cTxt = normText(cur);
-                      if (cTxt.length > 65 || isBlockedText(cTxt)) break;
-                      var href = cur.getAttribute ? (cur.getAttribute('href') || '') : '';
-                      if (href && href !== '#' && href.indexOf('web.whatsapp.com') === -1) break;
-                      bestClickable = cur;
-                      var role = cur.getAttribute ? (cur.getAttribute('role') || '') : '';
-                      var tag = (cur.tagName || '').toLowerCase();
-                      if (role === 'button' || tag === 'button' || tag === 'a' || cur.hasAttribute('tabindex')) {
-                        return cur;
-                      }
-                      cur = cur.parentElement;
-                      depth++;
-                    }
-                    return bestClickable;
-                  }
-                }
-                return null;
-              }
-
-              function invokeSingleReactHandler(nodes) {
-                for (var n = 0; n < nodes.length; n++) {
-                  var node = nodes[n];
-                  if (!node) continue;
-                  try {
-                    var keys = Object.keys(node);
-                    for (var k = 0; k < keys.length; k++) {
-                      if (keys[k].indexOf('__reactProps$') === 0) {
-                        var rp = node[keys[k]];
-                        var fn = rp && (rp.onClick || rp.onPress || rp.onPointerUp);
-                        if (typeof fn === 'function') {
-                          fn({
-                            type: 'click',
-                            target: node,
-                            currentTarget: node,
-                            preventDefault: function() {},
-                            stopPropagation: function() {},
-                            nativeEvent: new MouseEvent('click', { bubbles: true, cancelable: true })
-                          });
-                          return true;
-                        }
-                      }
-                      if (keys[k].indexOf('__reactFiber$') === 0) {
-                        var fb = node[keys[k]];
-                        var mp = fb && fb.memoizedProps;
-                        var ffn = mp && (mp.onClick || mp.onPress);
-                        if (typeof ffn === 'function') {
-                          ffn({
-                            type: 'click',
-                            target: node,
-                            currentTarget: node,
-                            preventDefault: function() {},
-                            stopPropagation: function() {},
-                            nativeEvent: new MouseEvent('click', { bubbles: true, cancelable: true })
-                          });
-                          return true;
-                        }
-                      }
-                    }
-                  } catch (e) {}
-                }
-                return false;
-              }
-
-              function activateElement(el, attemptNum) {
-                if (!el) return;
-                var tgt = (el.closest && el.closest('[role="button"],button,a,[tabindex]')) || el;
-                var tgtTxt = normText(tgt);
-                if (tgtTxt.length > 75 || isBlockedText(tgtTxt)) {
-                  tgt = el;
-                }
-                try {
-                  if (tgt.scrollIntoView) {
-                    tgt.scrollIntoView({ block: 'center', inline: 'center' });
-                  }
-                } catch (e) {}
-                try { tgt.focus(); } catch (e) {}
-                var r = tgt.getBoundingClientRect ? tgt.getBoundingClientRect() : null;
-                var cx = (r && r.width > 0) ? (r.left + r.width / 2) : 200;
-                var cy = (r && r.height > 0) ? (r.top + r.height / 2) : 200;
-                var evOpts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 1 };
-                try { tgt.dispatchEvent(new PointerEvent('pointerdown', evOpts)); } catch (e) {}
-                try { tgt.dispatchEvent(new MouseEvent('mousedown', evOpts)); } catch (e) {}
-                try { tgt.dispatchEvent(new PointerEvent('pointerup', evOpts)); } catch (e) {}
-                try { tgt.dispatchEvent(new MouseEvent('mouseup', evOpts)); } catch (e) {}
-                try { tgt.click(); } catch (e) {
-                  try { tgt.dispatchEvent(new MouseEvent('click', evOpts)); } catch (e2) {}
-                }
-                if ((attemptNum || 1) >= 2) {
-                  invokeSingleReactHandler([tgt, el, tgt.parentElement]);
-                  try {
-                    tgt.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-                    tgt.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-                    tgt.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, cancelable: true }));
-                    tgt.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, cancelable: true }));
-                  } catch (e) {}
-                }
-              }
-
-              function setReactInputValue(input, val) {
-                input.focus();
-                try {
-                  var prevVal = input.value;
-                  var tracker = input._valueTracker;
-                  if (tracker) { tracker.setValue(''); }
-                  document.execCommand('selectAll', false, null);
-                  document.execCommand('insertText', false, val);
-                  if (input.value !== val) {
-                    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                    setter.call(input, val);
-                    if (tracker) { tracker.setValue(prevVal); }
-                    input.dispatchEvent(new InputEvent('input', { bubbles: true, data: val, inputType: 'insertText' }));
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
-                  }
-                } catch (e) {
-                  var setter2 = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                  setter2.call(input, val);
-                  input.dispatchEvent(new Event('input', { bubbles: true }));
-                  input.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-                if ((input.value || '').indexOf(val) === -1) {
-                  try {
-                    var keys = Object.keys(input);
-                    for (var k = 0; k < keys.length; k++) {
-                      if (keys[k].indexOf('__reactProps$') === 0) {
-                        var rp = input[keys[k]];
-                        if (rp && typeof rp.onChange === 'function') {
-                          rp.onChange({
-                            target: input,
-                            currentTarget: input,
-                            preventDefault: function() {},
-                            stopPropagation: function() {}
-                          });
-                        }
-                      }
-                    }
-                  } catch (e) {}
-                }
-              }
-
-              function clickNextButton(input) {
-                var nextBtn = document.querySelector('[data-testid*="link-device-phone-number-code-entry-next"]');
-                if (nextBtn && isElementUsable(nextBtn)) {
-                  activateElement(nextBtn);
-                  lastClickedDesc = 'next-testid';
-                  return true;
-                }
-                var candidates = document.querySelectorAll('button, [role="button"], a, span, div');
-                var best = null;
-                var bestLen = 99;
-                for (var i = 0; i < candidates.length; i++) {
-                  var el = candidates[i];
-                  if (!isElementUsable(el)) continue;
-                  var al = (el.getAttribute('aria-label') || '').trim();
-                  var txt = normText(el);
-                  var targetStr = txt || al;
-                  if (targetStr.length > 0 && targetStr.length <= 20 &&
-                      (/^(next|continue|confirm|done|link)$/i.test(txt) || /^(next|continue|confirm|done|link)$/i.test(al))) {
-                    if (targetStr.length <= bestLen) {
-                      bestLen = targetStr.length;
-                      best = el;
-                    }
-                  }
-                }
-                if (best) {
-                  activateElement(best);
-                  lastClickedDesc = 'next:' + (normText(best) || best.getAttribute('aria-label') || 'btn').slice(0, 16);
-                }
-                try {
-                  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-                  input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-                } catch (e) {}
-                return !!best;
-              }
-
-              function step() {
-                if (window.__wuppPairGen !== myGen) return;
-                attempts++;
-
-                var authenticated = !!(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list-search"]'));
-                if (authenticated) {
-                  WuppCallBridge.onLinkUpdate('AUTHENTICATED', '');
-                  return;
-                }
-
-                var code = readCodeFallback();
-                if (code) {
-                  WuppCallBridge.onLinkUpdate('PAIRING_CODE_READY', code);
-                  return;
-                }
-
-                var input = findVisiblePhoneInput();
-                if (input && digits) {
-                  if (!submitted || (Date.now() - submittedAt >= 6000)) {
-                    submitted = true;
-                    submittedAt = Date.now();
-                    reportStatus('Requesting 8-digit pairing code… (' + attempts + ')');
-                    var prefillDigits = (input.value || '').replace(/\D/g, '');
-                    activateElement(input);
-                    input.focus();
-                    setReactInputValue(input, '+' + digits);
-                    var afterDigits = (input.value || '').replace(/\D/g, '');
-                    if (prefillDigits.length > 0 && prefillDigits.length <= 4 && afterDigits === (prefillDigits + digits)) {
-                      setReactInputValue(input, digits.slice(prefillDigits.length));
-                    }
-                    var tail = digits.slice(-7);
-                    if ((input.value || '').replace(/\D/g, '').indexOf(tail) === -1) {
-                      try { WuppCallBridge.requestNativeKeyText('+' + digits, false); } catch (e) {}
-                    }
-                    setTimeout(function() {
-                      if (window.__wuppPairGen !== myGen) return;
-                      clickNextButton(input);
-                    }, 550);
-                  }
-                } else {
-                  var altEl = findAltLinkingElement();
-                  if (altEl) {
-                    hasClickedAltLink = true;
-                    reportStatus('Opening phone linking screen… (' + attempts + ')');
-                    var now = Date.now();
-                    if (now - lastAltClickAt >= 2800) {
-                      lastAltClickAt = now;
-                      altClickCount++;
-                      lastClickedDesc = 'alt:' + (altEl.tagName || '') + ':' + normText(altEl).slice(0, 28);
-                      activateElement(altEl, altClickCount);
-                    }
-                  } else if (!hasClickedAltLink) {
-                    reportStatus('Waiting for WhatsApp Web pairing page… (' + attempts + ')');
-                  } else {
-                    reportStatus('Opening phone linking screen… (' + attempts + ')');
-                  }
-                }
-
-                if (attempts < 45) {
-                  setTimeout(step, 650);
-                } else {
-                  var inputCnt = document.querySelectorAll('input').length;
-                  var snippet = document.body ? (document.body.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 90) : '';
-                  reportStatus('Timed out (inputs=' + inputCnt + ', clicked=' + lastClickedDesc + '): ' + snippet);
-                  WuppCallBridge.onLinkUpdate('ERROR', '');
-                }
-              }
-
-              setTimeout(step, 250);
-            })();
-        """.trimIndent()
-
-        private val JS_DIAL_CONTACT_TEMPLATE = """
-            (function() {
-              var digits = __PHONE_DIGITS__;
-              var contactName = __CONTACT_NAME__;
-              var isVideo = __IS_VIDEO__;
-              var d1 = __DELAY_1__;
-              var d2 = __DELAY_2__;
-              var myGen = (window.__wuppDialGen || 0) + 1;
-              window.__wuppDialGen = myGen;
-
-              function norm(s) {
-                return (s || '').replace(/\s+/g, ' ').trim();
-              }
-
-              function normLower(s) {
-                return norm(s).toLowerCase();
-              }
-
-              function digitsOnly(s) {
-                return (s || '').replace(/\D/g, '');
-              }
-
-              function isVisible(el) {
-                if (!el || el.disabled) return false;
-                try {
-                  var cs = window.getComputedStyle(el);
-                  if (!cs || cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
-                  var r = el.getBoundingClientRect();
-                  return r.width > 4 && r.height > 4;
-                } catch (e) {
-                  return true;
-                }
-              }
-
-              function invokeReactHandler(nodes) {
-                for (var n = 0; n < nodes.length; n++) {
-                  var node = nodes[n];
-                  if (!node) continue;
-                  try {
-                    var keys = Object.keys(node);
-                    for (var k = 0; k < keys.length; k++) {
-                      if (keys[k].indexOf('__reactProps$') === 0) {
-                        var rp = node[keys[k]];
-                        var fn = rp && (rp.onClick || rp.onPress || rp.onMouseDown);
-                        if (typeof fn === 'function') {
-                          fn({
-                            type: 'click',
-                            target: node,
-                            currentTarget: node,
-                            preventDefault: function() {},
-                            stopPropagation: function() {},
-                            nativeEvent: new MouseEvent('click', { bubbles: true, cancelable: true })
-                          });
-                          return true;
-                        }
-                      }
-                      if (keys[k].indexOf('__reactFiber$') === 0) {
-                        var fb = node[keys[k]];
-                        var mp = fb && fb.memoizedProps;
-                        var ffn = mp && (mp.onClick || mp.onPress);
-                        if (typeof ffn === 'function') {
-                          ffn({
-                            type: 'click',
-                            target: node,
-                            currentTarget: node,
-                            preventDefault: function() {},
-                            stopPropagation: function() {},
-                            nativeEvent: new MouseEvent('click', { bubbles: true, cancelable: true })
-                          });
-                          return true;
-                        }
-                      }
-                    }
-                  } catch (e) {}
-                }
-                return false;
-              }
-
-              function clickSingle(el, withReactFallback) {
-                if (!el) return;
-                try { if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
-                try { el.focus(); } catch (e) {}
-                var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-                var cx = (r && r.width > 0) ? (r.left + r.width / 2) : 200;
-                var cy = (r && r.height > 0) ? (r.top + r.height / 2) : 200;
-                var evOpts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 1 };
-                try { el.dispatchEvent(new PointerEvent('pointerdown', evOpts)); } catch (e) {}
-                try { el.dispatchEvent(new MouseEvent('mousedown', evOpts)); } catch (e) {}
-                try { el.dispatchEvent(new PointerEvent('pointerup', evOpts)); } catch (e) {}
-                try { el.dispatchEvent(new MouseEvent('mouseup', evOpts)); } catch (e) {}
-                try { el.click(); } catch (e) {
-                  try { el.dispatchEvent(new MouseEvent('click', evOpts)); } catch (e2) {}
-                }
-                if (withReactFallback) {
-                  invokeReactHandler([el, el.parentElement]);
-                }
-              }
-
-              function nativeTapEl(el) {
-                if (!el) return false;
-                try { if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
-                try {
-                  var r = el.getBoundingClientRect();
-                  if (r && r.width > 0 && r.height > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
-                    var xr = (r.left + r.width / 2) / window.innerWidth;
-                    var yr = (r.top + r.height / 2) / window.innerHeight;
-                    if (xr > 0 && xr < 1 && yr > 0 && yr < 1) {
-                      WuppCallBridge.requestNativeTap(xr, yr);
-                      return true;
-                    }
-                  }
-                } catch (e) {}
-                return false;
-              }
-
-              function findSearchBox() {
-                var sels = [
-                  '[data-testid="chat-list-search"] [contenteditable="true"]',
-                  '[aria-label*="Search input" i][contenteditable="true"]',
-                  '#side [contenteditable="true"][role="textbox"]',
-                  '#side [role="textbox"]',
-                  '#side input[type="text"]',
-                  'input[aria-label*="Search" i]'
-                ];
-                for (var i = 0; i < sels.length; i++) {
-                  var el = document.querySelector(sels[i]);
-                  if (el && isVisible(el)) return el;
-                }
-                return null;
-              }
-
-              function readBoxText(box) {
-                if (!box) return '';
-                return norm(box.value !== undefined ? box.value : box.textContent);
-              }
-
-              function setSearchQuery(box, query) {
-                try {
-                  var clearBtn = document.querySelector('#side [aria-label*="Cancel search" i], #side [data-icon="x-alt"], #side button[aria-label*="Clear" i]');
-                  if (clearBtn && isVisible(clearBtn)) {
-                    clearBtn.click();
-                  }
-                } catch (e) {}
-                nativeTapEl(box);
-                box.focus();
-                try {
-                  var sel = window.getSelection && window.getSelection();
-                  if (sel && document.createRange) {
-                    var range = document.createRange();
-                    range.selectNodeContents(box);
-                    sel.removeAllRanges();
-                    sel.addRange(range);
-                  } else {
-                    document.execCommand('selectAll', false, null);
-                  }
-                  document.execCommand('delete', false, null);
-                  document.execCommand('insertText', false, query);
-                } catch (e) {}
-                var cur = readBoxText(box);
-                if (cur !== norm(query)) {
-                  setTimeout(function() {
-                    if (window.__wuppDialGen !== myGen) return;
-                    box.focus();
-                    try { WuppCallBridge.requestNativeKeyText('__CLEAR__', false); } catch (e) {}
-                    try { WuppCallBridge.requestNativeKeyText(query, false); } catch (e) {}
-                  }, 140);
-                }
-              }
-
-              function getValidChatRows() {
-                var all = document.querySelectorAll('#pane-side [role="listitem"], #pane-side [role="row"]');
-                var valid = [];
-                for (var i = 0; i < all.length; i++) {
-                  var row = all[i];
-                  try {
-                    var r = row.getBoundingClientRect();
-                    if (!r || r.height < 40 || r.width < 80) continue;
-                  } catch (e) {}
-                  var txt = norm(row.innerText || row.textContent);
-                  if (!txt || txt.length < 2) continue;
-                  if (/^(chats|contacts|messages|groups|unread|favorites|archived|locked chats|searching|looking for)/i.test(txt)) continue;
-                  if (row.querySelector('[data-testid*="cell-frame-container"], [role="gridcell"], [tabindex], span[title], img')) {
-                    valid.push(row);
-                  }
-                }
-                return valid;
-              }
-
-              function rowTitleText(row) {
-                var spans = row ? row.querySelectorAll('span[title]') : [];
-                var out = '';
-                for (var i = 0; i < spans.length; i++) {
-                  var t = norm(spans[i].getAttribute('title') || spans[i].innerText || '');
-                  if (t) out += ' ' + t;
-                }
-                return norm(out);
-              }
-
-              function pickBestChatRow(rows, allowBodyAndFallback, preSearchRows) {
-                if (!rows.length) return null;
-                var tail7 = digits.length >= 7 ? digits.slice(-7) : digits;
-                var cleanName = normLower(contactName);
-                var listFiltered = rows.length <= 5 || (preSearchRows > 5 && rows.length < preSearchRows);
-
-                for (var i = 0; i < rows.length; i++) {
-                  var row = rows[i];
-                  var titleTxt = rowTitleText(row);
-                  var titleDigits = digitsOnly(titleTxt);
-                  if (tail7 && titleDigits.indexOf(tail7) !== -1) return row;
-                  if (listFiltered && cleanName.length >= 2 && normLower(titleTxt).indexOf(cleanName) !== -1) return row;
-                }
-                if (allowBodyAndFallback && listFiltered) {
-                  for (var j = 0; j < rows.length; j++) {
-                    var rowB = rows[j];
-                    var txt = norm(rowB.innerText || rowB.textContent);
-                    var rowDigits = digitsOnly(txt);
-                    if (tail7 && rowDigits.indexOf(tail7) !== -1) return rowB;
-                    if (cleanName.length >= 2 && normLower(txt).indexOf(cleanName) !== -1) return rowB;
-                  }
-                  if (rows.length <= 3) {
-                    return rows[0];
-                  }
-                }
-                return null;
-              }
-
-              function findMainHeader() {
-                return document.querySelector('#main header, [data-testid="conversation-header"], [data-testid="conversation-panel-wrapper"] header, #main [role="banner"]');
-              }
-
-              function hasCallEndControl() {
-                if (document.querySelector('[data-icon="call-end"], [data-icon="end-call"]')) return true;
-                var btns = document.querySelectorAll('button, [role="button"], [aria-label]');
-                for (var i = 0; i < btns.length; i++) {
-                  var al = norm(btns[i].getAttribute('aria-label') || '');
-                  if (/^(end call|hang up|leave call)/i.test(al)) return true;
-                }
-                return false;
-              }
-
-              function findHeaderButtons() {
-                var hdr = findMainHeader();
-                if (!hdr) return [];
-                return hdr.querySelectorAll('button, [role="button"], [tabindex]');
-              }
-
-              function isButtonDisabled(el) {
-                if (!el) return true;
-                if (el.disabled || el.getAttribute('aria-disabled') === 'true') return true;
-                try {
-                  var cs = window.getComputedStyle(el);
-                  if (cs && parseFloat(cs.opacity || '1') < 0.6) return true;
-                  var pe = cs ? cs.pointerEvents : '';
-                  if (pe === 'none') return true;
-                } catch (e) {}
-                return false;
-              }
-
-              function buttonLabelAndIcon(b) {
-                var al = norm(b.getAttribute('aria-label') || b.getAttribute('title') || b.innerText || '');
-                if (!al) {
-                  var svgTitle = b.querySelector('svg title');
-                  if (svgTitle) al = norm(svgTitle.textContent || '');
-                }
-                var icEl = b.querySelector('[data-icon]');
-                var ic = icEl ? (icEl.getAttribute('data-icon') || '').toLowerCase() : '';
-                return { al: al, ic: ic };
-              }
-
-              function findHeaderCallButton() {
-                var btns = findHeaderButtons();
-                if (!btns || !btns.length) return null;
-                var specificLabelRe = isVideo ? /video\s*call|start\s*video|video/i : /voice\s*call|audio\s*call|phone\s*call/i;
-                var specificIconSel = isVideo
-                  ? '[data-icon="video-call"],[data-icon="video-call-refreshed"],[data-icon="video"],[data-icon*="video-call"],[data-icon*="videocam"]'
-                  : '[data-icon="voice-call"],[data-icon="voice-call-refreshed"],[data-icon="audio-call"],[data-icon="call"],[data-icon="ic-call"],[data-icon="call-refreshed"],[data-icon="phone"],[data-icon*="voice"],[data-icon*="audio"]';
-
-                var disabledMatch = null;
-                for (var i = 0; i < btns.length; i++) {
-                  var b = btns[i];
-                  try {
-                    var r = b.getBoundingClientRect();
-                    if (!r || r.width < 4 || r.height < 4) continue;
-                  } catch (e) {}
-                  var info = buttonLabelAndIcon(b);
-                  if (/^(search|menu|more options|profile|group info|close|back|attach|mute)/i.test(info.al)) continue;
-                  var matchesDirect = specificLabelRe.test(info.al) || !!b.querySelector(specificIconSel);
-                  if (!isVideo && /video/i.test(info.al) && !/voice|audio/i.test(info.al)) matchesDirect = false;
-                  if (matchesDirect) {
-                    if (!isButtonDisabled(b)) return { el: b, kind: 'direct', disabled: false };
-                    disabledMatch = { el: b, kind: 'direct', disabled: true };
-                  }
-                }
-
-                for (var j = 0; j < btns.length; j++) {
-                  var u = btns[j];
-                  try {
-                    var r2 = u.getBoundingClientRect();
-                    if (!r2 || r2.width < 4 || r2.height < 4) continue;
-                  } catch (e) {}
-                  var uInfo = buttonLabelAndIcon(u);
-                  if (/^(search|menu|more options|profile|group info|close|back|attach|mute)/i.test(uInfo.al)) continue;
-                  var matchesUnified = /^(call|calls|start( a)? call|make( a)? call|voice or video|video or voice)$/i.test(uInfo.al) ||
-                    /\bcall\b/i.test(uInfo.al) ||
-                    ((uInfo.ic.indexOf('call') !== -1 || uInfo.ic.indexOf('phone') !== -1 || uInfo.ic.indexOf('video') !== -1) &&
-                      uInfo.ic.indexOf('missed') === -1 && uInfo.ic.indexOf('history') === -1);
-                  if (matchesUnified) {
-                    if (!isButtonDisabled(u)) return { el: u, kind: 'unified', disabled: false };
-                    if (!disabledMatch) disabledMatch = { el: u, kind: 'unified', disabled: true };
-                  }
-                }
-                return disabledMatch;
-              }
-
-              function findCallSubmenuOrConfirmOption(excludeBtn) {
-                var nodes = document.querySelectorAll('[role="menu"] [role="menuitem"], [role="menu"] button, [role="menu"] [role="button"], [role="application"] [role="button"], [role="dialog"] button, [role="dialog"] [role="button"], div[role="menuitem"], li[role="menuitem"]');
-                var modeRe = isVideo ? /video\s*call|^video$/i : /voice\s*call|audio\s*call|^voice$|^audio$/i;
-                var iconSel = isVideo ? '[data-icon*="video"]' : '[data-icon*="voice"],[data-icon*="audio"],[data-icon="call"],[data-icon*="phone"]';
-                for (var i = 0; i < nodes.length; i++) {
-                  var n = nodes[i];
-                  if (n === excludeBtn || (excludeBtn && excludeBtn.contains(n))) continue;
-                  if (!isVisible(n)) continue;
-                  var txt = norm(n.innerText || n.textContent || n.getAttribute('aria-label') || '');
-                  if (modeRe.test(txt) || n.querySelector(iconSel)) {
-                    return n;
-                  }
-                }
-                for (var j = 0; j < nodes.length; j++) {
-                  var d = nodes[j];
-                  if (d === excludeBtn || (excludeBtn && excludeBtn.contains(d))) continue;
-                  if (!isVisible(d)) continue;
-                  if (!d.closest('[role="dialog"]')) continue;
-                  var dt = norm(d.innerText || d.textContent || d.getAttribute('aria-label') || '');
-                  if (/^(start call|call|continue|allow|ok)$/i.test(dt)) {
-                    return d;
-                  }
-                }
-                return null;
-              }
-
-              function readUnsupportedDialogReason() {
-                var dlgs = document.querySelectorAll('[role="dialog"]');
-                for (var i = 0; i < dlgs.length; i++) {
-                  if (!isVisible(dlgs[i])) continue;
-                  var txt = norm(dlgs[i].innerText || dlgs[i].textContent);
-                  if (/download whatsapp|get the app|get whatsapp|browser isn.?t supported|not available on whatsapp web/i.test(txt)) {
-                    return txt.slice(0, 120);
-                  }
-                }
-                return '';
-              }
-
-              function buildHeaderDiag(rowCount) {
-                var hdr = findMainHeader();
-                var mainAny = !!document.querySelector('#main, [data-testid="conversation-panel-wrapper"], [role="main"]');
-                var btns = findHeaderButtons();
-                var list = [];
-                for (var i = 0; i < btns.length && i < 8; i++) {
-                  var b = btns[i];
-                  var info = buttonLabelAndIcon(b);
-                  var tx = norm(b.innerText || '').slice(0, 16);
-                  var dis = isButtonDisabled(b) ? '(dis)' : '';
-                  list.push((info.al || tx || '-') + '@' + (info.ic || '-') + dis);
-                }
-                var box = findSearchBox();
-                var boxVal = readBoxText(box).slice(0, 18);
-                var dlgs = document.querySelectorAll('[role="dialog"]').length;
-                var ua = navigator.userAgentData ? (navigator.userAgentData.mobile + '/' + navigator.userAgentData.platform) : 'none';
-                return 'w=' + window.innerWidth + 'x' + window.innerHeight +
-                  ',ua=' + ua + ',plt=' + (navigator.platform || '-') +
-                  ',main=' + (!!hdr) + '/' + mainAny + ',rows=' + rowCount + ',box=' + boxVal + ',dlgs=' + dlgs + ',hdr=[' + list.join(';') + ']';
-              }
-
-              var queries = [];
-              if (digits) queries.push('+' + digits);
-              if (digits.length > 10) queries.push(digits.slice(-10));
-              if (digits) queries.push(digits);
-              if (contactName && queries.indexOf(contactName) === -1) queries.push(contactName);
-              var uniqueQueries = [];
-              for (var q = 0; q < queries.length; q++) {
-                if (queries[q] && uniqueQueries.indexOf(queries[q]) === -1) uniqueQueries.push(queries[q]);
-              }
-              if (!uniqueQueries.length) {
-                WuppCallBridge.onDialResult(false, 'No phone number available for this contact');
-                return;
-              }
-
-              var queryIdx = 0;
-              var phase = 'WAIT_SEARCH_BOX';
-              var phaseTicks = 0;
-              var rowClicked = false;
-              var initialRowCount = getValidChatRows().length;
-              var lastRowCount = initialRowCount;
-              var matchedQueryPrefix = '';
-              var clickedCallInfo = null;
-              var callBtnRetries = 0;
-              var submenuClicked = false;
-
-              function runSearchAttempt(box) {
-                initialRowCount = Math.max(initialRowCount, getValidChatRows().length);
-                matchedQueryPrefix = normLower(uniqueQueries[queryIdx]).slice(0, 4);
-                setSearchQuery(box, uniqueQueries[queryIdx]);
-                phase = 'WAIT_ROW';
-                phaseTicks = 0;
-              }
-
-              function openChatRow(row, useNative) {
-                var clickTarget = row.querySelector('[data-testid*="cell-frame-container"], [role="gridcell"], [tabindex="-1"], [tabindex="0"]') || row;
-                clickSingle(clickTarget, true);
-                if (useNative) {
-                  nativeTapEl(clickTarget);
-                }
-              }
-
-              function tick() {
-                if (window.__wuppDialGen !== myGen) return;
-                phaseTicks++;
-
-                if (hasCallEndControl()) {
-                  WuppCallBridge.onDialResult(true, '');
-                  return;
-                }
-
-                var unsupported = readUnsupportedDialogReason();
-                if (unsupported) {
-                  WuppCallBridge.onDialResult(false, 'WhatsApp Web calling unavailable: ' + unsupported);
-                  return;
-                }
-
-                if (phase === 'WAIT_SEARCH_BOX') {
-                  var box = findSearchBox();
-                  if (box) {
-                    runSearchAttempt(box);
-                    setTimeout(tick, Math.max(d1, 850));
-                    return;
-                  }
-                  if (phaseTicks >= 16) {
-                    WuppCallBridge.onDialResult(false, 'WhatsApp Web session not ready yet');
-                    return;
-                  }
-                  setTimeout(tick, 250);
-                  return;
-                }
-
-                if (phase === 'WAIT_ROW') {
-                  var curBox = findSearchBox();
-                  var boxText = normLower(readBoxText(curBox));
-                  var boxHasQuery = !!matchedQueryPrefix && boxText.indexOf(matchedQueryPrefix) !== -1;
-                  var rows = getValidChatRows();
-                  lastRowCount = rows.length;
-                  var settled = boxHasQuery && (phaseTicks >= 2 || rows.length <= 5);
-                  var row = settled ? pickBestChatRow(rows, boxHasQuery, initialRowCount) : null;
-                  if (row) {
-                    openChatRow(row, true);
-                    rowClicked = true;
-                    phase = 'WAIT_HEADER_AND_BTN';
-                    phaseTicks = 0;
-                    setTimeout(tick, Math.max(d2, 650));
-                    return;
-                  }
-                  if (phaseTicks >= 10) {
-                    if (queryIdx + 1 < uniqueQueries.length) {
-                      queryIdx++;
-                      if (curBox) {
-                        runSearchAttempt(curBox);
-                        setTimeout(tick, 750);
-                        return;
-                      }
-                    }
-                    WuppCallBridge.onDialResult(false, 'Contact not found in WhatsApp Web (' + buildHeaderDiag(lastRowCount) + ')');
-                    return;
-                  }
-                  setTimeout(tick, 300);
-                  return;
-                }
-
-                if (phase === 'WAIT_HEADER_AND_BTN') {
-                  var hdr = findMainHeader();
-                  if (!hdr || !isVisible(hdr)) {
-                    if (phaseTicks % 3 === 1 && rowClicked) {
-                      var curBox2 = findSearchBox();
-                      var boxOk2 = !!matchedQueryPrefix && normLower(readBoxText(curBox2)).indexOf(matchedQueryPrefix) !== -1;
-                      var rows2 = getValidChatRows();
-                      var row2 = pickBestChatRow(rows2, boxOk2, initialRowCount);
-                      if (row2) {
-                        openChatRow(row2, true);
-                      }
-                    }
-                    if (phaseTicks >= 18) {
-                      WuppCallBridge.onDialResult(false, 'Call button unavailable in WhatsApp Web (' + buildHeaderDiag(lastRowCount) + ')');
-                      return;
-                    }
-                    setTimeout(tick, 300);
-                    return;
-                  }
-
-                  var found = findHeaderCallButton();
-                  if (found && found.el && !found.disabled) {
-                    clickedCallInfo = found;
-                    if (!nativeTapEl(found.el)) {
-                      clickSingle(found.el, false);
-                    }
-                    phase = 'WAIT_POST_CLICK';
-                    phaseTicks = 0;
-                    setTimeout(tick, 340);
-                    return;
-                  }
-
-                  if (found && found.disabled && phaseTicks >= 6) {
-                    WuppCallBridge.onDialResult(false, 'WhatsApp Web disabled calling in Android WebView (' + buildHeaderDiag(lastRowCount) + ')');
-                    return;
-                  }
-
-                  if (phaseTicks >= 16) {
-                    WuppCallBridge.onDialResult(false, 'Call button unavailable in WhatsApp Web (' + buildHeaderDiag(lastRowCount) + ')');
-                    return;
-                  }
-                  setTimeout(tick, 280);
-                  return;
-                }
-
-                if (phase === 'WAIT_POST_CLICK') {
-                  if (!submenuClicked) {
-                    var subOpt = findCallSubmenuOrConfirmOption(clickedCallInfo ? clickedCallInfo.el : null);
-                    if (subOpt) {
-                      submenuClicked = true;
-                      clickSingle(subOpt, true);
-                      setTimeout(tick, 350);
-                      return;
-                    }
-                  } else {
-                    var confirmOpt = findCallSubmenuOrConfirmOption(clickedCallInfo ? clickedCallInfo.el : null);
-                    if (confirmOpt && confirmOpt.closest('[role="dialog"]')) {
-                      clickSingle(confirmOpt, true);
-                      setTimeout(tick, 350);
-                      return;
-                    }
-                  }
-
-                  if (phaseTicks === 3 && !submenuClicked && callBtnRetries === 0 && clickedCallInfo && clickedCallInfo.el) {
-                    callBtnRetries++;
-                    clickSingle(clickedCallInfo.el, true);
-                  }
-
-                  if (phaseTicks >= 9) {
-                    if (clickedCallInfo && clickedCallInfo.kind === 'unified' && !submenuClicked) {
-                      WuppCallBridge.onDialResult(false, 'Call menu option unavailable in WhatsApp Web (' + buildHeaderDiag(lastRowCount) + ')');
-                    } else {
-                      WuppCallBridge.onDialResult(true, '');
-                    }
-                    return;
-                  }
-                  setTimeout(tick, 280);
-                }
-              }
-
-              setTimeout(tick, 120);
-            })();
-        """.trimIndent()
-
-        private val JS_ANSWER_CALL_TEMPLATE = """
-            (function() {
-              var audioOnly = __AUDIO_ONLY__;
-              if (audioOnly) {
-                var camBtn = document.querySelector('[aria-label*="camera" i]');
-                if (camBtn && /turn off/i.test(camBtn.getAttribute('aria-label') || '')) camBtn.click();
-              }
-              var els = document.querySelectorAll('button,[role="button"],[aria-label]');
-              for (var i = 0; i < els.length; i++) {
-                var al = els[i].getAttribute('aria-label') || els[i].innerText || '';
-                if (/^(accept|answer|join call)/i.test(al.trim())) { els[i].click(); return; }
-              }
-              var ic = document.querySelector('[data-icon="call-accept"]');
-              if (ic) ic.click();
-            })();
-        """.trimIndent()
-
-        private val JS_END_OR_DECLINE_CALL = """
-            (function() {
-              var els = document.querySelectorAll('button,[role="button"],[aria-label]');
-              for (var i = 0; i < els.length; i++) {
-                var al = (els[i].getAttribute('aria-label') || els[i].innerText || '').trim();
-                if (/^(end call|hang up|leave call|decline|reject|ignore)/i.test(al)) {
-                  els[i].click();
-                  return;
-                }
-              }
-              var ic = document.querySelector('[data-icon="call-end"],[data-icon="end-call"]');
-              if (ic) ic.click();
-            })();
-        """.trimIndent()
-
-        private val JS_TOGGLE_MUTE_TEMPLATE = """
-            (function() {
-              var wantMuted = __MUTED__;
-              var els = document.querySelectorAll('button,[role="button"],[aria-label]');
-              for (var i = 0; i < els.length; i++) {
-                var al = els[i].getAttribute('aria-label') || '';
-                if (wantMuted && /^mute/i.test(al) && !/^unmute/i.test(al)) { els[i].click(); return; }
-                if (!wantMuted && /^unmute/i.test(al)) { els[i].click(); return; }
-              }
-            })();
-        """.trimIndent()
-
-        private val JS_TOGGLE_CAMERA_TEMPLATE = """
-            (function() {
-              var wantOff = __CAM_OFF__;
-              var els = document.querySelectorAll('button,[role="button"],[aria-label]');
-              for (var i = 0; i < els.length; i++) {
-                var al = els[i].getAttribute('aria-label') || '';
-                if (wantOff && /turn off camera|stop video/i.test(al)) { els[i].click(); return; }
-                if (!wantOff && /turn on camera|start video/i.test(al)) { els[i].click(); return; }
-              }
-            })();
-        """.trimIndent()
-
-        private val JS_FLIP_CAMERA = """
-            (function() {
-              var els = document.querySelectorAll('button,[role="button"],[aria-label]');
-              for (var i = 0; i < els.length; i++) {
-                var al = els[i].getAttribute('aria-label') || '';
-                if (/switch camera|flip camera/i.test(al)) { els[i].click(); return; }
-              }
-            })();
-        """.trimIndent()
-
-        private val JS_UPGRADE_TO_VIDEO = """
-            (function() {
-              var els = document.querySelectorAll('button,[role="button"],[aria-label]');
-              for (var i = 0; i < els.length; i++) {
-                var al = els[i].getAttribute('aria-label') || '';
-                if (/switch to video|turn on camera|video/i.test(al) && !/turn off/i.test(al)) { els[i].click(); return; }
-              }
-            })();
-        """.trimIndent()
-
-        private val JS_RETURN_NEUTRAL_LANDING = """
-            (function() {
-              try {
-                var clearBtn = document.querySelector('[aria-label="Cancel search"], [data-icon="x-alt"]');
-                if (clearBtn) clearBtn.click();
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-              } catch (e) {}
-            })();
-        """.trimIndent()
+        private val runtimeLock = Any()
+        @Volatile
+        private var sharedRuntime: GeckoRuntime? = null
+        @Volatile
+        private var installedExtension: WebExtension? = null
+        @Volatile
+        private var extensionInstallStarted: Boolean = false
     }
 }

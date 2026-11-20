@@ -61,6 +61,8 @@ data class CallUiState(
 
 private val CHROME_VERSION_REGEX = Regex("""Chrome/\d+(?:\.\d+){0,3}""")
 private const val FALLBACK_CHROME_TOKEN = "Chrome/131.0.0.0"
+private val FIREFOX_VERSION_REGEX = Regex("""Firefox/(\d+(?:\.\d+)?)""")
+private const val FALLBACK_FIREFOX_VERSION = "160.0"
 
 /**
  * Constructs a Windows Desktop User-Agent embedding the exact Chromium token from the local
@@ -69,6 +71,14 @@ private const val FALLBACK_CHROME_TOKEN = "Chrome/131.0.0.0"
 fun buildChromiumMatchedDesktopUa(defaultWebViewUa: String): String {
     val chromeToken = CHROME_VERSION_REGEX.find(defaultWebViewUa)?.value ?: FALLBACK_CHROME_TOKEN
     return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) $chromeToken Safari/537.36"
+}
+
+/**
+ * Constructs a Windows Desktop Firefox User-Agent matching the embedded GeckoView major version.
+ */
+fun buildDesktopFirefoxUa(defaultGeckoUa: String = ""): String {
+    val ver = FIREFOX_VERSION_REGEX.find(defaultGeckoUa)?.groupValues?.getOrNull(1) ?: FALLBACK_FIREFOX_VERSION
+    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:$ver) Gecko/20100101 Firefox/$ver"
 }
 
 /**
