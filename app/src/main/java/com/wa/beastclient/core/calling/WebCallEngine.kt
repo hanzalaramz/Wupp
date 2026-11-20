@@ -51,6 +51,7 @@ class WebCallEngine(
         fun onWebRtcMediaCapture(hasVideo: Boolean)
         fun onDialAttemptFinished(dispatched: Boolean, reason: String)
         fun onEnvDiagnostics(diag: String) {}
+        fun onSessionDied(reason: String) {}
     }
 
     private val appContext = context.applicationContext
@@ -70,18 +71,21 @@ class WebCallEngine(
     private var allowTouchThrough = false
     private var videoOverlayCssActive = false
     private var webRingingMuted = false
+    private var callWakeActive = false
+    private var previewSurfaceActive = false
+    private var keepProcessUnfrozen = false
+    private var sessionCreatedAtMs = 0L
+    private var currentPowerMode = "sleep"
     private var lastTeardownMs = 0L
     private var pendingWarmRunnable: Runnable? = null
     @Volatile
     private var pendingPairingPhoneDigits: String = ""
+    @Volatile
+    private var preferFrontCamera: Boolean = true
 
     val isAttachedAndLoaded: Boolean
         get() = mainSession != null
 
-    /**
-     * Ensures the GeckoSession is created and attached into [container] at full viewport size
-     * so WhatsApp Web maintains desktop layout and active WebRTC pipelines.
-     */
     fun attachToContainer(
         container: ViewGroup,
         showVideoSurface: Boolean,
@@ -93,28 +97,53 @@ class WebCallEngine(
                 backgroundHostContainer = container
             }
             val visible = showVideoSurface || showPairingSurface
+            previewSurfaceActive = showPairingSurface
             allowTouchThrough = visible
             val session = ensureSessionCreatedLocked() ?: return@post
 
-            attachSessionToContainer(
-                session = session,
-                isPopout = false,
-                container = container,
-                visible = visible
-            )
-            popoutSession?.let { popup ->
+            val shouldBindView = visible || callWakeActive || pendingPairingPhoneDigits.isNotEmpty()
+            if (shouldBindView) {
                 attachSessionToContainer(
-                    session = popup,
-                    isPopout = true,
+                    session = session,
+                    isPopout = false,
                     container = container,
                     visible = visible
                 )
+                popoutSession?.let { popup ->
+                    attachSessionToContainer(
+                        session = popup,
+                        isPopout = true,
+                        container = container,
+                        visible = visible
+                    )
+                }
+            } else {
+                detachRenderedViewsLocked()
             }
+            applyPowerStateLocked()
             setVideoCssActive(showVideoSurface)
             if (showPairingSurface) {
                 mainHandler.postDelayed({
                     sendCommand(isPopout = false, JSONObject().put("cmd", "scrollPairing"))
+                    sendCommand(isPopout = false, JSONObject().put("cmd", "requestEnv"))
                 }, 250L)
+            }
+        }
+    }
+
+    private fun detachRenderedViewsLocked() {
+        mainView?.let { mv ->
+            mainView = null
+            runCatching {
+                if (mv.session != null) mv.releaseSession()
+                (mv.parent as? ViewGroup)?.removeView(mv)
+            }
+        }
+        popoutView?.let { pv ->
+            popoutView = null
+            runCatching {
+                if (pv.session != null) pv.releaseSession()
+                (pv.parent as? ViewGroup)?.removeView(pv)
             }
         }
     }
@@ -188,15 +217,22 @@ class WebCallEngine(
             if (backgroundHostContainer === container) {
                 backgroundHostContainer = null
             }
-            val mv = mainView ?: return@post
-            if (mv.parent === container) {
+            val mv = mainView
+            val bg = backgroundHostContainer
+            if (mv != null && mv.parent === container) {
                 runCatching { if (mv.session != null) mv.releaseSession() }
                 container.removeView(mv)
                 mainView = null
-                val bg = backgroundHostContainer
-                if (bg != null && bg !== container && bg.isAttachedToWindow) {
-                    attachToContainer(bg, showVideoSurface = false, showPairingSurface = false)
+            }
+            if (!callWakeActive && !previewSurfaceActive && !videoOverlayCssActive &&
+                bg != null && bg !== container && bg.isAttachedToWindow
+            ) {
+                attachToContainer(bg, showVideoSurface = false, showPairingSurface = false)
+            } else {
+                if (container === hostContainer || previewSurfaceActive) {
+                    previewSurfaceActive = false
                 }
+                applyPowerStateLocked()
             }
         }
     }
@@ -219,13 +255,73 @@ class WebCallEngine(
 
     fun setHighPriorityRenderer(highPriority: Boolean) {
         mainHandler.post {
-            val priority = if (highPriority) GeckoSession.PRIORITY_HIGH else GeckoSession.PRIORITY_DEFAULT
-            runCatching { mainSession?.setPriorityHint(priority) }
-            runCatching { popoutSession?.setPriorityHint(priority) }
+            callWakeActive = highPriority
             if (highPriority) {
-                runCatching { mainSession?.setActive(true) }
-                runCatching { popoutSession?.setActive(true) }
+                val targetContainer = hostContainer ?: backgroundHostContainer
+                val session = mainSession
+                if (session != null && targetContainer != null && mainView == null) {
+                    attachSessionToContainer(
+                        session = session,
+                        isPopout = false,
+                        container = targetContainer,
+                        visible = videoOverlayCssActive || previewSurfaceActive
+                    )
+                }
+            } else if (!previewSurfaceActive && !videoOverlayCssActive) {
+                detachRenderedViewsLocked()
             }
+            applyPowerStateLocked()
+        }
+    }
+
+    fun setIdleKeepProcessUnfrozen(keepUnfrozen: Boolean) {
+        mainHandler.post {
+            keepProcessUnfrozen = keepUnfrozen
+            applyPowerStateLocked()
+        }
+    }
+
+    fun maybeRecycleIfStale(minUptimeMs: Long = 6 * 60 * 60 * 1000L): Boolean {
+        val created = sessionCreatedAtMs
+        if (mainSession == null || callWakeActive || previewSurfaceActive ||
+            videoOverlayCssActive || pendingPairingPhoneDigits.isNotEmpty() || created <= 0L
+        ) {
+            return false
+        }
+        if (System.currentTimeMillis() - created < minUptimeMs) {
+            return false
+        }
+        sessionCreatedAtMs = System.currentTimeMillis()
+        reloadCleanPreservingLogin()
+        return true
+    }
+
+    private fun applyPowerStateLocked() {
+        val awake = callWakeActive || previewSurfaceActive || videoOverlayCssActive || pendingPairingPhoneDigits.isNotEmpty()
+        val nextMode = when {
+            callWakeActive || videoOverlayCssActive -> "call"
+            previewSurfaceActive || pendingPairingPhoneDigits.isNotEmpty() -> "preview"
+            else -> "sleep"
+        }
+        val keepPriorityHigh = awake || keepProcessUnfrozen
+        val prio = if (keepPriorityHigh) GeckoSession.PRIORITY_HIGH else GeckoSession.PRIORITY_DEFAULT
+
+        mainSession?.let { sess ->
+            runCatching { sess.setPriorityHint(prio) }
+            runCatching { sess.settings.suspendMediaWhenInactive = !awake }
+            runCatching { sess.setActive(awake) }
+            if (!awake) {
+                runCatching { sess.setFocused(false) }
+            }
+        }
+        popoutSession?.let { popup ->
+            runCatching { popup.setPriorityHint(GeckoSession.PRIORITY_HIGH) }
+            runCatching { popup.settings.suspendMediaWhenInactive = !awake }
+            runCatching { popup.setActive(awake) }
+        }
+        if (nextMode != currentPowerMode) {
+            currentPowerMode = nextMode
+            sendCommand(isPopout = false, JSONObject().put("cmd", "powerMode").put("mode", nextMode))
         }
     }
 
@@ -285,7 +381,14 @@ class WebCallEngine(
         }
     }
 
-    fun dialContactInWeb(phoneDigits: String, fallbackName: String, isVideo: Boolean) {
+    fun dialContactInWeb(
+        peerJid: String,
+        phoneDigits: String,
+        fallbackName: String,
+        isVideo: Boolean,
+        isGroup: Boolean
+    ) {
+        preferFrontCamera = true
         mainHandler.post {
             val session = ensureSessionCreatedLocked()
             if (session == null) {
@@ -294,16 +397,30 @@ class WebCallEngine(
             }
             setHighPriorityRenderer(true)
             syncPermissionsToExtension(isPopout = false)
+            val cleanDigits = phoneDigits.filter { it.isDigit() }
+            val targetWid = toWhatsAppWebChatWid(peerJid, cleanDigits, isGroup)
             val stepDelay1 = Random.nextLong(380L, 640L)
             val stepDelay2 = Random.nextLong(420L, 740L)
             val cmd = JSONObject()
                 .put("cmd", "dial")
-                .put("digits", phoneDigits.filter { it.isDigit() })
+                .put("peerJid", peerJid.trim())
+                .put("targetWid", targetWid)
+                .put("digits", cleanDigits)
                 .put("contactName", fallbackName.trim())
                 .put("isVideo", isVideo)
+                .put("isGroup", isGroup)
                 .put("delay1", stepDelay1)
                 .put("delay2", stepDelay2)
             sendCommand(isPopout = false, cmd)
+        }
+    }
+
+    fun syncPermissions() {
+        mainHandler.post {
+            syncPermissionsToExtension(isPopout = false)
+            if (popoutSession != null) {
+                syncPermissionsToExtension(isPopout = true)
+            }
         }
     }
 
@@ -348,6 +465,7 @@ class WebCallEngine(
     }
 
     fun flipCameraInWeb() {
+        preferFrontCamera = !preferFrontCamera
         mainHandler.post {
             sendCommand(isPopout = popoutSession != null, JSONObject().put("cmd", "flip"))
         }
@@ -392,19 +510,18 @@ class WebCallEngine(
         mainHandler.post {
             pendingWarmRunnable?.let { mainHandler.removeCallbacks(it) }
             pendingWarmRunnable = null
+            callWakeActive = false
+            previewSurfaceActive = false
+            videoOverlayCssActive = false
+            sessionCreatedAtMs = 0L
+            currentPowerMode = "sleep"
             destroyPopoutSession()
             val session = mainSession
             mainSession = null
             mainPort = null
             pendingMainCommands.clear()
             lastTeardownMs = System.currentTimeMillis()
-            mainView?.let { mv ->
-                mainView = null
-                runCatching {
-                    if (mv.session != null) mv.releaseSession()
-                    (mv.parent as? ViewGroup)?.removeView(mv)
-                }
-            }
+            detachRenderedViewsLocked()
             if (session != null) {
                 runCatching { session.close() }
             }
@@ -484,32 +601,41 @@ class WebCallEngine(
     }
 
     private fun ensureSessionCreatedLocked(): GeckoSession? {
+        val shouldRenderView = callWakeActive || previewSurfaceActive || videoOverlayCssActive ||
+            pendingPairingPhoneDigits.isNotEmpty()
         mainSession?.let { existing ->
-            hostContainer?.let { container ->
-                val mv = mainView
-                if (mv == null || mv.parent !== container) {
-                    attachSessionToContainer(
-                        session = existing,
-                        isPopout = false,
-                        container = container,
-                        visible = allowTouchThrough || videoOverlayCssActive
-                    )
+            if (shouldRenderView) {
+                hostContainer?.let { container ->
+                    val mv = mainView
+                    if (mv == null || mv.parent !== container) {
+                        attachSessionToContainer(
+                            session = existing,
+                            isPopout = false,
+                            container = container,
+                            visible = allowTouchThrough || videoOverlayCssActive
+                        )
+                    }
                 }
             }
+            applyPowerStateLocked()
             return existing
         }
 
         val runtime = ensureRuntimeAndExtension() ?: return null
         val session = createConfiguredSession(runtime = runtime, isPopout = false)
         mainSession = session
-        hostContainer?.let { container ->
-            attachSessionToContainer(
-                session = session,
-                isPopout = false,
-                container = container,
-                visible = allowTouchThrough || videoOverlayCssActive
-            )
+        sessionCreatedAtMs = System.currentTimeMillis()
+        if (shouldRenderView) {
+            hostContainer?.let { container ->
+                attachSessionToContainer(
+                    session = session,
+                    isPopout = false,
+                    container = container,
+                    visible = allowTouchThrough || videoOverlayCssActive
+                )
+            }
         }
+        applyPowerStateLocked()
         listener.onLinkStateChanged(WebLinkState.LOADING, "")
         session.loadUri(WA_WEB_URL)
         return session
@@ -517,11 +643,13 @@ class WebCallEngine(
 
     private fun createConfiguredSession(runtime: GeckoRuntime, isPopout: Boolean): GeckoSession {
         val desktopUa = buildDesktopFirefoxUa(GeckoSession.getDefaultUserAgent())
+        val awake = callWakeActive || previewSurfaceActive || videoOverlayCssActive ||
+            pendingPairingPhoneDigits.isNotEmpty() || isPopout
         val settings = GeckoSessionSettings.Builder()
             .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP)
             .userAgentOverride(desktopUa)
             .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP)
-            .suspendMediaWhenInactive(false)
+            .suspendMediaWhenInactive(!awake)
             .useTrackingProtection(false)
             .allowJavascript(true)
             .build()
@@ -529,8 +657,9 @@ class WebCallEngine(
         val session = GeckoSession(settings)
         configureSessionDelegates(session, runtime, isPopout)
         session.open(runtime)
-        session.setPriorityHint(if (isPopout) GeckoSession.PRIORITY_HIGH else GeckoSession.PRIORITY_DEFAULT)
-        session.setActive(true)
+        val prio = if (isPopout || awake || keepProcessUnfrozen) GeckoSession.PRIORITY_HIGH else GeckoSession.PRIORITY_DEFAULT
+        session.setPriorityHint(prio)
+        session.setActive(awake)
         installedExtension?.let { ext ->
             bindExtensionToSession(ext, session, isPopout)
         }
@@ -548,6 +677,9 @@ class WebCallEngine(
                     }
                     port.setDelegate(createPortDelegate(isPopout))
                     syncPermissionsToExtension(isPopout)
+                    if (!isPopout) {
+                        sendCommand(isPopout = false, JSONObject().put("cmd", "powerMode").put("mode", currentPowerMode))
+                    }
                     flushPendingCommands(isPopout)
                 }
             }
@@ -713,6 +845,10 @@ class WebCallEngine(
             override fun onPageStop(sess: GeckoSession, success: Boolean) {
                 if (!success) return
                 syncPermissionsToExtension(isPopout)
+                if (!isPopout) {
+                    applyPowerStateLocked()
+                    sendCommand(isPopout = false, JSONObject().put("cmd", "powerMode").put("mode", currentPowerMode))
+                }
                 if (videoOverlayCssActive) {
                     sendCommand(isPopout, JSONObject().put("cmd", "videoCss").put("active", true))
                 }
@@ -733,6 +869,15 @@ class WebCallEngine(
         }
 
         session.contentDelegate = object : GeckoSession.ContentDelegate {
+            private fun handleMainTerminated(reason: String) {
+                mainSession = null
+                mainPort = null
+                sessionCreatedAtMs = 0L
+                pendingMainCommands.clear()
+                detachRenderedViewsLocked()
+                listener.onSessionDied(reason)
+            }
+
             override fun onCloseRequest(sess: GeckoSession) {
                 if (isPopout && popoutSession === sess) {
                     destroyPopoutSession()
@@ -740,21 +885,11 @@ class WebCallEngine(
             }
 
             override fun onCrash(sess: GeckoSession) {
-                if (isPopout) {
-                    destroyPopoutSession()
-                } else {
-                    mainSession = null
-                    mainPort = null
-                }
+                if (isPopout) destroyPopoutSession() else handleMainTerminated("crash")
             }
 
             override fun onKill(sess: GeckoSession) {
-                if (isPopout) {
-                    destroyPopoutSession()
-                } else {
-                    mainSession = null
-                    mainPort = null
-                }
+                if (isPopout) destroyPopoutSession() else handleMainTerminated("kill")
             }
         }
 
@@ -815,9 +950,14 @@ class WebCallEngine(
                     null
                 }
                 val selectedVideo = if (hasCam && !video.isNullOrEmpty()) {
+                    val wantFront = preferFrontCamera
                     video.firstOrNull {
                         it.source == GeckoSession.PermissionDelegate.MediaSource.SOURCE_CAMERA &&
-                            it.name?.contains("front", ignoreCase = true) == true
+                            if (wantFront) {
+                                it.name?.contains("front", ignoreCase = true) == true
+                            } else {
+                                it.name?.contains("front", ignoreCase = true) != true
+                            }
                     } ?: video.firstOrNull {
                         it.source == GeckoSession.PermissionDelegate.MediaSource.SOURCE_CAMERA
                     } ?: video.first()

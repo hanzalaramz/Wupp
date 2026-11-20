@@ -46,6 +46,14 @@ class CallingEnginePolicyTest {
     }
 
     @Test
+    fun toWhatsAppWebChatWidFormatsContactsAndGroups() {
+        assertEquals("923356389511@c.us", toWhatsAppWebChatWid("12345@lid", "923356389511", false))
+        assertEquals("120363012345678901@g.us", toWhatsAppWebChatWid("120363012345678901@g.us", "", true))
+        assertEquals("923001234567@c.us", toWhatsAppWebChatWid("923001234567@s.whatsapp.net", "", false))
+        assertEquals("99887766@lid", toWhatsAppWebChatWid("99887766@lid", "", false))
+    }
+
+    @Test
     fun isAllowedWhatsAppPermissionOriginAllowsOnlyHttpsWhatsAppHosts() {
         assertTrue(isAllowedWhatsAppPermissionOrigin("https://web.whatsapp.com"))
         assertTrue(isAllowedWhatsAppPermissionOrigin("https://web.whatsapp.com/"))

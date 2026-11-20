@@ -1,4 +1,6 @@
 # Keep Go gomobile native bridge & methods accessed via reflection
+-keep class com.wa.bridge.** { *; }
+-dontwarn com.wa.bridge.**
 -keep class go.** { *; }
 -dontwarn go.**
 -keep class whatsbridge.** { *; }

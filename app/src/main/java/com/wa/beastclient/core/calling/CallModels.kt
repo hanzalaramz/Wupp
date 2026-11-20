@@ -47,6 +47,7 @@ data class CallUiState(
     val isGroup: Boolean = false,
     val isMuted: Boolean = false,
     val isCameraOff: Boolean = false,
+    val hasRemoteVideo: Boolean = false,
     val audioRoute: CallAudioRoute = CallAudioRoute.EARPIECE,
     val availableRoutes: Set<CallAudioRoute> = setOf(CallAudioRoute.EARPIECE, CallAudioRoute.SPEAKER),
     val canAnswerInApp: Boolean = false,
@@ -124,6 +125,37 @@ fun extractDialablePhoneDigits(
     if (explicit.isNotEmpty() && !explicit.contains("@lid", ignoreCase = true) && !explicit.contains("@g.us", ignoreCase = true)) {
         val d = digitsFromUser(explicit)
         if (d.isNotEmpty()) return d
+    }
+    return ""
+}
+
+/**
+ * Converts a WhatsApp JID + resolved phone digits into WhatsApp Web's canonical WID string
+ * (`<group>@g.us`, `<digits>@c.us`, or `<lid>@lid`) for direct VoIP / chat routing.
+ */
+fun toWhatsAppWebChatWid(
+    peerJid: String,
+    phoneDigits: String = "",
+    isGroup: Boolean = false
+): String {
+    val rawJid = peerJid.trim()
+    val cleanUser = rawJid.substringBefore("@").substringBefore(":").trim()
+    val server = rawJid.substringAfter("@", "").lowercase(Locale.ROOT)
+    if (isGroup || server == "g.us") {
+        return if (cleanUser.isNotEmpty()) "$cleanUser@g.us" else ""
+    }
+    val digits = phoneDigits.filter { it.isDigit() }
+    if (digits.length in 7..16) {
+        return "$digits@c.us"
+    }
+    if (server == "lid" && cleanUser.isNotEmpty()) {
+        return "$cleanUser@lid"
+    }
+    if ((server == "s.whatsapp.net" || server == "c.us") && cleanUser.isNotEmpty()) {
+        val jidDigits = cleanUser.filter { it.isDigit() }
+        if (jidDigits.length in 7..16) {
+            return "$jidDigits@c.us"
+        }
     }
     return ""
 }

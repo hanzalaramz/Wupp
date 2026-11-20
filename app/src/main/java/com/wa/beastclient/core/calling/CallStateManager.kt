@@ -1,10 +1,12 @@
 package com.wa.beastclient.core.calling
 
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.ViewGroup
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.domain.stealth.CallBackendMode
@@ -66,8 +68,11 @@ object CallStateManager {
     private var durationTickerJob: Job? = null
     private var pendingDialRunnable: Job? = null
     private var pairingWatchdogJob: Job? = null
+    private var reviveJob: Job? = null
     private var appInForeground: Boolean = false
     private var lastWebCallState: String = "IDLE"
+    private var sawActiveWebCallInCurrentSession: Boolean = false
+    private var consecutiveReviveAttempts: Int = 0
 
     fun init(context: Context) {
         val ctx = context.applicationContext
@@ -93,8 +98,14 @@ object CallStateManager {
                             pairingWatchdogJob?.cancel()
                             _pairingCode.value = pairingCode
                             _pairingStatus.value = ""
+                        } else if (state == WebLinkState.LOADING) {
+                            if (_pairingCode.value.isNotBlank()) {
+                                _pairingCode.value = ""
+                            }
                         } else if (state == WebLinkState.AUTHENTICATED) {
                             pairingWatchdogJob?.cancel()
+                            reviveJob?.cancel()
+                            consecutiveReviveAttempts = 0
                             if (pairingInProgress) {
                                 _pairingPreviewActive.value = false
                             }
@@ -134,18 +145,13 @@ object CallStateManager {
                     }
 
                     override fun onWebRtcMediaCapture(hasVideo: Boolean) {
-                        if (_uiState.value.phase == CallPhase.DIALING || _uiState.value.phase == CallPhase.INCOMING_RINGING) {
-                            _uiState.update {
-                                it.copy(
-                                    phase = CallPhase.CONNECTING,
-                                    isVideo = it.isVideo || hasVideo,
-                                    statusText = "Connecting…"
-                                )
-                            }
+                        if (hasVideo && (_uiState.value.phase == CallPhase.DIALING || _uiState.value.phase == CallPhase.INCOMING_RINGING)) {
+                            _uiState.update { it.copy(isVideo = true) }
                         }
                     }
 
                     override fun onDialAttemptFinished(dispatched: Boolean, reason: String) {
+                        Log.i("WuppCalling", "dialResult dispatched=$dispatched reason=$reason")
                         if (!dispatched && _uiState.value.phase == CallPhase.DIALING) {
                             failCall(reason.ifBlank { "Couldn't place call in WhatsApp Web" })
                         }
@@ -156,7 +162,34 @@ object CallStateManager {
                             _webEnvDiag.value = diag
                         }
                     }
+
+                    override fun onSessionDied(reason: String) {
+                        Log.w("WuppCalling", "GeckoView session terminated: $reason")
+                        _linkState.value = WebLinkState.UNINITIALIZED
+                        val cfg = StealthMatrixManager.config.value
+                        val wantAlwaysReady = !cfg.offlineMode &&
+                            cfg.callingLinked &&
+                            cfg.callBackendMode == CallBackendMode.ALWAYS_READY
+                        if (!wantAlwaysReady || consecutiveReviveAttempts >= 5) return
+                        reviveJob?.cancel()
+                        val backoffMs = (30_000L shl minOf(consecutiveReviveAttempts, 3))
+                        consecutiveReviveAttempts++
+                        reviveJob = scope.launch {
+                            delay(backoffMs)
+                            val latest = StealthMatrixManager.config.value
+                            if (!latest.offlineMode &&
+                                latest.callingLinked &&
+                                latest.callBackendMode == CallBackendMode.ALWAYS_READY &&
+                                _uiState.value.phase == CallPhase.IDLE
+                            ) {
+                                engine?.ensureWarm(respectCooldown = false)
+                            }
+                        }
+                    }
                 }
+            )
+            engine?.setIdleKeepProcessUnfrozen(
+                StealthMatrixManager.config.value.callBackendMode == CallBackendMode.ALWAYS_READY
             )
         }
     }
@@ -174,7 +207,12 @@ object CallStateManager {
         init(container.context)
         _pairingPreviewActive.value = true
         engine?.ensureWarm(respectCooldown = false)
+        engine?.syncPermissions()
         engine?.attachToContainer(container, showVideoSurface = false, showPairingSurface = true)
+    }
+
+    fun refreshCallingPermissions() {
+        engine?.syncPermissions()
     }
 
     fun detachPairingPreviewHost(container: ViewGroup) {
@@ -189,8 +227,10 @@ object CallStateManager {
     fun onConfigChanged(config: GlobalStealthConfig) {
         if (config.offlineMode || config.callBackendMode == CallBackendMode.OFF) {
             pairingWatchdogJob?.cancel()
+            reviveJob?.cancel()
             pairingInProgress = false
             _pairingStatus.value = ""
+            engine?.setIdleKeepProcessUnfrozen(false)
             if (_uiState.value.phase == CallPhase.IDLE) {
                 smartWarmDestroyJob?.cancel()
                 engine?.teardownImmediate(clearSessionData = false)
@@ -198,6 +238,7 @@ object CallStateManager {
             return
         }
         if (!config.callingLinked) {
+            engine?.setIdleKeepProcessUnfrozen(false)
             if (pairingInProgress) {
                 smartWarmDestroyJob?.cancel()
                 engine?.ensureWarm(respectCooldown = false)
@@ -207,6 +248,7 @@ object CallStateManager {
             }
             return
         }
+        engine?.setIdleKeepProcessUnfrozen(config.callBackendMode == CallBackendMode.ALWAYS_READY)
         when (config.callBackendMode) {
             CallBackendMode.ALWAYS_READY -> {
                 smartWarmDestroyJob?.cancel()
@@ -222,6 +264,15 @@ object CallStateManager {
         }
     }
 
+    fun onTrimMemory(level: Int) {
+        if (level < ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) return
+        val cfg = StealthMatrixManager.config.value
+        if (cfg.offlineMode || !cfg.callingLinked || cfg.callBackendMode != CallBackendMode.ALWAYS_READY) return
+        if (_uiState.value.phase == CallPhase.IDLE && !_pairingPreviewActive.value && !appInForeground) {
+            engine?.maybeRecycleIfStale()
+        }
+    }
+
     fun onAppForegroundChanged(inForeground: Boolean) {
         appInForeground = inForeground
         val cfg = StealthMatrixManager.config.value
@@ -230,6 +281,7 @@ object CallStateManager {
         if (inForeground) {
             smartWarmDestroyJob?.cancel()
             engine?.ensureWarm(respectCooldown = true)
+            engine?.syncPermissions()
         } else if (cfg.callBackendMode == CallBackendMode.SMART_WARM && _uiState.value.phase == CallPhase.IDLE) {
             smartWarmDestroyJob?.cancel()
             smartWarmDestroyJob = scope.launch {
@@ -265,7 +317,10 @@ object CallStateManager {
     fun unlinkCallingEngine() {
         smartWarmDestroyJob?.cancel()
         pairingWatchdogJob?.cancel()
+        reviveJob?.cancel()
+        consecutiveReviveAttempts = 0
         pairingInProgress = false
+        engine?.setIdleKeepProcessUnfrozen(false)
         _pairingCode.value = ""
         _pairingStatus.value = ""
         StealthMatrixManager.updateConfig {
@@ -292,6 +347,8 @@ object CallStateManager {
         }
 
         smartWarmDestroyJob?.cancel()
+        lastWebCallState = "IDLE"
+        sawActiveWebCallInCurrentSession = false
         engine?.setHighPriorityRenderer(true)
         engine?.setWebRingingMuted(true)
         audioController?.startInCallAudio(isVideo)
@@ -347,7 +404,7 @@ object CallStateManager {
                 delay(750L - waited)
             }
             if (_uiState.value.phase != CallPhase.DIALING) return@launch
-            engine?.dialContactInWeb(phoneDigits, peerName, isVideo)
+            engine?.dialContactInWeb(peerJid, phoneDigits, peerName, isVideo, isGroup)
         }
 
         dialTimeoutJob?.cancel()
@@ -436,7 +493,8 @@ object CallStateManager {
         val cur = _uiState.value
         if (cur.phase != CallPhase.INCOMING_RINGING) return
         val useVideo = cur.isVideo && !audioOnly
-        if (!cur.canAnswerInApp && engine?.isAttachedAndLoaded != true) {
+        val sessionReady = engine?.isAttachedAndLoaded == true && _linkState.value == WebLinkState.AUTHENTICATED
+        if (!cur.canAnswerInApp && !sessionReady) {
             val ctx = appContext ?: return
             openOfficialWhatsApp(ctx, cur.peerPhoneDigits)
             finishCallInternal()
@@ -523,6 +581,9 @@ object CallStateManager {
         hasActiveVideo: Boolean
     ) {
         lastWebCallState = webState
+        if (webState != "IDLE") {
+            sawActiveWebCallInCurrentSession = true
+        }
         val cur = _uiState.value
         when (webState) {
             "INCOMING_RINGING" -> {
@@ -556,6 +617,38 @@ object CallStateManager {
                 }
             }
 
+            "CALLING", "DIALING" -> {
+                dialTimeoutJob?.cancel()
+                if (cur.phase == CallPhase.DIALING ||
+                    (cur.phase == CallPhase.CONNECTING && cur.direction == CallDirection.OUTGOING)
+                ) {
+                    _uiState.update {
+                        it.copy(
+                            phase = CallPhase.DIALING,
+                            isVideo = it.isVideo || isVideo || hasActiveVideo,
+                            statusText = "Calling…"
+                        )
+                    }
+                    appContext?.let { CallForegroundService.sync(it, _uiState.value) }
+                }
+            }
+
+            "RINGING" -> {
+                dialTimeoutJob?.cancel()
+                if (cur.phase == CallPhase.DIALING ||
+                    (cur.phase == CallPhase.CONNECTING && cur.direction == CallDirection.OUTGOING)
+                ) {
+                    _uiState.update {
+                        it.copy(
+                            phase = CallPhase.DIALING,
+                            isVideo = it.isVideo || isVideo || hasActiveVideo,
+                            statusText = "Ringing…"
+                        )
+                    }
+                    appContext?.let { CallForegroundService.sync(it, _uiState.value) }
+                }
+            }
+
             "CONNECTING" -> {
                 dialTimeoutJob?.cancel()
                 if (cur.phase == CallPhase.DIALING || cur.phase == CallPhase.INCOMING_RINGING) {
@@ -563,6 +656,7 @@ object CallStateManager {
                         it.copy(
                             phase = CallPhase.CONNECTING,
                             isVideo = it.isVideo || isVideo || hasActiveVideo,
+                            hasRemoteVideo = it.hasRemoteVideo || hasActiveVideo,
                             statusText = "Connecting…"
                         )
                     }
@@ -573,15 +667,28 @@ object CallStateManager {
             "ACTIVE" -> {
                 dialTimeoutJob?.cancel()
                 if (cur.phase == CallPhase.DIALING || cur.phase == CallPhase.CONNECTING) {
+                    _uiState.update { it.copy(hasRemoteVideo = hasActiveVideo) }
                     markCallActive(cur.isVideo || hasActiveVideo)
-                } else if (cur.phase == CallPhase.ACTIVE && (hasActiveVideo && !cur.isVideo)) {
-                    _uiState.update { it.copy(isVideo = true) }
-                    engine?.setVideoCssActive(true)
+                } else if (cur.phase == CallPhase.ACTIVE) {
+                    if (hasActiveVideo != cur.hasRemoteVideo || (hasActiveVideo && !cur.isVideo)) {
+                        _uiState.update {
+                            it.copy(
+                                isVideo = it.isVideo || hasActiveVideo,
+                                hasRemoteVideo = hasActiveVideo
+                            )
+                        }
+                        if (hasActiveVideo) {
+                            engine?.setVideoCssActive(true)
+                        }
+                    }
                 }
             }
 
             "IDLE" -> {
-                if (cur.phase == CallPhase.CONNECTING || cur.phase == CallPhase.ACTIVE) {
+                if (cur.phase == CallPhase.CONNECTING ||
+                    cur.phase == CallPhase.ACTIVE ||
+                    (cur.phase == CallPhase.DIALING && sawActiveWebCallInCurrentSession)
+                ) {
                     finishCallInternal()
                 }
             }
@@ -590,7 +697,7 @@ object CallStateManager {
 
     private fun onVoiceAudioPlaybackConfirmed() {
         val cur = _uiState.value
-        if (cur.phase == CallPhase.DIALING || cur.phase == CallPhase.CONNECTING) {
+        if (cur.phase == CallPhase.CONNECTING && lastWebCallState != "DIALING") {
             markCallActive(cur.isVideo)
         }
     }
@@ -630,6 +737,7 @@ object CallStateManager {
         pendingDialRunnable?.cancel()
         dialTimeoutJob?.cancel()
         durationTickerJob?.cancel()
+        sawActiveWebCallInCurrentSession = false
         audioController?.stopAll()
         engine?.setVideoCssActive(false)
         engine?.setHighPriorityRenderer(false)
@@ -649,6 +757,7 @@ object CallStateManager {
         dialTimeoutJob?.cancel()
         durationTickerJob?.cancel()
         lastWebCallState = "IDLE"
+        sawActiveWebCallInCurrentSession = false
         audioController?.stopAll()
         engine?.setVideoCssActive(false)
         engine?.setWebRingingMuted(false)

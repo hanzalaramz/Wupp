@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.17] - 2026-11-21
+
+### 🛠️ Fixes
+- 📞 **Direct Calling Router & Status:** Fixed calls dialing the wrong chat by routing directly via target chat IDs, and fixed `Calling…` → `Ringing…` → `Connecting…` states plus full-screen video switching.
+- 🔗 **Calling Setup Sync Transition:** Cleared stale pairing codes as soon as WhatsApp Web starts loading chats after phone-code linking.
+- 🔋 **Calling Efficiency & Smaller APK:** Put background calling to sleep cleanly between calls with event-driven listeners and compressed native libraries to shrink APK size.
+
 ## [0.3.5-pre.16] - 2026-11-21
 
 ### 🛠️ Fixes

@@ -262,7 +262,11 @@ private fun CallScreenContent(
     onDismissFailed: () -> Unit
 ) {
     val mono = LocalWaMonoFamily.current
-    val showVideoFeed = state.isVideo && state.phase == CallPhase.ACTIVE && !state.isCameraOff
+    val showVideoFeed = state.isVideo && (
+        state.phase == CallPhase.ACTIVE ||
+            state.phase == CallPhase.CONNECTING ||
+            state.phase == CallPhase.DIALING
+        ) && (!state.isCameraOff || state.hasRemoteVideo)
     var webHostRef by remember { mutableStateOf<FrameLayout?>(null) }
     var showChrome by remember { mutableStateOf(true) }
     var showRouteMenu by remember { mutableStateOf(false) }

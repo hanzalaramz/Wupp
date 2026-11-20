@@ -182,6 +182,173 @@
     return;
   }
 
+  function newPageObj() {
+    return new pageWin.Object();
+  }
+
+  function newPageArr(items) {
+    var arr = new pageWin.Array();
+    if (items && items.length) {
+      for (var i = 0; i < items.length; i++) arr.push(items[i]);
+    }
+    return arr;
+  }
+
+  var waModCache = {};
+  var waModulesMapScanned = false;
+
+  function requireWa(id) {
+    try {
+      if (typeof pageWin.require === "function") {
+        return pageWin.require(id);
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function findWaModule(cacheKey, candidateIds, predicate) {
+    if (waModCache[cacheKey]) return waModCache[cacheKey];
+    if (candidateIds && candidateIds.length) {
+      for (var i = 0; i < candidateIds.length; i++) {
+        var mod = requireWa(candidateIds[i]);
+        if (mod && (!predicate || predicate(mod))) {
+          waModCache[cacheKey] = mod;
+          return mod;
+        }
+      }
+    }
+    try {
+      var dbg = pageWin.__debug;
+      var map = dbg && dbg.modulesMap;
+      if (map && typeof map === "object") {
+        var keys = Object.keys(map);
+        for (var k = 0; k < keys.length; k++) {
+          var id = keys[k];
+          if (id.indexOf("WAWeb") !== 0 && id.indexOf("useWAWeb") !== 0) continue;
+          if (!/(?:Call|Chat|Wid|Cmd|Voip|QueryExist|FindChat)/i.test(id)) continue;
+          var m = requireWa(id);
+          if (m && predicate && predicate(m)) {
+            waModCache[cacheKey] = m;
+            return m;
+          }
+        }
+        waModulesMapScanned = true;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function resolveCallCollection() {
+    var m = findWaModule("CallCollection", ["WAWebCallCollection"], function (mod) {
+      var col = (mod && (mod.CallCollection || mod.default || mod));
+      return !!(col && typeof col === "object" && ("activeCall" in col) && typeof col.getModelsArray === "function");
+    });
+    return m ? (m.CallCollection || m.default || m) : null;
+  }
+
+  function resolveChatCollection() {
+    var m = findWaModule("ChatCollection", ["WAWebChatCollection"], function (mod) {
+      var col = (mod && (mod.ChatCollection || mod.default || mod));
+      return !!(col && typeof col === "object" && typeof col.get === "function" && typeof col.getActive === "function");
+    });
+    return m ? (m.ChatCollection || m.default || m) : null;
+  }
+
+  function resolveCmd() {
+    var m = findWaModule("Cmd", ["WAWebCmd"], function (mod) {
+      var c = (mod && (mod.Cmd || mod.default || mod));
+      return !!(c && typeof c.openChatBottom === "function");
+    });
+    return m ? (m.Cmd || m.default || m) : null;
+  }
+
+  function resolveWidFactory() {
+    return findWaModule("WidFactory", ["WAWebWidFactory"], function (mod) {
+      return !!(mod && typeof mod.createWid === "function");
+    });
+  }
+
+  function resolveVoipStackSync() {
+    var m = findWaModule("VoipStackInterface", ["WAWebVoipStackInterface"], function (mod) {
+      return !!(mod && (typeof mod.getCachedVoipStackInterface === "function" || typeof mod.getVoipStackInterface === "function"));
+    });
+    if (!m) return null;
+    try {
+      if (typeof m.getCachedVoipStackInterface === "function") {
+        return m.getCachedVoipStackInterface();
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function getVoipStackAsync(cb) {
+    var m = findWaModule("VoipStackInterface", ["WAWebVoipStackInterface"], function (mod) {
+      return !!(mod && typeof mod.getVoipStackInterface === "function");
+    });
+    if (!m) { cb(null); return; }
+    try {
+      var cached = typeof m.getCachedVoipStackInterface === "function" ? m.getCachedVoipStackInterface() : null;
+      if (cached) { cb(cached); return; }
+      var pr = m.getVoipStackInterface();
+      if (pr && typeof pr.then === "function") {
+        pr.then(toPageFn(function (stack) { cb(stack || null); }), toPageFn(function () { cb(null); }));
+      } else {
+        cb(pr || null);
+      }
+    } catch (e) {
+      cb(null);
+    }
+  }
+
+  function ensureVoipBundlesLoaded(cb) {
+    var startMod = findWaModule("VoipStartCall", ["WAWebVoipStartCall"], function (mod) {
+      return !!(mod && typeof mod.startWAWebVoipCall === "function");
+    });
+    var stackMod = findWaModule("VoipStackInterface", ["WAWebVoipStackInterface"], function (mod) {
+      return !!(mod && typeof mod.getVoipStackInterface === "function");
+    });
+    if (startMod && stackMod) {
+      cb();
+      return;
+    }
+    var bl = requireWa("Bootloader");
+    if (!bl || typeof bl.loadModules !== "function") {
+      cb();
+      return;
+    }
+    var done = false;
+    var finish = function () {
+      if (done) return;
+      done = true;
+      cb();
+    };
+    setTimeout(finish, 2600);
+    try {
+      var comps = [];
+      try {
+        var cmap = bl.__debug && bl.__debug.componentMap;
+        var baseComps = ["WAWebCallButtons.react", "WAWebVoipCallsTabDrawerFlow.react", "WAWebVoipStackInterfaceImpl"];
+        for (var i = 0; i < baseComps.length; i++) {
+          if (!cmap || cmap[baseComps[i]]) comps.push(baseComps[i]);
+        }
+        if (cmap && comps.length < 3) {
+          var cKeys = Object.keys(cmap);
+          for (var j = 0; j < cKeys.length && comps.length < 6; j++) {
+            if (/CallButtons|VoipCallsTab|VoipStackInterface/i.test(cKeys[j]) && comps.indexOf(cKeys[j]) === -1) {
+              comps.push(cKeys[j]);
+            }
+          }
+        }
+      } catch (e2) {
+        comps = ["WAWebCallButtons.react", "WAWebVoipCallsTabDrawerFlow.react", "WAWebVoipStackInterfaceImpl"];
+      }
+      if (!comps.length) { finish(); return; }
+      bl.loadModules(newPageArr(comps), toPageFn(finish), "wupp");
+    } catch (e) {
+      finish();
+    }
+  }
+
   var nativePort = null;
   var pendingOutbox = [];
   var ringMuted = false;
@@ -215,12 +382,128 @@
     }
   }
 
+  function classifySelfVideo(v) {
+    try {
+      if (v.getAttribute("data-wupp-self") === "1") return true;
+      var pv = unwrap(v);
+      var so = pv && pv.srcObject;
+      if (so && typeof so.getVideoTracks === "function") {
+        var tracks = so.getVideoTracks();
+        for (var i = 0; i < tracks.length; i++) {
+          var tr = tracks[i];
+          var lbl = String((tr && tr.label) || "").toLowerCase();
+          if (/camera|front|back|rear|facing/.test(lbl)) return true;
+          try {
+            var st = typeof tr.getSettings === "function" ? tr.getSettings() : null;
+            if (st && (st.facingMode === "user" || st.facingMode === "environment")) {
+              return true;
+            }
+          } catch (e2) {}
+        }
+      }
+      var cs = window.getComputedStyle ? window.getComputedStyle(v) : null;
+      var tf = cs && cs.transform;
+      if (tf && tf.indexOf("matrix(-") === 0) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  function syncVideoLayout() {
+    var videos = document.querySelectorAll("video");
+    var activeVideos = [];
+    var playingAny = false;
+    var remotePlaying = false;
+    for (var i = 0; i < videos.length; i++) {
+      var v = videos[i];
+      var pv = unwrap(v);
+      var hasMedia = !!(v.readyState >= 1 || v.videoWidth > 0 || (pv && pv.srcObject));
+      if (hasMedia) {
+        activeVideos.push(v);
+        if (v.readyState >= 2 && v.videoWidth > 0) {
+          playingAny = true;
+        }
+      }
+      if (videoCssActive && hasMedia) {
+        var p = v.parentElement;
+        while (p && p !== document.documentElement) {
+          if (!p.hasAttribute("data-wupp-vpath")) {
+            p.setAttribute("data-wupp-vpath", "1");
+          }
+          p = p.parentElement;
+        }
+      }
+    }
+
+    if (!videoCssActive || !activeVideos.length) {
+      var oldPaths = document.querySelectorAll("[data-wupp-vpath]");
+      for (var op = 0; op < oldPaths.length; op++) {
+        oldPaths[op].removeAttribute("data-wupp-vpath");
+      }
+      for (var ov = 0; ov < videos.length; ov++) {
+        videos[ov].removeAttribute("data-wupp-role");
+      }
+      if (activeVideos.length === 1 && !classifySelfVideo(activeVideos[0]) && activeVideos[0].videoWidth > 0) {
+        remotePlaying = true;
+      } else if (activeVideos.length >= 2) {
+        remotePlaying = playingAny;
+      }
+      return { count: videos.length, activeVid: playingAny, remoteVid: remotePlaying };
+    }
+
+    if (activeVideos.length === 1) {
+      var sole = activeVideos[0];
+      if (classifySelfVideo(sole)) {
+        sole.setAttribute("data-wupp-self", "1");
+      } else if (sole.readyState >= 2 && sole.videoWidth > 0) {
+        remotePlaying = true;
+      }
+      if (sole.getAttribute("data-wupp-role") !== "main") {
+        sole.setAttribute("data-wupp-role", "main");
+      }
+    } else {
+      var selfIdx = -1;
+      for (var s = 0; s < activeVideos.length; s++) {
+        if (classifySelfVideo(activeVideos[s])) {
+          selfIdx = s;
+          break;
+        }
+      }
+      if (selfIdx === -1) {
+        for (var m = activeVideos.length - 1; m >= 0; m--) {
+          if (activeVideos[m].muted) {
+            selfIdx = m;
+            break;
+          }
+        }
+      }
+      if (selfIdx === -1) selfIdx = activeVideos.length - 1;
+      for (var r = 0; r < activeVideos.length; r++) {
+        var targetRole = (r === selfIdx) ? "pip" : "main";
+        if (r === selfIdx) {
+          activeVideos[r].setAttribute("data-wupp-self", "1");
+        } else if (activeVideos[r].readyState >= 2 && activeVideos[r].videoWidth > 0) {
+          remotePlaying = true;
+        }
+        if (activeVideos[r].getAttribute("data-wupp-role") !== targetRole) {
+          activeVideos[r].setAttribute("data-wupp-role", targetRole);
+        }
+      }
+    }
+    return { count: videos.length, activeVid: playingAny, remoteVid: remotePlaying };
+  }
+
   function applyVideoCss(active) {
     videoCssActive = !!active;
+    var rootEl = document.documentElement;
+    if (rootEl) {
+      if (videoCssActive) rootEl.classList.add("wupp-video-active");
+      else rootEl.classList.remove("wupp-video-active");
+    }
     var id = "wupp-call-video-css";
     var st = document.getElementById(id);
     if (!videoCssActive) {
       if (st) st.remove();
+      syncVideoLayout();
       return;
     }
     if (!st) {
@@ -229,11 +512,13 @@
       (document.head || document.documentElement).appendChild(st);
     }
     st.textContent =
-      "html, body { background: #000 !important; overflow: hidden !important; }" +
-      "#side, header, footer, [data-testid=\"chat-list-search\"] { opacity: 0 !important; pointer-events: none !important; }" +
-      "button, [role=\"button\"] { opacity: 0 !important; pointer-events: none !important; }" +
-      "video:not([data-wupp-self=\"1\"]):not([muted]) { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important; object-fit: cover !important; z-index: 9998 !important; background: #000 !important; }" +
-      "video[data-wupp-self=\"1\"], video[muted] { position: fixed !important; top: 72px !important; right: 16px !important; width: 108px !important; height: 156px !important; border-radius: 18px !important; object-fit: cover !important; z-index: 9999 !important; box-shadow: 0 8px 24px rgba(0,0,0,0.45) !important; }";
+      "html.wupp-video-active, html.wupp-video-active body { background: #000 !important; overflow: hidden !important; margin: 0 !important; padding: 0 !important; }" +
+      "html.wupp-video-active body *:not(video) { visibility: hidden !important; pointer-events: none !important; }" +
+      "html.wupp-video-active [data-wupp-vpath=\"1\"] { transform: none !important; filter: none !important; backdrop-filter: none !important; perspective: none !important; contain: none !important; clip-path: none !important; clip: auto !important; overflow: visible !important; }" +
+      "html.wupp-video-active video { visibility: visible !important; opacity: 1 !important; display: block !important; }" +
+      "html.wupp-video-active video[data-wupp-role=\"main\"] { position: fixed !important; inset: 0 !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important; width: 100vw !important; height: 100vh !important; max-width: none !important; max-height: none !important; border-radius: 0 !important; object-fit: cover !important; z-index: 9998 !important; background: #000 !important; }" +
+      "html.wupp-video-active video[data-wupp-role=\"pip\"] { position: fixed !important; top: 88px !important; left: auto !important; right: 16px !important; bottom: auto !important; width: 108px !important; height: 156px !important; max-width: none !important; max-height: none !important; border-radius: 18px !important; object-fit: cover !important; z-index: 9999 !important; box-shadow: 0 8px 24px rgba(0,0,0,0.45) !important; }";
+    syncVideoLayout();
   }
 
   function applyRingMute(muted) {
@@ -306,15 +591,168 @@
     return "";
   }
 
+  function isSyncingChatsScreen() {
+    if (document.querySelector("canvas[aria-label]")) return false;
+    var bodyTxt = norm(textOf(document.body));
+    if (/loading your chats|downloading messages|organizing messages|optimizing|synchronizing/i.test(bodyTxt)) {
+      return true;
+    }
+    return !!findBtnByLabel(/^log out$/i);
+  }
+
+  function readNativeActiveCallState() {
+    try {
+      var callStore = resolveCallCollection();
+      var ac = callStore && callStore.activeCall;
+      if (!ac) return null;
+      var stNum = typeof ac.getState === "function" ? ac.getState() : ac.state;
+      var mapped = "";
+      // WAWebVoipWaCallEnums.CallState
+      if (stNum === 3 || stNum === 8) {
+        mapped = "INCOMING_RINGING";
+      } else if (stNum === 1 || stNum === 12 || stNum === 14) {
+        mapped = "CALLING";
+      } else if (stNum === 2 || stNum === 11) {
+        mapped = "RINGING";
+      } else if (stNum === 4 || stNum === 5 || stNum === 9) {
+        mapped = "CONNECTING";
+      } else if (stNum === 6) {
+        mapped = "ACTIVE";
+      } else {
+        return null;
+      }
+      var peerHint = "";
+      try {
+        peerHint = (ac.peerJid && (ac.peerJid.user || (ac.peerJid.toString && ac.peerJid.toString()))) || "";
+      } catch (e2) {}
+      return {
+        state: mapped,
+        isVideo: !!ac.isVideo,
+        peerHint: String(peerHint || ""),
+        canAnswer: mapped === "INCOMING_RINGING"
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
   var lastAuth = "";
   var lastCode = "";
   var lastCallSig = "";
+  var lastCallState = "IDLE";
+  var powerMode = "sleep";
+  var dialInFlight = false;
+  var domObs = null;
+  var domObsActive = false;
+  var fastPollId = null;
+  var slowPollId = null;
+  var hookedCallCol = null;
+
+  function applyIdleSleepCss(sleeping) {
+    var rootEl = document.documentElement;
+    if (rootEl) {
+      if (sleeping) rootEl.classList.add("wupp-idle-sleep");
+      else rootEl.classList.remove("wupp-idle-sleep");
+    }
+    var id = "wupp-idle-sleep-css";
+    var st = document.getElementById(id);
+    if (!sleeping) {
+      if (st) st.remove();
+      return;
+    }
+    if (!st) {
+      st = document.createElement("style");
+      st.id = id;
+      (document.head || document.documentElement).appendChild(st);
+    }
+    st.textContent =
+      "html.wupp-idle-sleep #pane-side, html.wupp-idle-sleep #main { display: none !important; }" +
+      "html.wupp-idle-sleep * { animation: none !important; transition: none !important; }";
+  }
+
+  function ensureCallCollectionHooked() {
+    try {
+      var callCol = resolveCallCollection();
+      if (!callCol || hookedCallCol === callCol) return !!hookedCallCol;
+      if (typeof callCol.on === "function") {
+        hookedCallCol = callCol;
+        var handler = toPageFn(function () {
+          try { inspectDom(); } catch (e) {}
+        });
+        callCol.on("change add remove change:activeCall", handler);
+        return true;
+      }
+    } catch (e) {}
+    return !!hookedCallCol;
+  }
+
+  function syncPowerUiState() {
+    var shouldSleep = powerMode === "sleep" &&
+      lastAuth === "AUTHENTICATED" &&
+      lastCallState === "IDLE" &&
+      !dialInFlight &&
+      !videoCssActive;
+    applyIdleSleepCss(shouldSleep);
+    updateObserverActivity();
+  }
+
+  function updateObserverActivity() {
+    var root = document.documentElement || document.body;
+    var needFast = (lastAuth !== "AUTHENTICATED") ||
+      (powerMode !== "sleep") ||
+      (lastCallState !== "IDLE") ||
+      dialInFlight;
+
+    ensureCallCollectionHooked();
+
+    if (needFast) {
+      if (slowPollId) {
+        clearInterval(slowPollId);
+        slowPollId = null;
+      }
+      if (root && domObs && !domObsActive) {
+        try {
+          domObs.observe(root, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ["aria-label", "data-icon", "src"]
+          });
+          domObsActive = true;
+        } catch (e) {}
+      }
+      if (!fastPollId) {
+        fastPollId = setInterval(function () {
+          try { inspectDom(); } catch (e) {}
+        }, 350);
+      }
+    } else {
+      if (fastPollId) {
+        clearInterval(fastPollId);
+        fastPollId = null;
+      }
+      if (domObs && domObsActive) {
+        try { domObs.disconnect(); } catch (e) {}
+        domObsActive = false;
+      }
+      var fallbackMs = hookedCallCol ? 30000 : 8000;
+      if (!slowPollId) {
+        slowPollId = setInterval(function () {
+          ensureCallCollectionHooked();
+          try { inspectDom(); } catch (e) {}
+        }, fallbackMs);
+      }
+    }
+  }
 
   function inspectDom() {
+    var prevAuth = lastAuth;
+    var cmdObj = resolveCmd();
     var authenticated = !!(
       document.querySelector("#pane-side") ||
       document.querySelector('[data-testid="chat-list-search"]') ||
-      document.querySelector('[aria-label*="Search input" i]')
+      document.querySelector('[aria-label*="Search input" i]') ||
+      (cmdObj && cmdObj.isMainLoaded === true)
     );
     if (authenticated) {
       if (lastAuth !== "AUTHENTICATED") {
@@ -335,46 +773,56 @@
           lastAuth = "NEEDS_PAIRING_CODE";
           sendToApp({ type: "linkUpdate", state: "NEEDS_PAIRING_CODE", code: "" });
         }
+      } else if (isSyncingChatsScreen()) {
+        if (lastAuth !== "SYNCING_CHATS") {
+          lastAuth = "SYNCING_CHATS";
+          lastCode = "";
+          sendToApp({ type: "linkUpdate", state: "LOADING", code: "" });
+          sendToApp({ type: "pairingStatus", status: "Phone linked! Syncing WhatsApp Web chats…" });
+        }
       }
     }
 
+    var nativeCall = readNativeActiveCallState();
     var acceptBtn = findBtnByLabel(/^(accept|answer|join call)/i) ||
       (hasIcon("call-accept") ? document.querySelector('[data-icon="call-accept"]') : null);
     var endBtn = findBtnByLabel(/^(end call|hang up|leave call)/i) ||
       document.querySelector('[data-icon="call-end"],[data-icon="end-call"]');
-    var videos = document.querySelectorAll("video");
-    var activeVid = false;
-    for (var v = 0; v < videos.length; v++) {
-      if (!videos[v].muted && videos[v].readyState >= 2 && videos[v].videoWidth > 0) {
-        activeVid = true;
-      }
-      if (videos[v].muted) {
-        videos[v].setAttribute("data-wupp-self", "1");
-      } else {
-        videos[v].removeAttribute("data-wupp-self");
-      }
-    }
-    var isVideo = activeVid || videos.length > 0 || !!findBtnByLabel(/turn off camera|turn on camera|flip camera/i);
+    var vidInfo = syncVideoLayout();
+    var activeVid = vidInfo.remoteVid;
+    var isVideo = (nativeCall && nativeCall.isVideo) || vidInfo.activeVid || vidInfo.count > 0 || !!findBtnByLabel(/turn off camera|turn on camera|flip camera/i);
     var state = "IDLE";
-    if (acceptBtn) {
+    var canAnswer = false;
+    if (nativeCall) {
+      state = nativeCall.state;
+      canAnswer = nativeCall.canAnswer || !!acceptBtn;
+    } else if (acceptBtn) {
       state = "INCOMING_RINGING";
+      canAnswer = true;
     } else if (endBtn) {
       var bodyTxt = textOf(document.body);
-      if (/ringing|calling/i.test(bodyTxt) && !activeVid) {
-        state = "DIALING";
-      } else if (/connecting|reconnecting/i.test(bodyTxt) && !activeVid) {
-        state = "CONNECTING";
-      } else {
+      var callEl = document.querySelector('[role="dialog"], [aria-label*="call" i]');
+      var callTxt = callEl ? textOf(callEl) : bodyTxt;
+      if (activeVid || /\b\d{1,2}:\d{2}\b/.test(callTxt)) {
         state = "ACTIVE";
+      } else if (/\bringing\b/i.test(callTxt)) {
+        state = "RINGING";
+      } else if (/\b(calling|waiting|dialing)\b/i.test(callTxt)) {
+        state = "CALLING";
+      } else {
+        state = "CONNECTING";
       }
     }
-    var callerHint = "";
+    var callerHint = (nativeCall && nativeCall.peerHint) || "";
     var dialog = document.querySelector('[role="dialog"], [aria-label*="call" i]');
     if (dialog) {
       var heading = dialog.querySelector('h1,h2,span[title],span[dir="auto"]');
-      callerHint = textOf(heading);
+      var hTxt = textOf(heading);
+      if (hTxt) callerHint = hTxt;
     }
-    var sig = state + "|" + callerHint + "|" + isVideo + "|" + !!acceptBtn + "|" + activeVid;
+    var prevCallState = lastCallState;
+    lastCallState = state;
+    var sig = state + "|" + callerHint + "|" + isVideo + "|" + canAnswer + "|" + activeVid;
     if (sig !== lastCallSig) {
       lastCallSig = sig;
       sendToApp({
@@ -382,12 +830,18 @@
         state: state,
         callerHint: callerHint,
         isVideo: isVideo,
-        canAnswer: !!acceptBtn,
+        canAnswer: canAnswer,
         hasActiveVideo: activeVid
       });
     }
     if (ringMuted) {
       applyRingMute(true);
+    }
+    if (lastAuth !== prevAuth) {
+      reportEnv();
+    }
+    if (lastAuth !== prevAuth || lastCallState !== prevCallState) {
+      syncPowerUiState();
     }
   }
 
@@ -404,7 +858,7 @@
       return;
     }
     var pending = false;
-    var obs = new MutationObserver(function () {
+    domObs = new MutationObserver(function () {
       if (pending) return;
       pending = true;
       setTimeout(function () {
@@ -412,13 +866,7 @@
         try { inspectDom(); } catch (e) {}
       }, 140);
     });
-    obs.observe(root, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["aria-label", "data-icon", "src"]
-    });
-    setInterval(function () { try { inspectDom(); } catch (e) {} }, 900);
+    updateObserverActivity();
     inspectDom();
   }
 
@@ -442,6 +890,15 @@
             var grp = typeof gMod.isWebGroupCallingUsable === "function" ? gMod.isWebGroupCallingUsable() : "?";
             out += " voip=[unSup:" + String(unSup) + ",dl:" + String(dl) + ",en:" + String(en) + ",grp:" + String(grp) + "]";
           }
+        } catch (e) {}
+        try {
+          var wfOk = !!resolveWidFactory();
+          var cmdOk = !!resolveCmd();
+          var ccOk = !!resolveCallCollection();
+          var vsOk = !!findWaModule("VoipStartCall", ["WAWebVoipStartCall"], function (m) {
+            return !!(m && typeof m.startWAWebVoipCall === "function");
+          });
+          out += " rte=" + (wfOk ? 1 : 0) + (cmdOk ? 1 : 0) + (ccOk ? 1 : 0) + (vsOk ? 1 : 0);
         } catch (e) {}
       }
     } catch (e) {}
@@ -514,8 +971,9 @@
           sendToApp({ type: "envDiag", diag: full });
         }
       };
-      var p1 = (navigator.permissions && navigator.permissions.query)
-        ? navigator.permissions.query({ name: "microphone" }).then(function (s) { micSt = s ? s.state : "?"; }).catch(function () { micSt = "err"; })
+      var pagePerms = pageWin.navigator && pageWin.navigator.permissions;
+      var p1 = (pagePerms && pagePerms.query)
+        ? pagePerms.query(toPageObj({ name: "microphone" })).then(toPageFn(function (s) { micSt = s ? s.state : "?"; }), toPageFn(function () { micSt = permState.mic ? "granted" : "err"; }))
         : Promise.resolve();
       var p2 = (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices)
         ? navigator.mediaDevices.enumerateDevices().then(function (ds) {
@@ -811,9 +1269,24 @@
       if (window.__wuppPairGen !== myGen) return;
       attempts++;
 
-      var authenticated = !!(document.querySelector("#pane-side") || document.querySelector('[data-testid="chat-list-search"]'));
+      var cmdObj = resolveCmd();
+      var authenticated = !!(
+        document.querySelector("#pane-side") ||
+        document.querySelector('[data-testid="chat-list-search"]') ||
+        (cmdObj && cmdObj.isMainLoaded === true)
+      );
       if (authenticated) {
         sendToApp({ type: "linkUpdate", state: "AUTHENTICATED", code: "" });
+        return;
+      }
+
+      if (isSyncingChatsScreen()) {
+        submitted = true;
+        reportStatus("Phone linked! Syncing WhatsApp Web chats…");
+        sendToApp({ type: "linkUpdate", state: "LOADING", code: "" });
+        if (attempts < 120) {
+          setTimeout(step, 800);
+        }
         return;
       }
 
@@ -865,7 +1338,7 @@
         }
       }
 
-      if (attempts < 45) {
+      if (attempts < 55) {
         setTimeout(step, 650);
       } else {
         var inputCnt = document.querySelectorAll("input").length;
@@ -878,10 +1351,23 @@
     setTimeout(step, 250);
   }
 
-  function runDialContact(digits, contactName, isVideo, d1, d2) {
+  function runDialContact(targetWidStr, peerJidStr, digits, contactName, isVideo, isGroup, d1, d2) {
     var cleanDigits = digitsOnly(digits);
     var myGen = (window.__wuppDialGen || 0) + 1;
     window.__wuppDialGen = myGen;
+    dialInFlight = true;
+    syncPowerUiState();
+
+    function emitDialResult(dispatched, reason) {
+      if (window.__wuppDialGen === myGen) {
+        dialInFlight = false;
+        if (!dispatched && lastCallState === "IDLE" && powerMode === "call") {
+          powerMode = "sleep";
+        }
+        syncPowerUiState();
+      }
+      sendToApp({ type: "dialResult", dispatched: !!dispatched, reason: reason || "" });
+    }
 
     function findSearchBox() {
       var sels = [
@@ -1125,6 +1611,224 @@
         ",main=" + (!!hdr) + ",rows=" + rowCount + ",hdr=[" + list.join(";") + "]";
     }
 
+    function matchesTargetChat() {
+      var tail7 = cleanDigits.length >= 7 ? cleanDigits.slice(-7) : cleanDigits;
+      var cleanName = normLower(contactName);
+      var targetUser = (targetWidStr || peerJidStr || "").split("@")[0].split(":")[0];
+
+      // 1. Check active ChatModel in ChatCollection (authoritative when present)
+      try {
+        var chatCol = resolveChatCollection();
+        var activeChat = chatCol && typeof chatCol.getActive === "function" ? chatCol.getActive() : null;
+        if (activeChat && activeChat.id) {
+          var acUser = String(activeChat.id.user || "");
+          var acSer = String(activeChat.id._serialized || (activeChat.id.toString && activeChat.id.toString()) || "");
+          if (targetWidStr && acSer === targetWidStr) return true;
+          if (isGroup && targetUser && acUser === targetUser) return true;
+          if (tail7 && digitsOnly(acUser).indexOf(tail7) !== -1) return true;
+          // Active chat exists in store and is definitely SOMEONE ELSE!
+          var acTitle = normLower(activeChat.formattedTitle || activeChat.name || "");
+          if (cleanName.length >= 2 && acTitle && acTitle.indexOf(cleanName) !== -1) return true;
+          if (acSer) return false;
+        }
+      } catch (e) {}
+
+      // 2. Fallback: verify #main header text matches target digits or contact name
+      var hdr = findMainHeader();
+      if (!hdr || !isElementUsable(hdr)) return false;
+      var hdrTxt = norm(textOf(hdr));
+      if (!hdrTxt) return false;
+      var hdrDigits = digitsOnly(hdrTxt);
+      if (tail7 && hdrDigits.indexOf(tail7) !== -1) return true;
+      if (cleanName.length >= 2 && normLower(hdrTxt).indexOf(cleanName) !== -1) return true;
+      return false;
+    }
+
+    function resolveTargetChatViaStore(widObj, onChat) {
+      try {
+        var chatCol = resolveChatCollection();
+        var existing = chatCol && typeof chatCol.get === "function" ? chatCol.get(widObj) : null;
+        if (existing) { onChat(existing); return; }
+
+        var findMod = findWaModule("FindChatAction", ["WAWebFindChatAction"], function (m) {
+          return !!(m && typeof m.findOrCreateLatestChat === "function");
+        });
+        if (!findMod) { onChat(null); return; }
+        var pr = findMod.findOrCreateLatestChat(widObj, "createChat");
+        if (pr && typeof pr.then === "function") {
+          pr.then(toPageFn(function (res) {
+            var ch = (res && res.chat && res.chat.id && chatCol) ? chatCol.get(res.chat.id) : (res && res.chat);
+            onChat(ch || null);
+          }), toPageFn(function () {
+            onChat(null);
+          }));
+        } else {
+          onChat(null);
+        }
+      } catch (e) {
+        onChat(null);
+      }
+    }
+
+    function resolveExactUserWid(rawWidObj, onWid) {
+      try {
+        var qMod = findWaModule("QueryWidExists", ["WAWebSendQueryExists", "WAWebQueryExistJob", "WAWebExistsJob"], function (m) {
+          return !!(m && typeof m.queryWidExists === "function");
+        });
+        if (qMod) {
+          var pr = qMod.queryWidExists(rawWidObj);
+          if (pr && typeof pr.then === "function") {
+            var settled = false;
+            setTimeout(function () {
+              if (settled) return;
+              settled = true;
+              onWid(rawWidObj);
+            }, 2200);
+            pr.then(toPageFn(function (res) {
+              if (settled) return;
+              settled = true;
+              onWid((res && (res.lid || res.wid)) || rawWidObj);
+            }), toPageFn(function () {
+              if (settled) return;
+              settled = true;
+              onWid(rawWidObj);
+            }));
+            return;
+          }
+        }
+      } catch (e) {}
+      onWid(rawWidObj);
+    }
+
+    function openChatViaCmdRouter(widObj, onDone) {
+      var cmd = resolveCmd();
+      if (!cmd || typeof cmd.openChatBottom !== "function") { onDone(false); return; }
+      resolveTargetChatViaStore(widObj, function (chat) {
+        if (!chat) { onDone(false); return; }
+        try {
+          var arg = newPageObj();
+          arg.chat = chat;
+          var p = cmd.openChatBottom(arg);
+          if (p && typeof p.then === "function") {
+            p.then(toPageFn(function () { onDone(true); }), toPageFn(function () {
+              try { cmd.openChatBottom(chat); onDone(true); } catch (e2) { onDone(false); }
+            }));
+          } else {
+            onDone(true);
+          }
+        } catch (e) {
+          try { cmd.openChatBottom(chat); onDone(true); } catch (e2) { onDone(false); }
+        }
+      });
+    }
+
+    function hasNativeOutgoingCall() {
+      var nc = readNativeActiveCallState();
+      return !!(nc && nc.state !== "INCOMING_RINGING");
+    }
+
+    function tryDirectNativeVoipCall(onFallback) {
+      var wf = resolveWidFactory();
+      var rawTarget = targetWidStr || (isGroup ? peerJidStr : (cleanDigits ? cleanDigits + "@c.us" : peerJidStr));
+      if (!wf || !rawTarget) {
+        onFallback(null, "no-wid-factory");
+        return;
+      }
+      var baseWid = null;
+      try {
+        baseWid = wf.createWid(rawTarget);
+      } catch (e) {
+        baseWid = null;
+      }
+      if (!baseWid) {
+        onFallback(null, "bad-wid:" + rawTarget);
+        return;
+      }
+
+      ensureVoipBundlesLoaded(function () {
+        if (window.__wuppDialGen !== myGen) return;
+        var startMod = findWaModule("VoipStartCall", ["WAWebVoipStartCall"], function (m) {
+          return !!(m && typeof m.startWAWebVoipCall === "function");
+        });
+        if (!startMod) {
+          onFallback(baseWid, "no-start-mod");
+          return;
+        }
+
+        function watchDirectCallConfirm(tag) {
+          var checks = 0;
+          function checkLoop() {
+            if (window.__wuppDialGen !== myGen) return;
+            checks++;
+            if (hasNativeOutgoingCall() || hasCallEndControl()) {
+              emitDialResult(true, tag);
+              return;
+            }
+            if (checks >= 16) {
+              onFallback(baseWid, tag + "-no-active");
+              return;
+            }
+            setTimeout(checkLoop, 180);
+          }
+          setTimeout(checkLoop, 160);
+        }
+
+        if (isGroup && typeof startMod.startWAWebVoipGroupCallFromChat === "function") {
+          resolveTargetChatViaStore(baseWid, function (chat) {
+            if (window.__wuppDialGen !== myGen) return;
+            if (!chat) {
+              onFallback(baseWid, "grp-chat-missing");
+              return;
+            }
+            try {
+              var idMod = findWaModule("VoipCallIdProvider", ["WAWebVoipCallIdProvider"], function (m) {
+                return !!(m && typeof m.generateAndStoreNewCallId === "function");
+              });
+              if (idMod) idMod.generateAndStoreNewCallId();
+              var gp = startMod.startWAWebVoipGroupCallFromChat(chat, !!isVideo, 8, 5);
+              if (gp && typeof gp.then === "function") {
+                gp.then(toPageFn(function () {
+                  watchDirectCallConfirm("route=direct-group");
+                }), toPageFn(function () {
+                  onFallback(baseWid, "grp-offer-err");
+                }));
+              } else {
+                watchDirectCallConfirm("route=direct-group");
+              }
+            } catch (e) {
+              onFallback(baseWid, "grp-exc");
+            }
+          });
+          return;
+        }
+
+        if (!isGroup && typeof startMod.startWAWebVoipCall === "function") {
+          resolveExactUserWid(baseWid, function (resolvedWid) {
+            if (window.__wuppDialGen !== myGen) return;
+            try {
+              var opts = newPageObj();
+              opts.entryTrust = "user_gesture";
+              var cp = startMod.startWAWebVoipCall(resolvedWid, !!isVideo, 8, 5, null, opts);
+              if (cp && typeof cp.then === "function") {
+                cp.then(toPageFn(function () {
+                  watchDirectCallConfirm("route=direct-voip");
+                }), toPageFn(function () {
+                  onFallback(resolvedWid, "voip-offer-err");
+                }));
+              } else {
+                watchDirectCallConfirm("route=direct-voip");
+              }
+            } catch (e) {
+              onFallback(baseWid, "voip-exc");
+            }
+          });
+          return;
+        }
+
+        onFallback(baseWid, "no-start-fn");
+      });
+    }
+
     var queries = [];
     if (cleanDigits) queries.push("+" + cleanDigits);
     if (cleanDigits.length > 10) queries.push(cleanDigits.slice(-10));
@@ -1134,13 +1838,9 @@
     for (var q = 0; q < queries.length; q++) {
       if (queries[q] && uniqueQueries.indexOf(queries[q]) === -1) uniqueQueries.push(queries[q]);
     }
-    if (!uniqueQueries.length) {
-      sendToApp({ type: "dialResult", dispatched: false, reason: "No phone number available for this contact" });
-      return;
-    }
 
     var queryIdx = 0;
-    var phase = "WAIT_SEARCH_BOX";
+    var phase = "DIRECT_ROUTE";
     var phaseTicks = 0;
     var rowClicked = false;
     var initialRowCount = getValidChatRows().length;
@@ -1149,6 +1849,7 @@
     var clickedCallInfo = null;
     var callBtnRetries = 0;
     var submenuClicked = false;
+    var routeReason = "";
 
     function runSearchAttempt(box) {
       initialRowCount = Math.max(initialRowCount, getValidChatRows().length);
@@ -1164,18 +1865,49 @@
       requestNativeTapEl(target);
     }
 
+    function startUiRouterFallback(widObj, failTag) {
+      routeReason = failTag || "";
+      if (window.__wuppDialGen !== myGen) return;
+      if (widObj) {
+        openChatViaCmdRouter(widObj, function (opened) {
+          if (window.__wuppDialGen !== myGen) return;
+          if (opened) {
+            phase = "WAIT_HEADER_AND_BTN";
+            phaseTicks = 0;
+            setTimeout(tick, 320);
+            return;
+          }
+          if (!uniqueQueries.length) {
+            emitDialResult(false, "Chat unavailable in WhatsApp Web (" + routeReason + ")");
+            return;
+          }
+          phase = "WAIT_SEARCH_BOX";
+          phaseTicks = 0;
+          setTimeout(tick, 120);
+        });
+        return;
+      }
+      if (!uniqueQueries.length) {
+        emitDialResult(false, "No phone number or group JID available for call");
+        return;
+      }
+      phase = "WAIT_SEARCH_BOX";
+      phaseTicks = 0;
+      setTimeout(tick, 120);
+    }
+
     function tick() {
       if (window.__wuppDialGen !== myGen) return;
       phaseTicks++;
 
-      if (hasCallEndControl()) {
-        sendToApp({ type: "dialResult", dispatched: true, reason: "" });
+      if (hasNativeOutgoingCall() || hasCallEndControl()) {
+        emitDialResult(true, routeReason);
         return;
       }
 
       var unsupported = readUnsupportedDialogReason();
       if (unsupported) {
-        sendToApp({ type: "dialResult", dispatched: false, reason: "WhatsApp Web calling unavailable: " + unsupported });
+        emitDialResult(false, "WhatsApp Web calling unavailable: " + unsupported);
         return;
       }
 
@@ -1183,11 +1915,11 @@
         var box = findSearchBox();
         if (box) {
           runSearchAttempt(box);
-          setTimeout(tick, Math.max(d1 || 450, 850));
+          setTimeout(tick, Math.max(d1 || 450, 750));
           return;
         }
         if (phaseTicks >= 16) {
-          sendToApp({ type: "dialResult", dispatched: false, reason: "WhatsApp Web session not ready yet" });
+          emitDialResult(false, "WhatsApp Web session not ready yet");
           return;
         }
         setTimeout(tick, 250);
@@ -1215,11 +1947,11 @@
             queryIdx++;
             if (curBox) {
               runSearchAttempt(curBox);
-              setTimeout(tick, 750);
+              setTimeout(tick, 700);
               return;
             }
           }
-          sendToApp({ type: "dialResult", dispatched: false, reason: "Contact not found in WhatsApp Web (" + buildHeaderDiag(lastRowCount) + ")" });
+          emitDialResult(false, "Contact not found in WhatsApp Web (" + buildHeaderDiag(lastRowCount) + ")");
           return;
         }
         setTimeout(tick, 300);
@@ -1227,8 +1959,7 @@
       }
 
       if (phase === "WAIT_HEADER_AND_BTN") {
-        var hdr = findMainHeader();
-        if (!hdr || !isElementUsable(hdr)) {
+        if (!matchesTargetChat()) {
           if (phaseTicks % 3 === 1 && rowClicked) {
             var curBox2 = findSearchBox();
             var boxOk2 = !!matchedQueryPrefix && normLower(readBoxText(curBox2)).indexOf(matchedQueryPrefix) !== -1;
@@ -1236,20 +1967,28 @@
             var row2 = pickBestChatRow(rows2, boxOk2, initialRowCount);
             if (row2) openChatRow(row2);
           }
-          if (phaseTicks >= 18) {
-            sendToApp({ type: "dialResult", dispatched: false, reason: "Call button unavailable in WhatsApp Web (" + buildHeaderDiag(lastRowCount) + ")" });
+          if (phaseTicks >= 14) {
+            emitDialResult(false, "Refused call: target chat did not open in WhatsApp Web (" + buildHeaderDiag(lastRowCount) + ")");
             return;
           }
           setTimeout(tick, 300);
           return;
         }
 
+        var hdr = findMainHeader();
+        if (!hdr || !isElementUsable(hdr)) {
+          if (phaseTicks >= 16) {
+            emitDialResult(false, "Call button unavailable in WhatsApp Web (" + buildHeaderDiag(lastRowCount) + ")");
+            return;
+          }
+          setTimeout(tick, 280);
+          return;
+        }
+
         var found = findHeaderCallButton();
         if (found && found.el && !found.disabled) {
           clickedCallInfo = found;
-          if (!requestNativeTapEl(found.el)) {
-            activateDomElement(found.el, false);
-          }
+          activateDomElement(found.el, true);
           phase = "WAIT_POST_CLICK";
           phaseTicks = 0;
           setTimeout(tick, 340);
@@ -1257,12 +1996,12 @@
         }
 
         if (found && found.disabled && phaseTicks >= 6) {
-          sendToApp({ type: "dialResult", dispatched: false, reason: "Call button disabled in WhatsApp Web (" + buildHeaderDiag(lastRowCount) + ")" });
+          emitDialResult(false, "Call button disabled in WhatsApp Web (" + buildHeaderDiag(lastRowCount) + ")");
           return;
         }
 
         if (phaseTicks >= 16) {
-          sendToApp({ type: "dialResult", dispatched: false, reason: "Call button unavailable in WhatsApp Web (" + buildHeaderDiag(lastRowCount) + ")" });
+          emitDialResult(false, "Call button unavailable in WhatsApp Web (" + buildHeaderDiag(lastRowCount) + ")");
           return;
         }
         setTimeout(tick, 280);
@@ -1294,9 +2033,9 @@
 
         if (phaseTicks >= 9) {
           if (clickedCallInfo && clickedCallInfo.kind === "unified" && !submenuClicked) {
-            sendToApp({ type: "dialResult", dispatched: false, reason: "Call menu option unavailable (" + buildHeaderDiag(lastRowCount) + ")" });
+            emitDialResult(false, "Call menu option unavailable (" + buildHeaderDiag(lastRowCount) + ")");
           } else {
-            sendToApp({ type: "dialResult", dispatched: true, reason: "" });
+            emitDialResult(true, routeReason);
           }
           return;
         }
@@ -1304,32 +2043,93 @@
       }
     }
 
-    setTimeout(tick, 120);
+    tryDirectNativeVoipCall(startUiRouterFallback);
   }
 
   function handleAppCommand(msg) {
     if (!msg || typeof msg !== "object") return;
     var cmd = msg.cmd;
-    if (cmd === "syncPermissions") {
+    if (cmd === "powerMode") {
+      powerMode = msg.mode || "sleep";
+      syncPowerUiState();
+      if (powerMode === "preview") {
+        reportEnv();
+      }
+      if (powerMode !== "sleep") {
+        try { inspectDom(); } catch (e) {}
+      }
+    } else if (cmd === "requestEnv") {
+      reportEnv();
+    } else if (cmd === "syncPermissions") {
       permState.mic = !!msg.mic;
       permState.cam = !!msg.cam;
     } else if (cmd === "pairing") {
+      powerMode = "preview";
+      syncPowerUiState();
       runPairingAutomation(msg.phoneDigits || "");
     } else if (cmd === "dial") {
-      runDialContact(msg.digits || "", msg.contactName || "", !!msg.isVideo, msg.delay1 || 450, msg.delay2 || 550);
+      powerMode = "call";
+      syncPowerUiState();
+      runDialContact(
+        msg.targetWid || "",
+        msg.peerJid || "",
+        msg.digits || "",
+        msg.contactName || "",
+        !!msg.isVideo,
+        !!msg.isGroup,
+        msg.delay1 || 450,
+        msg.delay2 || 550
+      );
     } else if (cmd === "answer") {
-      if (msg.audioOnly) {
-        var camBtn = document.querySelector('[aria-label*="camera" i]');
-        if (camBtn && /turn off/i.test(camBtn.getAttribute("aria-label") || "")) camBtn.click();
-      }
-      var accept = findBtnByLabel(/^(accept|answer|join call)/i) || document.querySelector('[data-icon="call-accept"]');
-      if (accept) activateDomElement(accept, true);
+      powerMode = "call";
+      syncPowerUiState();
+      getVoipStackAsync(function (stack) {
+        var ac = resolveCallCollection() && resolveCallCollection().activeCall;
+        if (stack && typeof stack.acceptCall === "function" && ac) {
+          try {
+            stack.acceptCall(true, !msg.audioOnly && !!ac.isVideo);
+            return;
+          } catch (e) {}
+        }
+        if (msg.audioOnly) {
+          var camBtn = document.querySelector('[aria-label*="camera" i]');
+          if (camBtn && /turn off/i.test(camBtn.getAttribute("aria-label") || "")) camBtn.click();
+        }
+        var accept = findBtnByLabel(/^(accept|answer|join call)/i) || document.querySelector('[data-icon="call-accept"]');
+        if (accept) activateDomElement(accept, true);
+      });
     } else if (cmd === "end") {
-      var end = findBtnByLabel(/^(end call|hang up|leave call|decline|reject|ignore)/i) ||
-        document.querySelector('[data-icon="call-end"],[data-icon="end-call"]');
-      if (end) activateDomElement(end, true);
+      getVoipStackAsync(function (stack) {
+        var callCol = resolveCallCollection();
+        var ac = callCol && callCol.activeCall;
+        var st = ac && (typeof ac.getState === "function" ? ac.getState() : ac.state);
+        if (stack && ac) {
+          try {
+            ac.userEndedCall = true;
+            if ((st === 3 || st === 8) && typeof stack.rejectCallWithEndReason === "function") {
+              stack.rejectCallWithEndReason(2);
+              return;
+            }
+            if ((st === 3 || st === 8) && typeof stack.rejectCall === "function") {
+              stack.rejectCall();
+              return;
+            }
+            if (typeof stack.endCall === "function") {
+              stack.endCall(2, true);
+              return;
+            }
+          } catch (e) {}
+        }
+        var end = findBtnByLabel(/^(end call|hang up|leave call|decline|reject|ignore)/i) ||
+          document.querySelector('[data-icon="call-end"],[data-icon="end-call"]');
+        if (end) activateDomElement(end, true);
+      });
     } else if (cmd === "mute") {
       var wantMuted = !!msg.muted;
+      var stSync = resolveVoipStackSync();
+      if (stSync && typeof stSync.setCallMute === "function") {
+        try { stSync.setCallMute(wantMuted); return; } catch (e) {}
+      }
       var els = document.querySelectorAll('button,[role="button"],[aria-label]');
       for (var i = 0; i < els.length; i++) {
         var al = els[i].getAttribute("aria-label") || "";
@@ -1338,6 +2138,10 @@
       }
     } else if (cmd === "camera") {
       var wantOff = !!msg.camOff;
+      var stSync2 = resolveVoipStackSync();
+      if (stSync2 && typeof stSync2.setCallVideoMute === "function") {
+        try { stSync2.setCallVideoMute(wantOff); return; } catch (e) {}
+      }
       var els2 = document.querySelectorAll('button,[role="button"],[aria-label]');
       for (var j = 0; j < els2.length; j++) {
         var al2 = els2[j].getAttribute("aria-label") || "";
@@ -1348,6 +2152,10 @@
       var flipBtn = findBtnByLabel(/switch camera|flip camera/i);
       if (flipBtn) activateDomElement(flipBtn, true);
     } else if (cmd === "upgradeVideo") {
+      var stSync3 = resolveVoipStackSync();
+      if (stSync3 && typeof stSync3.requestVideoUpgrade === "function") {
+        try { stSync3.requestVideoUpgrade(); return; } catch (e) {}
+      }
       var els3 = document.querySelectorAll('button,[role="button"],[aria-label]');
       for (var k = 0; k < els3.length; k++) {
         var al3 = els3[k].getAttribute("aria-label") || "";
@@ -1361,6 +2169,14 @@
     } else if (cmd === "ringMute") {
       applyRingMute(!!msg.muted);
     } else if (cmd === "neutral") {
+      try {
+        var cmdObj = resolveCmd();
+        var chatCol = resolveChatCollection();
+        var active = chatCol && typeof chatCol.getActive === "function" ? chatCol.getActive() : null;
+        if (cmdObj && active && typeof cmdObj.closeChat === "function") {
+          cmdObj.closeChat(active);
+        }
+      } catch (e) {}
       try {
         var clearBtn = document.querySelector('[aria-label="Cancel search"], [data-icon="x-alt"]');
         if (clearBtn) clearBtn.click();
@@ -1405,6 +2221,5 @@
 
   connectBridge();
   startDomObserver();
-  setTimeout(reportEnv, 800);
-  setInterval(reportEnv, 2500);
+  setTimeout(reportEnv, 900);
 })();
