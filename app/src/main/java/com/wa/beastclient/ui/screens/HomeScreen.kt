@@ -2007,15 +2007,25 @@ private fun rememberAvatarBitmap(jid: String, avatarPath: String?): ImageBitmap?
         }
         val resolvedFile = explicitFile ?: run {
             val rawUser = jid.substringBefore("@").substringBefore(":")
-            val dir = File(context.filesDir, "vault/avatars")
-            if (rawUser.isNotBlank() && dir.isDirectory) {
-                val prefix = "${rawUser}_"
-                dir.listFiles()?.firstOrNull {
-                    it.isFile && it.name.startsWith(prefix) && it.length() > 0L
+            val dirs = listOf(
+                File(context.filesDir, "media/avatars"),
+                File(context.filesDir, "vault/avatars")
+            )
+            var found: File? = null
+            if (rawUser.isNotBlank()) {
+                for (dir in dirs) {
+                    if (!dir.isDirectory) continue
+                    found = dir.listFiles()?.firstOrNull {
+                        it.isFile && it.length() > 0L && (
+                            it.name.startsWith("${rawUser}_") ||
+                                it.name.contains("_${rawUser}_") ||
+                                it.name.contains("_${rawUser}.")
+                            )
+                    }
+                    if (found != null) break
                 }
-            } else {
-                null
             }
+            found
         }
         resolvedFile?.let { file ->
             runCatching { BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap() }.getOrNull()
@@ -2629,7 +2639,17 @@ internal fun resolveChatSubtitlePreview(chat: ChatEntity): String {
         chat.lastMessagePreview.isNotBlank() -> chat.lastMessagePreview
         else -> fallbackPreview
     }
-    val cleanSender = chat.lastMessageSenderName.trim()
+    val rawSender = chat.lastMessageSenderName.trim()
+    val cleanSender = when {
+        rawSender.isBlank() -> ""
+        com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver.isGroupJidLikeIdentifier(rawSender, chat.jid) -> ""
+        rawSender.endsWith("@lid", ignoreCase = true) -> ""
+        rawSender.endsWith("@s.whatsapp.net", ignoreCase = true) ->
+            com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
+                .formatIntlPhoneCompact(rawSender.substringBefore("@"))
+                .ifBlank { "" }
+        else -> rawSender
+    }
     return if (
         chat.isGroup &&
         !chat.lastMessageFromMe &&

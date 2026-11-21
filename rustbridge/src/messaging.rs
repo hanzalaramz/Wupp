@@ -18,7 +18,8 @@ use crate::jid_helpers::{
     canonical_jid_str, media_subdir_and_ext, parse_jid_flexible, safe_file_component, split_csv,
 };
 use crate::meta_db::{
-    get_media_meta, save_media_bytes, upsert_contact_meta, upsert_media_meta, MediaMetaRow,
+    get_contact_meta, get_media_meta, save_media_bytes, upsert_contact_meta, upsert_media_meta,
+    MediaMetaRow,
 };
 use crate::runtime::{now_millis, BridgeRuntime};
 
@@ -39,7 +40,14 @@ pub async fn normalize_message(
 ) -> NormalizedItem {
     let base = raw_msg.get_base_message();
     let chat_jid = canonical_jid_str(&info.source.chat.to_string());
-    let sender_jid = canonical_jid_str(&info.source.sender.to_string());
+    let raw_sender = canonical_jid_str(&info.source.sender.to_string());
+    let sender_jid = if (info.source.is_group || info.source.chat.is_group())
+        && (raw_sender == chat_jid || info.source.sender.is_group())
+    {
+        String::new()
+    } else {
+        raw_sender
+    };
     let alt_chat_jid = info
         .source
         .recipient_alt
@@ -57,8 +65,14 @@ pub async fn normalize_message(
     let msg_id = info.id.to_string();
     let is_status = info.is_status_stanza || info.source.chat.is_status_broadcast();
 
+    let mut effective_sender_name = if info.push_name.chars().any(|c| c.is_alphanumeric()) {
+        info.push_name.trim().to_string()
+    } else {
+        String::new()
+    };
+
     if let Some(shared) = runtime.shared_db_arc() {
-        if !sender_jid.is_empty() && !info.push_name.is_empty() {
+        if !sender_jid.is_empty() && !effective_sender_name.is_empty() {
             let lid = if info.source.sender.is_lid() {
                 sender_jid.as_str()
             } else if info.source.sender_alt.as_ref().is_some_and(|j| j.is_lid()) {
@@ -75,7 +89,22 @@ pub async fn normalize_message(
             };
             if !pn.is_empty() || !lid.is_empty() {
                 let key = if !pn.is_empty() { pn } else { lid };
-                let _ = upsert_contact_meta(&shared, key, lid, "", &info.push_name, "").await;
+                let _ = upsert_contact_meta(&shared, key, lid, "", &effective_sender_name, "").await;
+            }
+        } else if !info.source.is_from_me && !sender_jid.is_empty() && effective_sender_name.is_empty() {
+            let row_opt = match get_contact_meta(&shared, &sender_jid).await {
+                Some(r) => Some(r),
+                None if !alt_sender_jid.is_empty() => get_contact_meta(&shared, &alt_sender_jid).await,
+                None => None,
+            };
+            if let Some(row) = row_opt {
+                effective_sender_name = if !row.full_name.is_empty() {
+                    row.full_name
+                } else if !row.business_name.is_empty() {
+                    row.business_name
+                } else {
+                    row.push_name
+                };
             }
         }
     }
@@ -153,7 +182,7 @@ pub async fn normalize_message(
             "altChatJid": alt_chat_jid,
             "targetMessageId": target_id,
             "senderJid": sender_jid,
-            "senderName": info.push_name.as_str(),
+            "senderName": effective_sender_name,
             "isFromMe": info.source.is_from_me,
             "emoji": emoji,
             "timestamp": ts_ms,
@@ -235,7 +264,7 @@ pub async fn normalize_message(
         "altChatJid": alt_chat_jid,
         "senderJid": sender_jid,
         "altSenderJid": alt_sender_jid,
-        "senderName": info.push_name.as_str(),
+        "senderName": effective_sender_name,
         "isFromMe": info.source.is_from_me,
         "isGroup": info.source.is_group || info.source.chat.is_group(),
         "timestamp": ts_ms,

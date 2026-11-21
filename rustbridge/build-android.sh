@@ -21,16 +21,48 @@ if [[ ! -d "$NDK_BIN" ]]; then
   exit 1
 fi
 
-export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android26-clang"
-export CXX_aarch64_linux_android="$NDK_BIN/aarch64-linux-android26-clang++"
 export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
 export RANLIB_aarch64_linux_android="$NDK_BIN/llvm-ranlib"
+export AR_armv7_linux_androideabi="$NDK_BIN/llvm-ar"
+export RANLIB_armv7_linux_androideabi="$NDK_BIN/llvm-ranlib"
+export AR_x86_64_linux_android="$NDK_BIN/llvm-ar"
+export RANLIB_x86_64_linux_android="$NDK_BIN/llvm-ranlib"
+
+export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android26-clang"
+export CXX_aarch64_linux_android="$NDK_BIN/aarch64-linux-android26-clang++"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android26-clang"
 
-(cd "$SCRIPT_DIR" && cargo build --release --target aarch64-linux-android "$@")
+export CC_armv7_linux_androideabi="$NDK_BIN/armv7a-linux-androideabi26-clang"
+export CXX_armv7_linux_androideabi="$NDK_BIN/armv7a-linux-androideabi26-clang++"
+export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="$NDK_BIN/armv7a-linux-androideabi26-clang"
 
+export CC_x86_64_linux_android="$NDK_BIN/x86_64-linux-android26-clang"
+export CXX_x86_64_linux_android="$NDK_BIN/x86_64-linux-android26-clang++"
+export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$NDK_BIN/x86_64-linux-android26-clang"
+
+ABIS="${WUPP_RUST_ABIS:-arm64-v8a}"
 TARGET_DIR="${CARGO_TARGET_DIR:-$SCRIPT_DIR/target}"
-JNI_DIR="$REPO_ROOT/app/src/main/jniLibs/arm64-v8a"
-mkdir -p "$JNI_DIR"
-cp "$TARGET_DIR/aarch64-linux-android/release/libwhatsbridge_rs.so" "$JNI_DIR/libwhatsbridge_rs.so"
-ls -lh "$JNI_DIR/libwhatsbridge_rs.so"
+
+for ABI in $ABIS; do
+  case "$ABI" in
+    arm64-v8a)
+      TARGET="aarch64-linux-android"
+      ;;
+    armeabi-v7a)
+      TARGET="armv7-linux-androideabi"
+      ;;
+    x86_64)
+      TARGET="x86_64-linux-android"
+      ;;
+    *)
+      echo "Unsupported ABI in WUPP_RUST_ABIS: $ABI" >&2
+      exit 1
+      ;;
+  esac
+
+  (cd "$SCRIPT_DIR" && cargo build --release --target "$TARGET" "$@")
+  JNI_DIR="$REPO_ROOT/app/src/main/jniLibs/$ABI"
+  mkdir -p "$JNI_DIR"
+  cp "$TARGET_DIR/$TARGET/release/libwhatsbridge_rs.so" "$JNI_DIR/libwhatsbridge_rs.so"
+  ls -lh "$JNI_DIR/libwhatsbridge_rs.so"
+done

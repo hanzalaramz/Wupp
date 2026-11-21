@@ -11,7 +11,7 @@ use whatsapp_rust::waproto::whatsapp as wa;
 
 use crate::contacts_groups::fetch_and_cache_avatar_if_needed;
 use crate::jid_helpers::canonical_jid_str;
-use crate::meta_db::{clear_avatar_miss, upsert_contact_meta};
+use crate::meta_db::{clear_avatar_miss, get_contact_meta, upsert_contact_meta};
 use crate::messaging::{format_call_record_body, normalize_message, NormalizedItem};
 use crate::runtime::{now_millis, now_secs, BridgeRuntime};
 
@@ -877,6 +877,7 @@ async fn process_history_sync(runtime: Arc<BridgeRuntime>, lazy: LazyHistorySync
     };
 
     let mut pushnames: Vec<Value> = Vec::new();
+    let mut history_pushnames: HashMap<String, String> = HashMap::new();
     let mut rem_status_messages: Vec<wa::WebMessageInfo> = Vec::new();
     let mut lid_to_pn: HashMap<String, String> = HashMap::new();
     let mut pn_to_lid: HashMap<String, String> = HashMap::new();
@@ -893,17 +894,37 @@ async fn process_history_sync(runtime: Arc<BridgeRuntime>, lazy: LazyHistorySync
         }
         for p in &rem.pushnames {
             let Some(jid_s) = p.id.as_deref() else { continue };
-            let name = p.pushname.as_deref().unwrap_or("");
-            if name.is_empty() {
+            let name = p.pushname.as_deref().unwrap_or("").trim();
+            if name.is_empty() || !name.chars().any(|c| c.is_alphanumeric()) {
                 continue;
             }
             let norm_jid = canonical_jid_str(jid_s);
+            let alt_jid = lid_to_pn
+                .get(&norm_jid)
+                .or_else(|| pn_to_lid.get(&norm_jid))
+                .cloned()
+                .unwrap_or_default();
+            history_pushnames.insert(norm_jid.clone(), name.to_string());
+            if !alt_jid.is_empty() {
+                history_pushnames.insert(alt_jid.clone(), name.to_string());
+            }
             if let Some(ref sdb) = shared {
-                let _ = upsert_contact_meta(sdb, &norm_jid, "", "", name, "").await;
+                let (row_jid, row_lid) = if norm_jid.ends_with("@lid") {
+                    (
+                        if alt_jid.ends_with("@s.whatsapp.net") { alt_jid.as_str() } else { norm_jid.as_str() },
+                        norm_jid.as_str(),
+                    )
+                } else {
+                    (
+                        norm_jid.as_str(),
+                        if alt_jid.ends_with("@lid") { alt_jid.as_str() } else { "" },
+                    )
+                };
+                let _ = upsert_contact_meta(sdb, row_jid, row_lid, "", name, "").await;
             }
             pushnames.push(json!({
                 "jid": norm_jid,
-                "altJid": "",
+                "altJid": alt_jid,
                 "name": name,
             }));
         }
@@ -1062,11 +1083,18 @@ async fn process_history_sync(runtime: Arc<BridgeRuntime>, lazy: LazyHistorySync
                     .map(|s| (s as i64) * 1000)
                     .unwrap_or_else(now_millis);
                 let from_me = key.from_me.unwrap_or(false);
+                let call_sender = key
+                    .participant
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| web_msg.participant.as_deref().filter(|s| !s.is_empty()))
+                    .map(canonical_jid_str)
+                    .unwrap_or_else(|| if parsed_chat_jid.is_group() { String::new() } else { chat_jid.clone() });
                 msgs_batch.push(json!({
                     "id": msg_id,
                     "chatJid": chat_jid,
                     "altChatJid": alt_chat_jid,
-                    "senderJid": key.participant.as_deref().map(canonical_jid_str).unwrap_or_else(|| chat_jid.clone()),
+                    "senderJid": call_sender,
                     "altSenderJid": "",
                     "senderName": web_msg.push_name.as_deref().unwrap_or(""),
                     "isFromMe": from_me,
@@ -1100,11 +1128,88 @@ async fn process_history_sync(runtime: Arc<BridgeRuntime>, lazy: LazyHistorySync
             let sender_raw = key
                 .participant
                 .as_deref()
-                .or_else(|| if !from_me { Some(chat_jid.as_str()) } else { None })
+                .filter(|s| !s.is_empty())
+                .or_else(|| web_msg.participant.as_deref().filter(|s| !s.is_empty()))
+                .or_else(|| if !from_me && !parsed_chat_jid.is_group() { Some(chat_jid.as_str()) } else { None })
                 .unwrap_or("");
             let sender_jid = sender_raw
                 .parse::<Jid>()
-                .unwrap_or_else(|_| parsed_chat_jid.clone());
+                .unwrap_or_default();
+            let sender_canon = if sender_raw.is_empty() {
+                String::new()
+            } else {
+                canonical_jid_str(&sender_jid.to_string())
+            };
+            let mut sender_alt_opt: Option<Jid> = if sender_canon.is_empty() {
+                None
+            } else if sender_jid.is_lid() {
+                lid_to_pn.get(&sender_canon).and_then(|s| s.parse().ok())
+            } else if sender_jid.is_pn() {
+                pn_to_lid.get(&sender_canon).and_then(|s| s.parse().ok())
+            } else {
+                None
+            };
+            if sender_alt_opt.is_none() && (sender_jid.is_lid() || sender_jid.is_pn()) {
+                if let Some(client) = runtime.client_arc() {
+                    if let Ok(Some(entry)) = client.get_lid_pn_entry(&sender_jid).await {
+                        let alt_s = if sender_jid.is_lid() && !entry.phone_number.is_empty() {
+                            format!("{}@s.whatsapp.net", entry.phone_number)
+                        } else if sender_jid.is_pn() && !entry.lid.is_empty() {
+                            format!("{}@lid", entry.lid)
+                        } else {
+                            String::new()
+                        };
+                        if !alt_s.is_empty() {
+                            sender_alt_opt = alt_s.parse().ok();
+                        }
+                    }
+                }
+            }
+            let alt_sender_canon = sender_alt_opt
+                .as_ref()
+                .map(|j| canonical_jid_str(&j.to_string()))
+                .unwrap_or_default();
+            let raw_push = web_msg.push_name.as_deref().unwrap_or("").trim();
+            let usable_web_push = (!raw_push.is_empty() && raw_push.chars().any(|c| c.is_alphanumeric()))
+                .then_some(raw_push);
+            if let (Some(p), false) = (usable_web_push, sender_canon.is_empty()) {
+                history_pushnames.entry(sender_canon.clone()).or_insert_with(|| p.to_string());
+                if !alt_sender_canon.is_empty() {
+                    history_pushnames.entry(alt_sender_canon.clone()).or_insert_with(|| p.to_string());
+                }
+            }
+            let resolved_push: String = if let Some(p) = usable_web_push {
+                p.to_string()
+            } else if !from_me && !sender_canon.is_empty() {
+                let cached_hist = history_pushnames
+                    .get(&sender_canon)
+                    .or_else(|| history_pushnames.get(&alt_sender_canon))
+                    .cloned();
+                if let Some(name) = cached_hist {
+                    name
+                } else if let Some(ref sdb) = shared {
+                    let meta = match get_contact_meta(sdb, &sender_canon).await {
+                        Some(m) => Some(m),
+                        None if !alt_sender_canon.is_empty() => get_contact_meta(sdb, &alt_sender_canon).await,
+                        None => None,
+                    };
+                    meta.map(|m| {
+                        if !m.full_name.is_empty() {
+                            m.full_name
+                        } else if !m.business_name.is_empty() {
+                            m.business_name
+                        } else {
+                            m.push_name
+                        }
+                    })
+                    .unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
             let mut info = whatsapp_rust::types::message::MessageInfo::default();
             info.id = msg_id.into();
             info.source.chat = parsed_chat_jid.clone();
@@ -1112,9 +1217,10 @@ async fn process_history_sync(runtime: Arc<BridgeRuntime>, lazy: LazyHistorySync
                 info.source.recipient_alt = alt_chat_jid.parse().ok();
             }
             info.source.sender = sender_jid;
+            info.source.sender_alt = sender_alt_opt;
             info.source.is_from_me = from_me;
             info.source.is_group = parsed_chat_jid.is_group();
-            info.push_name = web_msg.push_name.as_deref().unwrap_or("").into();
+            info.push_name = resolved_push.into();
             if let Some(secs) = web_msg.message_timestamp {
                 if let Some(ts) = whatsapp_rust::wacore::time::Timestamp::from_secs(secs as i64) {
                     info.timestamp = ts;

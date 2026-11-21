@@ -1510,26 +1510,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val item = obj.optJSONObject(key) ?: continue
                 val altJid = item.optString("altJid")
                 val serverSaved = item.optString("savedName")
-                val serverPush = item.optString("pushName")
+                val fallbackName = item.optString("name")
+                val serverPush = item.optString("pushName").ifBlank { fallbackName }
                 val phone = item.optString("phone")
-                val effectiveSaved = if (
-                    DeviceContactFallbackResolver.isServerNameMissing(serverSaved, key, altJid) &&
-                    DeviceContactFallbackResolver.isServerNameMissing(serverPush, key, altJid)
-                ) {
-                    DeviceContactFallbackResolver.lookupForParticipant(
-                        context = appContext,
-                        jid = key,
-                        altJid = altJid,
-                        phone = phone
-                    ).orEmpty()
-                } else {
-                    serverSaved
+                val dbContactName = listOfNotNull(
+                    dao.getContact(key)?.name,
+                    altJid.takeIf { it.isNotBlank() }?.let { dao.getContact(it)?.name },
+                    dao.getChat(key)?.name,
+                    altJid.takeIf { it.isNotBlank() }?.let { dao.getChat(it)?.name }
+                ).firstOrNull {
+                    DeviceContactFallbackResolver.isUsableDisplayName(it, key, altJid)
+                }.orEmpty()
+                val bestServerSaved = serverSaved.takeIf {
+                    DeviceContactFallbackResolver.isUsableDisplayName(it, key, altJid)
+                }.orEmpty()
+                val effectiveSaved = when {
+                    bestServerSaved.isNotBlank() -> bestServerSaved
+                    dbContactName.isNotBlank() -> dbContactName
+                    DeviceContactFallbackResolver.isServerNameMissing(serverPush, key, altJid) -> {
+                        DeviceContactFallbackResolver.lookupForParticipant(
+                            context = appContext,
+                            jid = key,
+                            altJid = altJid,
+                            phone = phone
+                        ).orEmpty()
+                    }
+                    else -> ""
                 }
+                val cleanPush = serverPush.takeIf {
+                    DeviceContactFallbackResolver.isUsableDisplayName(it, key, altJid)
+                }.orEmpty()
                 parsed[key] = ResolvedParticipantUi(
                     jid = key,
                     altJid = altJid,
                     savedName = effectiveSaved,
-                    pushName = serverPush,
+                    pushName = cleanPush,
                     phone = phone,
                     avatarPath = item.optString("avatarPath"),
                     isSelf = item.optBoolean("isSelf", false)

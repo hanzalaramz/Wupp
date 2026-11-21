@@ -81,22 +81,52 @@ fn main() {
 }
 
 $env:PATH = "$ToolsDir;$CargoBin;$SelfContained;$env:PATH"
-$env:CC_aarch64_linux_android = Join-Path $NdkBin "aarch64-linux-android26-clang.cmd"
-$env:CXX_aarch64_linux_android = Join-Path $NdkBin "aarch64-linux-android26-clang++.cmd"
 $env:AR_aarch64_linux_android = Join-Path $NdkBin "llvm-ar.exe"
 $env:RANLIB_aarch64_linux_android = Join-Path $NdkBin "llvm-ranlib.exe"
+$env:AR_armv7_linux_androideabi = Join-Path $NdkBin "llvm-ar.exe"
+$env:RANLIB_armv7_linux_androideabi = Join-Path $NdkBin "llvm-ranlib.exe"
+$env:AR_x86_64_linux_android = Join-Path $NdkBin "llvm-ar.exe"
+$env:RANLIB_x86_64_linux_android = Join-Path $NdkBin "llvm-ranlib.exe"
+
+$env:CC_aarch64_linux_android = Join-Path $NdkBin "aarch64-linux-android26-clang.cmd"
+$env:CXX_aarch64_linux_android = Join-Path $NdkBin "aarch64-linux-android26-clang++.cmd"
 $env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = Join-Path $NdkBin "aarch64-linux-android26-clang.cmd"
+
+$env:CC_armv7_linux_androideabi = Join-Path $NdkBin "armv7a-linux-androideabi26-clang.cmd"
+$env:CXX_armv7_linux_androideabi = Join-Path $NdkBin "armv7a-linux-androideabi26-clang++.cmd"
+$env:CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER = Join-Path $NdkBin "armv7a-linux-androideabi26-clang.cmd"
+
+$env:CC_x86_64_linux_android = Join-Path $NdkBin "x86_64-linux-android26-clang.cmd"
+$env:CXX_x86_64_linux_android = Join-Path $NdkBin "x86_64-linux-android26-clang++.cmd"
+$env:CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER = Join-Path $NdkBin "x86_64-linux-android26-clang.cmd"
+
+$AbiToTarget = @{
+    "arm64-v8a"   = "aarch64-linux-android"
+    "armeabi-v7a" = "armv7-linux-androideabi"
+    "x86_64"      = "x86_64-linux-android"
+}
+$RequestedAbis = if ($env:WUPP_RUST_ABIS) {
+    $env:WUPP_RUST_ABIS -split "[\s,]+" | Where-Object { $_ }
+} else {
+    @("arm64-v8a")
+}
 
 Push-Location $ScriptDir
 try {
-    & (Join-Path $CargoBin "cargo.exe") build --release --target aarch64-linux-android @args
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    foreach ($Abi in $RequestedAbis) {
+        if (-not $AbiToTarget.ContainsKey($Abi)) {
+            throw "Unsupported ABI in WUPP_RUST_ABIS: $Abi"
+        }
+        $Target = $AbiToTarget[$Abi]
+        & (Join-Path $CargoBin "cargo.exe") build --release --target $Target @args
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        $BuiltSo = Join-Path $TargetDir "$Target\release\libwhatsbridge_rs.so"
+        $JniDir = Join-Path $RepoRoot "app\src\main\jniLibs\$Abi"
+        New-Item -ItemType Directory -Force -Path $JniDir | Out-Null
+        Copy-Item -Force $BuiltSo (Join-Path $JniDir "libwhatsbridge_rs.so")
+        Write-Host "Copied $BuiltSo -> $JniDir\libwhatsbridge_rs.so ($((Get-Item $BuiltSo).Length) bytes)"
+    }
 } finally {
     Pop-Location
 }
-
-$BuiltSo = Join-Path $TargetDir "aarch64-linux-android\release\libwhatsbridge_rs.so"
-$JniDir = Join-Path $RepoRoot "app\src\main\jniLibs\arm64-v8a"
-New-Item -ItemType Directory -Force -Path $JniDir | Out-Null
-Copy-Item -Force $BuiltSo (Join-Path $JniDir "libwhatsbridge_rs.so")
-Write-Host "Copied $BuiltSo -> $JniDir\libwhatsbridge_rs.so ($((Get-Item $BuiltSo).Length) bytes)"

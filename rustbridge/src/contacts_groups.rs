@@ -33,6 +33,27 @@ pub async fn fetch_and_cache_avatar_if_needed(
     }
 
     let jid_canon = canonical_jid_str(&jid.to_string());
+    if jid.is_newsletter() {
+        return Ok(String::new());
+    }
+    let out_path = avatar_file_path(&files_dir, &jid_canon);
+    if !full_res && out_path.exists() && fs::metadata(&out_path).map(|m| m.len() > 0).unwrap_or(false) {
+        let local_path = out_path.to_string_lossy().into_owned();
+        runtime.emit_json(
+            "PROFILE_UPDATE",
+            json!({
+                "jid": jid_canon,
+                "altJid": "",
+                "avatarPath": local_path,
+                "aboutText": "",
+                "pictureId": "",
+                "removed": false,
+                "timestamp": now_millis(),
+            }),
+        );
+        return Ok(local_path);
+    }
+
     let shared = runtime.shared_db_arc();
     if !full_res {
         if let Some(ref sdb) = shared {
@@ -117,24 +138,35 @@ pub async fn fetch_and_cache_avatar_if_needed(
 }
 
 pub async fn sync_contacts_and_avatars(runtime: Arc<BridgeRuntime>, filter_csv: &str) {
-    let last = runtime.last_sync_unix.load(Ordering::Relaxed);
+    let is_explicit = !filter_csv.trim().is_empty();
     let now = now_secs();
-    // Global 10-minute cooldown prevents usync + avatar IQ storms on every socket reconnect.
-    if last > 0 && (now - last) < 600 {
-        return;
+    if !is_explicit {
+        let last = runtime.last_sync_unix.load(Ordering::Relaxed);
+        // Global 10-minute cooldown prevents usync + avatar IQ storms on every socket reconnect.
+        if last > 0 && (now - last) < 600 {
+            return;
+        }
     }
-    if runtime
+
+    let mut waited_ms = 0u64;
+    while runtime
         .contact_sync_active
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
-        return;
+        if !is_explicit || waited_ms >= 12_000 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        waited_ms += 500;
     }
 
     if let Err(e) = sync_inner(&runtime, filter_csv).await {
         runtime.emit_log(format!("Contact/group sync warning: {e}"));
     }
-    runtime.last_sync_unix.store(now_secs(), Ordering::SeqCst);
+    if !is_explicit {
+        runtime.last_sync_unix.store(now_secs(), Ordering::SeqCst);
+    }
     runtime.contact_sync_active.store(false, Ordering::SeqCst);
 }
 
@@ -170,13 +202,40 @@ async fn sync_inner(runtime: &BridgeRuntime, filter_csv: &str) -> Result<(), Str
         }
 
         if let Ok(newsletters) = client.newsletter().list_subscribed().await {
+            let files_dir = runtime.files_dir_string();
+            let http = UreqHttpClient::new();
             let mut ch_batch = Vec::with_capacity(newsletters.len());
+            let mut fetched_nl_icons = 0usize;
             for nl in newsletters {
+                let nl_jid = canonical_jid_str(&nl.jid.to_string());
+                let mut local_avatar = String::new();
+                if !files_dir.is_empty() {
+                    let out_path = avatar_file_path(&files_dir, &nl_jid);
+                    if out_path.exists() && fs::metadata(&out_path).map(|m| m.len() > 0).unwrap_or(false) {
+                        local_avatar = out_path.to_string_lossy().into_owned();
+                    } else if fetched_nl_icons < 20 {
+                        if let Some(pic_url) = nl.preview_url.as_deref().or(nl.picture_url.as_deref()).filter(|u| !u.is_empty()) {
+                            if let Ok(resp) = http.execute(HttpRequest::get(pic_url)).await {
+                                if resp.status_code < 400 && !resp.body.is_empty() {
+                                    if let Some(parent) = out_path.parent() {
+                                        let _ = fs::create_dir_all(parent);
+                                    }
+                                    if fs::write(&out_path, &resp.body).is_ok() {
+                                        local_avatar = out_path.to_string_lossy().into_owned();
+                                        fetched_nl_icons += 1;
+                                    }
+                                }
+                            }
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    }
+                }
                 ch_batch.push(json!({
-                    "jid": canonical_jid_str(&nl.jid.to_string()),
+                    "jid": nl_jid,
                     "name": nl.name,
                     "description": nl.description.unwrap_or_default(),
                     "isMuted": nl.muted.unwrap_or(false),
+                    "avatarPath": local_avatar,
                 }));
             }
             if !ch_batch.is_empty() {
@@ -284,11 +343,35 @@ async fn sync_inner(runtime: &BridgeRuntime, filter_csv: &str) -> Result<(), Str
         }
     }
 
-    for (idx, target) in avatar_targets.into_iter().take(12).enumerate() {
-        if idx > 0 {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+    let files_dir = runtime.files_dir_string();
+    let mut fetched_uncached = 0usize;
+    for target in avatar_targets {
+        if target.is_newsletter() {
+            continue;
+        }
+        let target_canon = canonical_jid_str(&target.to_string());
+        if !files_dir.is_empty() {
+            let out_path = avatar_file_path(&files_dir, &target_canon);
+            if out_path.exists() && fs::metadata(&out_path).map(|m| m.len() > 0).unwrap_or(false) {
+                if !explicit_jids.is_empty() {
+                    let _ = fetch_and_cache_avatar_if_needed(runtime, &target, false).await;
+                }
+                continue;
+            }
+        }
+        if let Some(ref sdb) = shared {
+            if should_skip_avatar_fetch(sdb, &target_canon).await {
+                continue;
+            }
+        }
+        if fetched_uncached >= 35 {
+            break;
+        }
+        if fetched_uncached > 0 {
+            tokio::time::sleep(Duration::from_millis(220)).await;
         }
         let _ = fetch_and_cache_avatar_if_needed(runtime, &target, false).await;
+        fetched_uncached += 1;
     }
     Ok(())
 }
@@ -300,12 +383,24 @@ pub async fn resolve_participant_names_json(runtime: &BridgeRuntime, jids_csv: &
     }
     let shared = runtime.shared_db_arc();
     let client = runtime.client_arc();
+    let files_dir = runtime.files_dir_string();
+    let (own_pn, own_lid) = client
+        .as_ref()
+        .map(|c| {
+            let snap = c.persistence_manager().get_device_snapshot();
+            (
+                snap.pn.as_ref().map(|j| canonical_jid_str(&j.to_string())).unwrap_or_default(),
+                snap.lid.as_ref().map(|j| canonical_jid_str(&j.to_string())).unwrap_or_default(),
+            )
+        })
+        .unwrap_or_default();
     let mut map = serde_json::Map::new();
     let mut unresolved: Vec<Jid> = Vec::new();
 
     for raw in inputs {
         let key = canonical_jid_str(&raw);
-        let mut display = String::new();
+        let mut saved_name = String::new();
+        let mut push_name = String::new();
         let mut alt_jid = String::new();
         let mut phone = String::new();
 
@@ -315,10 +410,10 @@ pub async fn resolve_participant_names_json(runtime: &BridgeRuntime, jids_csv: &
             }
             if let Some(ref c) = client {
                 if let Ok(Some(entry)) = c.get_lid_pn_entry(&parsed).await {
-                    if parsed.is_lid() {
+                    if parsed.is_lid() && !entry.phone_number.is_empty() {
                         phone = entry.phone_number.to_string();
                         alt_jid = format!("{}@s.whatsapp.net", entry.phone_number);
-                    } else if parsed.is_pn() {
+                    } else if parsed.is_pn() && !entry.lid.is_empty() {
                         alt_jid = format!("{}@lid", entry.lid);
                     }
                 }
@@ -327,14 +422,23 @@ pub async fn resolve_participant_names_json(runtime: &BridgeRuntime, jids_csv: &
         }
 
         if let Some(ref sdb) = shared {
-            if let Some(row) = get_contact_meta(sdb, &key).await {
-                display = if !row.full_name.is_empty() {
-                    row.full_name
-                } else if !row.business_name.is_empty() {
-                    row.business_name
-                } else {
-                    row.push_name
-                };
+            let meta_opt = match get_contact_meta(sdb, &key).await {
+                Some(r) => Some(r),
+                None if !alt_jid.is_empty() => get_contact_meta(sdb, &alt_jid).await,
+                None => None,
+            };
+            if let Some(row) = meta_opt {
+                if !row.full_name.is_empty() {
+                    saved_name = row.full_name;
+                }
+                if !row.business_name.is_empty() {
+                    push_name = row.business_name;
+                } else if !row.push_name.is_empty() {
+                    push_name = row.push_name;
+                }
+                if phone.is_empty() && row.jid.ends_with("@s.whatsapp.net") {
+                    phone = row.jid.split('@').next().unwrap_or("").to_string();
+                }
                 if alt_jid.is_empty() {
                     if row.jid == key && !row.lid.is_empty() {
                         alt_jid = row.lid;
@@ -345,12 +449,41 @@ pub async fn resolve_participant_names_json(runtime: &BridgeRuntime, jids_csv: &
             }
         }
 
+        let is_self = (!own_pn.is_empty() && (key == own_pn || alt_jid == own_pn))
+            || (!own_lid.is_empty() && (key == own_lid || alt_jid == own_lid));
+        let avatar_path = if !files_dir.is_empty() {
+            let p1 = avatar_file_path(&files_dir, &key);
+            if p1.exists() && fs::metadata(&p1).map(|m| m.len() > 0).unwrap_or(false) {
+                p1.to_string_lossy().into_owned()
+            } else if !alt_jid.is_empty() {
+                let p2 = avatar_file_path(&files_dir, &alt_jid);
+                if p2.exists() && fs::metadata(&p2).map(|m| m.len() > 0).unwrap_or(false) {
+                    p2.to_string_lossy().into_owned()
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+        let display = if !saved_name.is_empty() {
+            saved_name.clone()
+        } else {
+            push_name.clone()
+        };
+
         map.insert(
             key,
             json!({
                 "name": display,
+                "savedName": saved_name,
+                "pushName": push_name,
                 "altJid": alt_jid,
                 "phone": phone,
+                "avatarPath": avatar_path,
+                "isSelf": is_self,
             }),
         );
     }
@@ -360,12 +493,29 @@ pub async fn resolve_participant_names_json(runtime: &BridgeRuntime, jids_csv: &
         if let Ok(infos) = c.contacts().get_user_info(&batch).await {
             for (jid, ui) in infos {
                 let k = canonical_jid_str(&jid.to_string());
+                let biz = ui.verified_name.as_ref().and_then(|v| v.name.clone()).unwrap_or_default();
+                let alt_str = ui.pn_jid.as_ref().map(|p| canonical_jid_str(&p.to_string()))
+                    .or_else(|| ui.lid.as_ref().map(|l| canonical_jid_str(&l.to_string())))
+                    .unwrap_or_default();
+                if let Some(ref sdb) = shared {
+                    if !biz.is_empty() || !alt_str.is_empty() {
+                        let lid_col = if k.ends_with("@lid") { k.as_str() } else if alt_str.ends_with("@lid") { alt_str.as_str() } else { "" };
+                        let pn_col = if k.ends_with("@s.whatsapp.net") { k.as_str() } else if alt_str.ends_with("@s.whatsapp.net") { alt_str.as_str() } else { &k };
+                        let _ = upsert_contact_meta(sdb, pn_col, lid_col, "", "", &biz).await;
+                    }
+                }
                 if let Some(Value::Object(obj)) = map.get_mut(&k) {
                     if let Some(ref pn) = ui.pn_jid {
                         obj.insert("altJid".into(), json!(canonical_jid_str(&pn.to_string())));
                         obj.insert("phone".into(), json!(phone_digits_from_jid(pn)));
                     } else if let Some(ref lid) = ui.lid {
                         obj.insert("altJid".into(), json!(canonical_jid_str(&lid.to_string())));
+                    }
+                    if !biz.is_empty() && obj.get("pushName").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+                        obj.insert("pushName".into(), json!(biz.clone()));
+                        if obj.get("name").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+                            obj.insert("name".into(), json!(biz));
+                        }
                     }
                 }
             }

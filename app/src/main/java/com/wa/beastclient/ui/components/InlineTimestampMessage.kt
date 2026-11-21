@@ -108,7 +108,8 @@ fun DeletedTimestampBadge(
 fun InlineTimestampMessage(
     msg: MessageEntity,
     modifier: Modifier = Modifier,
-    showDeletedBadge: Boolean = true
+    showDeletedBadge: Boolean = true,
+    mentionDisplayResolver: ((String) -> String?)? = null
 ) {
     val colors = LocalWaColors.current
     val showSeconds = LocalWuppShowSeconds.current
@@ -116,12 +117,21 @@ fun InlineTimestampMessage(
     val fontScale = LocalWuppChatFontScale.current
     var lastLayout: TextLayoutResult? = null
 
-    val displayText = msg.body
+    val displayText = if (msg.mentionsCsv.isNotBlank() && mentionDisplayResolver != null) {
+        resolveMentionsInText(msg.body, msg.mentionsCsv, mentionDisplayResolver)
+    } else {
+        msg.body
+    }
     val timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour)
     val linkColor = colors.accentGreen
     val codeBg = colors.elevatedBar.copy(alpha = 0.65f)
-    val styledText = androidx.compose.runtime.remember(displayText, linkColor, codeBg) {
-        formatWhatsAppBody(displayText, linkColor = linkColor, codeBg = codeBg)
+    val styledText = androidx.compose.runtime.remember(displayText, msg.mentionsCsv, linkColor, codeBg) {
+        formatWhatsAppBody(
+            text = displayText,
+            linkColor = linkColor,
+            codeBg = codeBg,
+            highlightMentions = msg.mentionsCsv.isNotBlank()
+        )
     }
 
     Column(modifier = modifier) {
@@ -305,13 +315,38 @@ fun formatMessageClock(
 private val WA_URL_REGEX = Regex("""(?:https?://|www\.)[^\s<>\]\[()"']+""")
 
 /**
+ * Replaces raw `@<jid_user>` placeholders in message text using resolved display names from [mentionsCsv].
+ */
+internal fun resolveMentionsInText(
+    text: String,
+    mentionsCsv: String,
+    resolveName: (String) -> String?
+): String {
+    if (text.isBlank() || mentionsCsv.isBlank() || !text.contains('@')) return text
+    var result = text
+    val seenUsers = HashSet<String>()
+    for (rawJid in mentionsCsv.split(',')) {
+        val cleanJid = rawJid.trim()
+        if (cleanJid.isBlank()) continue
+        val bareUser = cleanJid.substringBefore("@").substringBefore(":").trim()
+        if (bareUser.isBlank() || !seenUsers.add(bareUser)) continue
+        val resolved = resolveName(cleanJid)?.trim().orEmpty()
+        if (resolved.isBlank() || resolved == bareUser) continue
+        val pattern = Regex("""(?<![\w])@${Regex.escape(bareUser)}(?![\w])""")
+        result = pattern.replace(result) { "@$resolved" }
+    }
+    return result
+}
+
+/**
  * Formats WhatsApp inline markdown (*bold*, _italic_, ~strikethrough~, `mono`, ```code```)
- * while highlighting clickable URLs in WhatsApp green.
+ * while highlighting clickable URLs and @mentions in WhatsApp accent green.
  */
 fun formatWhatsAppBody(
     text: String,
     linkColor: Color,
-    codeBg: Color
+    codeBg: Color,
+    highlightMentions: Boolean = false
 ): AnnotatedString {
     if (text.isEmpty()) return AnnotatedString("")
     return buildAnnotatedString {
@@ -319,7 +354,12 @@ fun formatWhatsAppBody(
         val urlMatches = WA_URL_REGEX.findAll(text).toList()
         for (match in urlMatches) {
             if (match.range.first > pos) {
-                appendFormattedSegment(this, text.substring(pos, match.range.first), codeBg)
+                appendFormattedSegment(
+                    this,
+                    text.substring(pos, match.range.first),
+                    codeBg,
+                    mentionColor = if (highlightMentions) linkColor else null
+                )
             }
             val rawUrl = match.value.trimEnd('.', ',', ';', ')', '!')
             val trailing = match.value.substring(rawUrl.length)
@@ -343,7 +383,12 @@ fun formatWhatsAppBody(
             pos = match.range.last + 1
         }
         if (pos < text.length) {
-            appendFormattedSegment(this, text.substring(pos), codeBg)
+            appendFormattedSegment(
+                this,
+                text.substring(pos),
+                codeBg,
+                mentionColor = if (highlightMentions) linkColor else null
+            )
         }
     }
 }
@@ -351,7 +396,8 @@ fun formatWhatsAppBody(
 private fun appendFormattedSegment(
     builder: AnnotatedString.Builder,
     segment: String,
-    codeBg: Color
+    codeBg: Color,
+    mentionColor: Color? = null
 ) {
     var i = 0
     val n = segment.length
@@ -368,6 +414,31 @@ private fun appendFormattedSegment(
             }
         }
         val ch = segment[i]
+        if (mentionColor != null && ch == '@') {
+            val prevOk = i == 0 || segment[i - 1].isWhitespace() || segment[i - 1] in "([{\"'*_"
+            if (prevOk && i + 1 < n && !segment[i + 1].isWhitespace()) {
+                var end = i + 1
+                if (segment[end] == '+') {
+                    // Phone mention like `@+92 300 1234567`
+                    while (end < n && (segment[end].isDigit() || segment[end] in "+-() " && (end + 1 < n && segment[end + 1].isDigit() || segment[end] != ' '))) {
+                        if (segment[end] == ' ' && end + 1 < n && !segment[end + 1].isDigit()) break
+                        end++
+                    }
+                } else {
+                    while (end < n && !segment[end].isWhitespace() && segment[end] !in ",.!?;:)]}\"'") {
+                        end++
+                    }
+                }
+                if (end > i + 1) {
+                    val token = segment.substring(i, end)
+                    builder.withStyle(SpanStyle(color = mentionColor, fontWeight = FontWeight.SemiBold)) {
+                        append(token)
+                    }
+                    i = end
+                    continue
+                }
+            }
+        }
         if (ch == '*' || ch == '_' || ch == '~' || ch == '`') {
             val prevOk = i == 0 || !segment[i - 1].isLetterOrDigit()
             val end = if (prevOk) segment.indexOf(ch, i + 1) else -1

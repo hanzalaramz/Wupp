@@ -190,6 +190,7 @@ import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.data.db.ChatEntity
 import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.data.media.OutboundQualityMode
+import com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
 import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.domain.stealth.CallBackendMode
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
@@ -223,6 +224,7 @@ import com.wa.beastclient.ui.components.WuppGlassContainer
 import com.wa.beastclient.ui.components.buildDocumentExportFileName
 import com.wa.beastclient.ui.components.deleteBeforeSelection
 import com.wa.beastclient.ui.components.expressivePressScale
+import com.wa.beastclient.ui.components.resolveMentionsInText
 import com.wa.beastclient.ui.components.formatMessageClock
 import com.wa.beastclient.ui.components.insertTextAtSelection
 import com.wa.beastclient.ui.components.isDocumentMessage
@@ -538,6 +540,12 @@ fun ChatScreen(
             if (m.senderJid.contains("@")) jids += m.senderJid
             val q = m.quotedSender?.trim().orEmpty()
             if (q.contains("@")) jids += q
+            if (m.mentionsCsv.isNotBlank()) {
+                m.mentionsCsv.split(',').forEach { mj ->
+                    val cleanM = mj.trim()
+                    if (cleanM.contains("@")) jids += cleanM
+                }
+            }
             val qid = m.quotedId?.trim().orEmpty()
             if (qid.isNotBlank() && !loadedMessagesById.containsKey(qid)) {
                 quotedIds += qid
@@ -1421,6 +1429,42 @@ fun ChatScreen(
                                         senderPushByJid = senderPushByJid
                                     )
                                 } else null
+                                val quotedMentionsCsv = msg.quotedId?.let { loadedMessagesById[it]?.mentionsCsv }.orEmpty()
+                                val mentionDisplayResolver: ((String) -> String?)? =
+                                    if (isGroupChat) {
+                                        { mentionJid: String ->
+                                            val cleanMention = mentionJid.trim()
+                                            val bareDigits = cleanMention.substringBefore("@").substringBefore(":")
+                                            val directMeta = participantMeta[cleanMention]
+                                                ?: participantMeta["$bareDigits@s.whatsapp.net"]
+                                                ?: participantMeta["$bareDigits@lid"]
+                                                ?: participantMeta.values.firstOrNull { meta ->
+                                                    meta.altJid.substringBefore("@").substringBefore(":") == bareDigits
+                                                }
+                                            val effectiveJid = directMeta?.jid ?: cleanMention
+                                            if (directMeta?.isSelf == true) {
+                                                "You"
+                                            } else {
+                                                val info = resolveSenderDisplayInfo(
+                                                    rawJidOrText = effectiveJid,
+                                                    explicitName = "",
+                                                    isSelf = false,
+                                                    participantMeta = participantMeta,
+                                                    chatsByJid = chatsByJid,
+                                                    senderPushByJid = senderPushByJid
+                                                )
+                                                val candidate = info.primary.removePrefix("~ ").trim()
+                                                candidate.takeIf {
+                                                    it.isNotBlank() &&
+                                                        !it.startsWith("User ·") &&
+                                                        it != bareDigits &&
+                                                        !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(it)
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        null
+                                    }
                                 val clickAvatar: () -> Unit = {
                                     participantAvatarTarget = Triple(
                                         msg.senderJid,
@@ -1464,6 +1508,8 @@ fun ChatScreen(
                                         senderDisplay = senderDisplay,
                                         senderAvatarPath = senderAvatarPath,
                                         quotedDisplay = quotedDisplay,
+                                        quotedMentionsCsv = quotedMentionsCsv,
+                                        mentionDisplayResolver = mentionDisplayResolver,
                                         onClickSenderAvatar = clickAvatar,
                                         ghostPlayedActive = effectivePrivacy?.sendPlayedReceipts == false,
                                         isDownloadingMedia = downloadingMediaIds.contains(msg.id),
@@ -1492,6 +1538,8 @@ fun ChatScreen(
                                             senderDisplay = senderDisplay,
                                             senderAvatarPath = senderAvatarPath,
                                             quotedDisplay = quotedDisplay,
+                                            quotedMentionsCsv = quotedMentionsCsv,
+                                            mentionDisplayResolver = mentionDisplayResolver,
                                             onClickSenderAvatar = clickAvatar,
                                             ghostPlayedActive = effectivePrivacy?.sendPlayedReceipts == false,
                                             isDownloadingMedia = downloadingMediaIds.contains(msg.id),
@@ -2515,10 +2563,22 @@ fun ChatScreen(
             if (item.isFromMe) {
                 "You"
             } else if (chat?.isGroup == true) {
-                item.senderName.ifBlank { item.senderJid.substringBefore("@") }
+                resolveSenderDisplayInfo(
+                    rawJidOrText = item.senderJid,
+                    explicitName = item.senderName,
+                    isSelf = false,
+                    participantMeta = participantMeta,
+                    chatsByJid = chatsByJid,
+                    senderPushByJid = senderPushByJid
+                ).primary.takeIf {
+                    it.isNotBlank() && !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(it, chatJid)
+                } ?: chat?.name?.takeIf { it.isNotBlank() }.orEmpty().ifBlank { "Participant" }
             } else {
                 chat?.name?.takeIf { it.isNotBlank() }
-                    ?: item.senderName.ifBlank { item.senderJid.substringBefore("@") }
+                    ?: item.senderName.takeIf {
+                        it.isNotBlank() && !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(it, chatJid)
+                    }
+                    ?: item.senderJid.substringBefore("@")
             }
         }
         FullScreenMediaViewer(
@@ -2889,6 +2949,8 @@ private fun MessageBubbleRow(
     senderDisplay: SenderDisplayInfo? = null,
     senderAvatarPath: String? = null,
     quotedDisplay: SenderDisplayInfo? = null,
+    quotedMentionsCsv: String = "",
+    mentionDisplayResolver: ((String) -> String?)? = null,
     onClickSenderAvatar: () -> Unit = {},
     ghostPlayedActive: Boolean,
     isDownloadingMedia: Boolean = false,
@@ -3033,12 +3095,18 @@ private fun MessageBubbleRow(
         ) {
             Column {
                 // Sender color label in Groups
-                if (isGroup && !effectiveOutgoing && showTail) {
+                val senderPrimary = senderDisplay?.primary
+                    ?.takeIf { it.isNotBlank() && !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(it, msg.chatJid) }
+                    ?: msg.senderName.takeIf {
+                        it.isNotBlank() && !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(it, msg.chatJid)
+                    }.orEmpty()
+                if (isGroup && !effectiveOutgoing && showTail &&
+                    !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(msg.senderJid, msg.chatJid) &&
+                    senderPrimary.isNotBlank()
+                ) {
                     val palette = listOf(Color(0xFF53BDEB), Color(0xFFFFB74D), Color(0xFF7CE8A5), Color(0xFFF48FB1))
                     val c = palette[abs(msg.senderJid.hashCode()) % palette.size]
-                    val resolvedPrimary = senderDisplay?.primary
-                        ?.takeIf { it.isNotBlank() }
-                        ?: msg.senderName.ifBlank { msg.senderJid.substringBefore("@") }
+                    val resolvedPrimary = senderPrimary
                     val resolvedPhone = senderDisplay?.secondaryPhone.orEmpty()
                     Row(
                         modifier = Modifier
@@ -3147,8 +3215,13 @@ private fun MessageBubbleRow(
                                     )
                                 }
                             }
+                            val resolvedQuotedBody = if (quotedMentionsCsv.isNotBlank() && mentionDisplayResolver != null) {
+                                resolveMentionsInText(msg.quotedBody.orEmpty(), quotedMentionsCsv, mentionDisplayResolver)
+                            } else {
+                                msg.quotedBody.orEmpty()
+                            }
                             Text(
-                                text = msg.quotedBody.orEmpty(),
+                                text = resolvedQuotedBody,
                                 color = colors.textSecondary,
                                 fontSize = 12.sp,
                                 maxLines = 2,
@@ -3568,7 +3641,11 @@ private fun MessageBubbleRow(
                         }
                         if (msg.body.isNotBlank()) {
                             Box(modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)) {
-                                InlineTimestampMessage(msg = msg, showDeletedBadge = false)
+                                InlineTimestampMessage(
+                                    msg = msg,
+                                    showDeletedBadge = false,
+                                    mentionDisplayResolver = mentionDisplayResolver
+                                )
                             }
                         }
                     }
@@ -3663,7 +3740,11 @@ private fun MessageBubbleRow(
 
                     // Standard Text, Sticker, or Anti-Deleted text bubble
                     else -> {
-                        InlineTimestampMessage(msg = msg, showDeletedBadge = false)
+                        InlineTimestampMessage(
+                            msg = msg,
+                            showDeletedBadge = false,
+                            mentionDisplayResolver = mentionDisplayResolver
+                        )
                     }
                 }
             }
@@ -3860,6 +3941,11 @@ private fun resolveSenderDisplayInfo(
 ): SenderDisplayInfo {
     if (isSelf) return SenderDisplayInfo(primary = "You", keyForColor = rawJidOrText)
     val jid = rawJidOrText.trim()
+    if (jid.endsWith("@g.us", ignoreCase = true) ||
+        DeviceContactFallbackResolver.isGroupJidLikeIdentifier(jid)
+    ) {
+        return SenderDisplayInfo(primary = "", keyForColor = jid.ifBlank { "group" })
+    }
     val meta = participantMeta[jid]
     val altJid = meta?.altJid.orEmpty()
     val chatMatch = chatsByJid[jid] ?: altJid.takeIf { it.isNotBlank() }?.let { chatsByJid[it] }

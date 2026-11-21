@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.19] - 2026-11-22
+
+### 🛠️ Fixes & Improvements
+- Loaded profile pictures automatically across chats, statuses, and channels.
+- Fixed group and community message previews showing random numbers instead of sender names.
+- Replaced raw phone numbers with real contact names in group `@mentions`.
+- Added universal APK downloads alongside the `arm64-v8a` APK.
+
 ## [0.3.5-pre.18] - 2026-11-22
 
 ### ✨ Features & Fixes

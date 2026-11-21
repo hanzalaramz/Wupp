@@ -261,6 +261,9 @@ class WaRealtimeService : Service() {
                 }
                 dao.cleanupEmptyProtocolChats()
                 dao.clearStaleUnpinnedPinOrders()
+                dao.clearGroupJidSendersOnMessages()
+                dao.clearGroupJidChatSenderPreviews()
+                healGroupLastSenderNames()
                 dao.getChatsWithReactionPreview().forEach { chat ->
                     val latest = dao.getLatestMessageForChat(chat.jid) ?: return@forEach
                     val realPreview = WaDao.previewTextFor(latest)
@@ -712,10 +715,8 @@ class WaRealtimeService : Service() {
                         Whatsbridge.setGhostPresence(StealthMatrixManager.config.value.ghostPresence)
                     }
                     serviceScope.launch {
-                        val jidsCsv = runCatching {
-                            dao.getAllChatsOnce().joinToString(",") { it.jid }
-                        }.getOrDefault("")
-                        triggerContactsAndAvatarsSync(jidsCsv)
+                        triggerContactsAndAvatarsSync("")
+                        scheduleMissingAvatarSync()
                     }
                 }
             }
@@ -909,6 +910,19 @@ class WaRealtimeService : Service() {
                     if (canonMsgChat != entity.chatJid) {
                         entity = entity.copy(chatJid = canonMsgChat)
                     }
+                    val isGrpMsg = m.optBoolean("isGroup", entity.chatJid.endsWith("@g.us"))
+                    if (isGrpMsg && DeviceContactFallbackResolver.isGroupJidLikeIdentifier(entity.senderJid, entity.chatJid)) {
+                        entity = entity.copy(senderJid = "")
+                    }
+                    if (!entity.isFromMe && DeviceContactFallbackResolver.isServerNameMissing(entity.senderName, entity.senderJid)) {
+                        val altS = m.optString("altSenderJid")
+                        val resolvedSName = resolveSenderNameLocally(entity.senderJid, altS, entity.senderName, entity.chatJid)
+                        if (resolvedSName.isNotBlank()) {
+                            entity = entity.copy(senderName = resolvedSName)
+                        } else if (DeviceContactFallbackResolver.isGroupJidLikeIdentifier(entity.senderName, entity.chatJid)) {
+                            entity = entity.copy(senderName = "")
+                        }
+                    }
                     if (!entity.isFromMe && (unreadByChat[entity.chatJid] ?: 0) == 0 && entity.deliveryStatus != "PLAYED") {
                         entity = entity.copy(deliveryStatus = "READ")
                     }
@@ -992,6 +1006,8 @@ class WaRealtimeService : Service() {
             }
         } finally {
             if (isFinal) {
+                runCatching { healGroupLastSenderNames() }
+                scheduleMissingAvatarSync()
                 releaseSyncWakeLock()
             }
         }
@@ -1007,11 +1023,139 @@ class WaRealtimeService : Service() {
 
     private fun requestSingleAvatarIfNeeded(jid: String) {
         val clean = jid.trim()
-        if (clean.isBlank() || clean == "status@broadcast" || !requestedAvatarJids.add(clean)) {
+        if (clean.isBlank() || clean == "status@broadcast" || clean.endsWith("@newsletter") || !requestedAvatarJids.add(clean)) {
             return
         }
         serviceScope.launch(Dispatchers.IO) {
             triggerContactsAndAvatarsSync(clean)
+        }
+    }
+
+    private fun scheduleMissingAvatarSync(includeStatuses: Boolean = true) {
+        serviceScope.launch(Dispatchers.IO) {
+            if (!runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) return@launch
+            val missing = LinkedHashSet<String>()
+            val chats = runCatching { dao.getAllChatsOnce() }.getOrDefault(emptyList())
+            for (ch in chats) {
+                if (ch.jid.endsWith("@newsletter") || ch.jid == "status@broadcast" || ch.jid.endsWith("@broadcast")) {
+                    continue
+                }
+                val hasValidFile = !ch.avatarPath.isNullOrBlank() &&
+                    File(ch.avatarPath).let { it.exists() && it.length() > 0L }
+                if (!hasValidFile && requestedAvatarJids.add(ch.jid)) {
+                    missing.add(ch.jid)
+                    if (missing.size >= 35) break
+                }
+            }
+            if (includeStatuses && missing.size < 35) {
+                val statuses = runCatching { dao.getAllStatusesOnce() }.getOrDefault(emptyList())
+                for (st in statuses) {
+                    val sJid = st.senderJid.trim()
+                    if (sJid.isBlank() || sJid == "status@broadcast" || sJid.endsWith("@newsletter")) continue
+                    val chatAvatar = runCatching { dao.getChat(sJid)?.avatarPath }.getOrNull()
+                    val hasValidFile = !chatAvatar.isNullOrBlank() &&
+                        File(chatAvatar).let { it.exists() && it.length() > 0L }
+                    if (!hasValidFile && requestedAvatarJids.add(sJid)) {
+                        missing.add(sJid)
+                        if (missing.size >= 35) break
+                    }
+                }
+            }
+            if (missing.isNotEmpty()) {
+                triggerContactsAndAvatarsSync(missing.joinToString(","))
+            }
+        }
+    }
+
+    private suspend fun resolveSenderNameLocally(
+        senderJid: String,
+        altSenderJid: String,
+        rawSenderName: String,
+        chatJid: String
+    ): String {
+        val cleanRaw = rawSenderName.trim()
+        if (!DeviceContactFallbackResolver.isGroupJidLikeIdentifier(cleanRaw, chatJid) &&
+            DeviceContactFallbackResolver.isUsableDisplayName(cleanRaw, senderJid, altSenderJid)
+        ) {
+            return cleanRaw
+        }
+        val cleanSender = senderJid.trim()
+        val cleanAlt = altSenderJid.trim()
+        if (cleanSender.isBlank() && cleanAlt.isBlank()) return ""
+        if (DeviceContactFallbackResolver.isGroupJidLikeIdentifier(cleanSender, chatJid)) return ""
+
+        val candidates = listOfNotNull(
+            cleanSender.takeIf { it.isNotBlank() }?.let { pushnameCache[it] },
+            cleanAlt.takeIf { it.isNotBlank() }?.let { pushnameCache[it] },
+            cleanSender.takeIf { it.isNotBlank() }?.let { dao.getContact(it)?.name },
+            cleanAlt.takeIf { it.isNotBlank() }?.let { dao.getContact(it)?.name },
+            cleanSender.takeIf { it.isNotBlank() }?.let { dao.getChat(it)?.name },
+            cleanAlt.takeIf { it.isNotBlank() }?.let { dao.getChat(it)?.name },
+            DeviceContactFallbackResolver.lookupForParticipant(applicationContext, cleanSender, cleanAlt)
+        )
+        return candidates.firstOrNull {
+            !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(it, chatJid) &&
+                DeviceContactFallbackResolver.isUsableDisplayName(it, cleanSender, cleanAlt)
+        }?.trim().orEmpty()
+    }
+
+    private suspend fun healGroupLastSenderNames() {
+        val groupChats = runCatching { dao.getAllChatsOnce() }
+            .getOrDefault(emptyList())
+            .filter { it.isGroup && !it.lastMessageFromMe }
+        if (groupChats.isEmpty()) return
+
+        val pendingResolution = LinkedHashMap<String, MutableList<Pair<ChatEntity, MessageEntity>>>()
+        for (chat in groupChats) {
+            val latest = dao.getLatestMessageForChat(chat.jid) ?: continue
+            if (latest.isFromMe) {
+                if (chat.lastMessageSenderName.isNotBlank()) {
+                    dao.updateChatLastSenderName(chat.jid, "")
+                }
+                continue
+            }
+            if (DeviceContactFallbackResolver.isGroupJidLikeIdentifier(latest.senderJid, chat.jid)) {
+                dao.updateChatLastSenderName(chat.jid, "")
+                continue
+            }
+            val currentLabel = chat.lastMessageSenderName.trim()
+            val needsHeal = currentLabel.isBlank() ||
+                DeviceContactFallbackResolver.isGroupJidLikeIdentifier(currentLabel, chat.jid) ||
+                DeviceContactFallbackResolver.isServerNameMissing(currentLabel, latest.senderJid)
+            if (!needsHeal) continue
+
+            val localName = resolveSenderNameLocally(latest.senderJid, "", latest.senderName, chat.jid)
+            if (localName.isNotBlank()) {
+                dao.updateMessageSenderName(latest.id, localName)
+                dao.updateChatLastSenderName(chat.jid, localName)
+            } else if (latest.senderJid.contains("@")) {
+                pendingResolution.getOrPut(latest.senderJid) { mutableListOf() }.add(chat to latest)
+            } else if (DeviceContactFallbackResolver.isGroupJidLikeIdentifier(currentLabel, chat.jid)) {
+                dao.updateChatLastSenderName(chat.jid, "")
+            }
+        }
+        if (pendingResolution.isEmpty()) return
+        val rawJson = resolveParticipantNamesJson(pendingResolution.keys.take(40).joinToString(","))
+        val obj = runCatching { JSONObject(rawJson) }.getOrNull() ?: return
+        for ((sJid, pairs) in pendingResolution) {
+            val item = obj.optJSONObject(sJid) ?: continue
+            val altJid = item.optString("altJid")
+            val phone = item.optString("phone")
+            val bestName = sequenceOf(
+                item.optString("savedName"),
+                item.optString("pushName"),
+                item.optString("name"),
+                DeviceContactFallbackResolver.lookupForParticipant(applicationContext, sJid, altJid, phone).orEmpty()
+            ).firstOrNull {
+                !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(it) &&
+                    DeviceContactFallbackResolver.isUsableDisplayName(it, sJid, altJid)
+            } ?: DeviceContactFallbackResolver.formatIntlPhoneCompact(phone)
+            if (bestName.isNotBlank()) {
+                for ((chat, msg) in pairs) {
+                    dao.updateMessageSenderName(msg.id, bestName)
+                    dao.updateChatLastSenderName(chat.jid, bestName)
+                }
+            }
         }
     }
 
@@ -1026,6 +1170,18 @@ class WaRealtimeService : Service() {
         }
         val isSync = json.optBoolean("isSync", false)
         val isGrp = json.optBoolean("isGroup", msg.chatJid.endsWith("@g.us"))
+        val altSender = json.optString("altSenderJid")
+        if (isGrp && DeviceContactFallbackResolver.isGroupJidLikeIdentifier(msg.senderJid, msg.chatJid)) {
+            msg = msg.copy(senderJid = "")
+        }
+        if (isGrp && !msg.isFromMe) {
+            val resolvedSender = resolveSenderNameLocally(msg.senderJid, altSender, msg.senderName, msg.chatJid)
+            if (resolvedSender.isNotBlank()) {
+                msg = msg.copy(senderName = resolvedSender)
+            } else if (DeviceContactFallbackResolver.isGroupJidLikeIdentifier(msg.senderName, msg.chatJid)) {
+                msg = msg.copy(senderName = "")
+            }
+        }
         val isActiveChat = activeChatJid.value == msg.chatJid
         val shouldAutoRead = !isSync && isActiveChat && !msg.isFromMe &&
             StealthMatrixManager.getEffectivePrivacy(dao, msg.chatJid).sendReadReceipts
@@ -1033,7 +1189,12 @@ class WaRealtimeService : Service() {
             msg = msg.copy(deliveryStatus = "READ")
         }
         val usableSender = msg.senderName.takeIf {
-            DeviceContactFallbackResolver.isUsableDisplayName(it, msg.chatJid)
+            !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(it, msg.chatJid) &&
+                DeviceContactFallbackResolver.isUsableDisplayName(
+                    it,
+                    if (isGrp) msg.senderJid else msg.chatJid,
+                    altSender
+                )
         }
         val nameHint = if (!isGrp && !msg.isFromMe) {
             usableSender ?: pushnameCache[msg.chatJid] ?: ""
@@ -1645,6 +1806,7 @@ class WaRealtimeService : Service() {
         }
         if (contactEntities.isNotEmpty()) {
             dao.upsertContacts(contactEntities)
+            runCatching { healGroupLastSenderNames() }
         }
     }
 
@@ -1684,6 +1846,7 @@ class WaRealtimeService : Service() {
         }
         if (entities.isNotEmpty()) {
             dao.upsertSyncedGroups(entities)
+            scheduleMissingAvatarSync(includeStatuses = false)
         }
     }
 
@@ -1697,6 +1860,7 @@ class WaRealtimeService : Service() {
             val name = c.optString("name").ifBlank { jid.substringBefore("@") }
             val desc = c.optString("description")
             val isMuted = c.optBoolean("isMuted", false)
+            val avatarPath = c.optString("avatarPath").ifBlank { null }
             if (name.isNotBlank() && name != jid.substringBefore("@")) {
                 pushnameCache[jid] = name
             }
@@ -1705,6 +1869,7 @@ class WaRealtimeService : Service() {
                     jid = jid,
                     name = name,
                     aboutText = desc,
+                    avatarPath = avatarPath,
                     isGroup = false,
                     isMuted = isMuted,
                     lastMessagePreview = desc

@@ -201,4 +201,41 @@ class HomeTabFilterTest {
         assertEquals(true, canPinMoreChats(threePinned, listOf("1@s.whatsapp.net")))
         assertEquals(true, canPinMoreChats(threePinned, listOf("999@newsletter")))
     }
+
+    @Test
+    fun resolveChatSubtitlePreview_stripsGroupJidsAndRawIdentifiersFromSenderPrefix() {
+        val groupWith120363 = ChatEntity(
+            jid = "120363401989542982@g.us",
+            name = "LUMS Hotline",
+            isGroup = true,
+            lastMessageSenderName = "120363401989542982",
+            lastMessagePreview = "There's a reason",
+            lastMessageFromMe = false
+        )
+        assertEquals("There's a reason", resolveChatSubtitlePreview(groupWith120363))
+
+        val legacyGroup = ChatEntity(
+            jid = "923348882974-1595838950@g.us",
+            name = "FUKREY",
+            isGroup = true,
+            lastMessageSenderName = "923348882974-1595838950",
+            lastMessagePreview = "Dhulan to dhikha",
+            lastMessageFromMe = false
+        )
+        assertEquals("Dhulan to dhikha", resolveChatSubtitlePreview(legacyGroup))
+
+        val lidSender = grp1.copy(
+            lastMessageSenderName = "1122334455@lid",
+            lastMessagePreview = "Hello",
+            lastMessageFromMe = false
+        )
+        assertEquals("Hello", resolveChatSubtitlePreview(lidSender))
+
+        val realSender = groupWith120363.copy(
+            lastMessageSenderName = "Ahmad Akhtar",
+            lastMessagePreview = "Photo",
+            lastMessageFromMe = false
+        )
+        assertEquals("Ahmad Akhtar: Photo", resolveChatSubtitlePreview(realSender))
+    }
 }

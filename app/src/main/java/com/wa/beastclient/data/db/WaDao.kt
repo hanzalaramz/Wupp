@@ -305,6 +305,30 @@ interface WaDao {
     @Query("DELETE FROM messages WHERE msg_type = 'UNKNOWN' AND body = '' AND is_view_once = 0 AND (local_media_path IS NULL OR local_media_path = '')")
     suspend fun deleteEmptyUnknownMessages()
 
+    @Query("UPDATE messages SET sender_jid = '', sender_name = '' WHERE sender_jid LIKE '%@g.us'")
+    suspend fun clearGroupJidSendersOnMessages()
+
+    @Query(
+        """
+        UPDATE chats
+        SET last_message_sender_name = ''
+        WHERE last_message_sender_name != ''
+          AND (
+            last_message_sender_name = jid
+            OR last_message_sender_name LIKE '%@g.us'
+            OR (instr(jid, '@') > 1 AND last_message_sender_name = substr(jid, 1, instr(jid, '@') - 1))
+            OR (last_message_sender_name GLOB '[0-9]*-[0-9]*' AND length(last_message_sender_name) >= 16)
+          )
+        """
+    )
+    suspend fun clearGroupJidChatSenderPreviews()
+
+    @Query("UPDATE messages SET sender_name = :senderName WHERE id = :messageId")
+    suspend fun updateMessageSenderName(messageId: String, senderName: String)
+
+    @Query("UPDATE chats SET last_message_sender_name = :senderName WHERE jid = :chatJid")
+    suspend fun updateChatLastSenderName(chatJid: String, senderName: String)
+
     @Query("UPDATE chats SET last_message_preview = 'Photo', last_message_type = 'VIEW_ONCE_IMAGE' WHERE last_message_preview LIKE 'View once media%' OR last_message_preview LIKE 'View once image%' OR last_message_preview LIKE 'View once text%' OR last_message_preview = 'View once photo'")
     suspend fun normalizeViewOncePreviews()
 
@@ -325,6 +349,7 @@ interface WaDao {
                     existing.copy(
                         name = resolvedName,
                         aboutText = ch.aboutText.ifBlank { existing.aboutText },
+                        avatarPath = ch.avatarPath?.takeIf { it.isNotBlank() } ?: existing.avatarPath,
                         isMuted = ch.isMuted || existing.isMuted,
                         lastMessagePreview = existing.lastMessagePreview.ifBlank { ch.aboutText }
                     )
@@ -729,6 +754,9 @@ interface WaDao {
     @Query("SELECT * FROM statuses ORDER BY timestamp DESC")
     fun observeStatuses(): Flow<List<StatusEntity>>
 
+    @Query("SELECT * FROM statuses ORDER BY timestamp DESC")
+    suspend fun getAllStatusesOnce(): List<StatusEntity>
+
     @Query("SELECT * FROM statuses WHERE timestamp >= :sinceTimestamp ORDER BY timestamp DESC")
     fun observeActiveStatuses(sinceTimestamp: Long): Flow<List<StatusEntity>>
 
@@ -891,8 +919,7 @@ interface WaDao {
         val mergedIsDeleted = latestMsg?.isDeletedBySender
             ?: (canonical.lastMessageIsDeleted || duplicate.lastMessageIsDeleted)
         val mergedSenderName = latestMsg?.let { msg ->
-            if (msg.isFromMe) ""
-            else msg.senderName.ifBlank { msg.senderJid.substringBefore("@") }
+            safeSenderLabelForChatPreview(msg)
         } ?: if (dupIsNewer) duplicate.lastMessageSenderName else canonical.lastMessageSenderName
         val mergedTs = maxOf(
             canonical.lastMessageTimestamp,
@@ -1034,7 +1061,7 @@ interface WaDao {
                 } else {
                     chat.lastMessageStatus
                 }
-                val latestSenderName = if (latest.isFromMe) "" else latest.senderName.ifBlank { latest.senderJid.substringBefore("@") }
+                val latestSenderName = safeSenderLabelForChatPreview(latest)
                 upsertChat(
                     chat.copy(
                         lastMessageId = latest.id,
@@ -1103,7 +1130,7 @@ interface WaDao {
             return isNewMessage
         }
         val preview = previewTextFor(effectiveMessage)
-        val incomingSenderName = if (effectiveMessage.isFromMe) "" else effectiveMessage.senderName.ifBlank { effectiveMessage.senderJid.substringBefore("@") }
+        val incomingSenderName = safeSenderLabelForChatPreview(effectiveMessage)
         val effectiveType = if (effectiveMessage.isViewOnce) "VIEW_ONCE_${effectiveMessage.msgType}" else effectiveMessage.msgType
         val shouldBumpUnread = incrementUnread && isNewMessage && !effectiveMessage.isFromMe
         if (existingChat == null) {
@@ -1195,7 +1222,7 @@ interface WaDao {
             val hasEdited = hasAnyEditedMessage(existing.chatJid)
             val shouldRefreshPreview = chat.lastMessageId == messageId || chat.lastMessageId.isNullOrBlank()
             val latestSenderName = latest?.let { msg ->
-                if (msg.isFromMe) "" else msg.senderName.ifBlank { msg.senderJid.substringBefore("@") }
+                safeSenderLabelForChatPreview(msg)
             }.orEmpty()
             upsertChat(
                 chat.copy(
@@ -1304,6 +1331,30 @@ interface WaDao {
             "DELIVERED" -> 2
             "SENT", "LOCAL_SENT" -> 1
             else -> 0
+        }
+
+        fun safeSenderLabelForChatPreview(msg: MessageEntity): String {
+            if (msg.isFromMe) return ""
+            val cleanName = msg.senderName.trim()
+            if (cleanName.isNotBlank() &&
+                !com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver.isGroupJidLikeIdentifier(cleanName, msg.chatJid) &&
+                com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver.isUsableDisplayName(cleanName, msg.senderJid)
+            ) {
+                return cleanName
+            }
+            val sJid = msg.senderJid.trim()
+            if (sJid.isBlank() ||
+                sJid == msg.chatJid ||
+                com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver.isGroupJidLikeIdentifier(sJid, msg.chatJid)
+            ) {
+                return ""
+            }
+            if (sJid.endsWith("@s.whatsapp.net", ignoreCase = true)) {
+                val formatted = com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
+                    .formatIntlPhoneCompact(sJid.substringBefore("@").substringBefore(":"))
+                if (formatted.isNotBlank()) return formatted
+            }
+            return ""
         }
 
         fun previewTextFor(msg: MessageEntity): String {

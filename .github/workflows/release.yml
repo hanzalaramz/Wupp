@@ -35,7 +35,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
 
       - uses: android-actions/setup-android@v3
         with:
@@ -74,10 +74,11 @@ jobs:
           echo "version_code=${VER_CODE}" >> "$GITHUB_OUTPUT"
           echo "is_prerelease=${IS_PRE}" >> "$GITHUB_OUTPUT"
 
-      - name: Build arm64-v8a libwhatsbridge_rs.so
+      - name: Build multi-ABI libwhatsbridge_rs.so
         env:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
+          WUPP_RUST_ABIS: "arm64-v8a armeabi-v7a x86_64"
         run: bash rustbridge/build-android.sh
 
       - uses: gradle/actions/setup-gradle@v4

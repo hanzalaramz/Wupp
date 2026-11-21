@@ -56,4 +56,24 @@ class ChatEmojiTextUtilsTest {
         assertEquals("aef", deleted.text)
         assertEquals(TextRange(1), deleted.selection)
     }
+
+    @Test
+    fun resolveMentionsInText_replacesRawLidAndPhoneMentionsUsingResolver() {
+        val rawText = "Hey @14098237491823 and @923001234567 please check"
+        val csv = "14098237491823@lid,923001234567@s.whatsapp.net"
+        val resolved = resolveMentionsInText(rawText, csv) { jid ->
+            when (jid) {
+                "14098237491823@lid" -> "Ahmad Akhtar"
+                "923001234567@s.whatsapp.net" -> "Mom"
+                else -> null
+            }
+        }
+        assertEquals("Hey @Ahmad Akhtar and @Mom please check", resolved)
+
+        val unchangedEmail = "mail user@923001234567 not a mention"
+        assertEquals(
+            unchangedEmail,
+            resolveMentionsInText(unchangedEmail, "923001234567@s.whatsapp.net") { "Mom" }
+        )
+    }
 }

@@ -52,4 +52,43 @@ class DeviceContactFallbackResolverTest {
         assertEquals("UK Person", index.lookup("443001234567@s.whatsapp.net"))
         assertNull(index.lookup("923001234567@s.whatsapp.net"))
     }
+
+    @Test
+    fun groupJidLikeIdentifierDetectsGroupJidsAndRejectsRealNames() {
+        assertTrue(
+            DeviceContactFallbackResolver.isGroupJidLikeIdentifier(
+                "120363401989542982@g.us",
+                "120363401989542982@g.us"
+            )
+        )
+        assertTrue(
+            DeviceContactFallbackResolver.isGroupJidLikeIdentifier(
+                "120363401989542982",
+                "120363401989542982@g.us"
+            )
+        )
+        assertTrue(
+            DeviceContactFallbackResolver.isGroupJidLikeIdentifier(
+                "923348882974-1595838950",
+                "923348882974-1595838950@g.us"
+            )
+        )
+        assertTrue(
+            DeviceContactFallbackResolver.isGroupJidLikeIdentifier(
+                "923348882974-1595838950"
+            )
+        )
+        assertFalse(DeviceContactFallbackResolver.isGroupJidLikeIdentifier("Talha", "120363401989542982@g.us"))
+        assertFalse(DeviceContactFallbackResolver.isGroupJidLikeIdentifier("Mom"))
+        assertFalse(DeviceContactFallbackResolver.isGroupJidLikeIdentifier("923001234567"))
+    }
+
+    @Test
+    fun formatIntlPhoneCompactFormatsNumbersAndRejectsInvalidInput() {
+        assertEquals("+92 300 1234567", DeviceContactFallbackResolver.formatIntlPhoneCompact("923001234567"))
+        assertEquals("+92 300 1234567", DeviceContactFallbackResolver.formatIntlPhoneCompact("+92 300-1234567"))
+        assertEquals("+1 (415) 555-0199", DeviceContactFallbackResolver.formatIntlPhoneCompact("14155550199"))
+        assertEquals("", DeviceContactFallbackResolver.formatIntlPhoneCompact("123"))
+        assertEquals("", DeviceContactFallbackResolver.formatIntlPhoneCompact(""))
+    }
 }

@@ -141,6 +141,48 @@ object DeviceContactFallbackResolver {
         altJid: String = ""
     ): Boolean = !isServerNameMissing(candidate, jid, altJid)
 
+    /**
+     * Returns true when [candidate] is actually a group/community JID or legacy `phone-epoch` ID
+     * that must never be displayed as an individual message sender name.
+     */
+    internal fun isGroupJidLikeIdentifier(
+        candidate: String?,
+        chatJid: String = ""
+    ): Boolean {
+        val clean = candidate?.trim().orEmpty()
+        if (clean.isBlank()) return false
+        if (clean.endsWith("@g.us", ignoreCase = true)) return true
+        val cleanChat = chatJid.trim()
+        val chatBare = cleanChat.substringBefore("@").substringBefore(":")
+        if (cleanChat.isNotBlank() && (clean == cleanChat || (chatBare.isNotBlank() && clean == chatBare))) {
+            return true
+        }
+        val bare = clean.substringBefore("@").substringBefore(":")
+        val dashIdx = bare.indexOf('-')
+        if (dashIdx in 6 until bare.length - 5) {
+            val left = bare.substring(0, dashIdx)
+            val right = bare.substring(dashIdx + 1)
+            if (left.all { it.isDigit() } && right.all { it.isDigit() }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    internal fun formatIntlPhoneCompact(raw: String): String {
+        val digits = raw.filter { it.isDigit() }
+        if (digits.length < 7) return ""
+        return when {
+            digits.startsWith("92") && digits.length == 12 ->
+                "+92 ${digits.substring(2, 5)} ${digits.substring(5)}"
+            digits.startsWith("1") && digits.length == 11 ->
+                "+1 (${digits.substring(1, 4)}) ${digits.substring(4, 7)}-${digits.substring(7)}"
+            digits.length >= 11 ->
+                "+${digits.substring(0, 2)} ${digits.substring(2, 5)} ${digits.substring(5)}"
+            else -> "+$digits"
+        }
+    }
+
     internal fun clearCacheForTest() {
         cachedIndex = DeviceContactIndex.EMPTY
         cachedAtMs = 0L
