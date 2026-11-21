@@ -47,6 +47,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -68,14 +69,18 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
 import com.wa.beastclient.R
+import com.wa.beastclient.core.calling.OfficialWhatsAppHelper
 import com.wa.beastclient.core.service.WaRealtimeService
+import com.wa.beastclient.domain.stealth.StealthMatrixManager
+import com.wa.beastclient.ui.calling.OfficialWhatsAppCallCoexistenceSection
 import com.wa.beastclient.ui.theme.LocalWaColors
 
 private data class SetupPermissionSnapshot(
     val notificationsGranted: Boolean,
     val mediaGranted: Boolean,
     val micGranted: Boolean,
-    val batteryUnrestricted: Boolean
+    val batteryUnrestricted: Boolean,
+    val officialWhatsAppPkg: String?
 ) {
     val allRuntimeGranted: Boolean
         get() = notificationsGranted && mediaGranted && micGranted
@@ -114,7 +119,8 @@ private fun readSetupSnapshot(context: Context): SetupPermissionSnapshot {
         notificationsGranted = notifGranted,
         mediaGranted = mediaGranted,
         micGranted = micGranted,
-        batteryUnrestricted = batteryOk
+        batteryUnrestricted = batteryOk,
+        officialWhatsAppPkg = OfficialWhatsAppHelper.findInstalledPackage(context)
     )
 }
 
@@ -157,6 +163,8 @@ fun FirstInstallSetupScreen(
 ) {
     val colors = LocalWaColors.current
     val context = LocalContext.current
+    remember(context) { StealthMatrixManager.init(context); true }
+    val stealth by StealthMatrixManager.config.collectAsState()
     var refreshTick by remember { mutableIntStateOf(0) }
 
     val lifecycleOwner = context as? LifecycleOwner
@@ -326,6 +334,14 @@ fun FirstInstallSetupScreen(
                             onActionClick = { openBatteryOptimizationPrompt(context) }
                         )
                     }
+                }
+
+                if (snapshot.officialWhatsAppPkg != null) {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    OfficialWhatsAppCallCoexistenceSection(
+                        officialPkg = snapshot.officialWhatsAppPkg,
+                        stealth = stealth
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))

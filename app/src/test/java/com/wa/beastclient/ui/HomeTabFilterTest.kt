@@ -131,4 +131,74 @@ class HomeTabFilterTest {
         )
         assertEquals("Sarah: Already prefixed", resolveChatSubtitlePreview(grpAlreadyPrefixed))
     }
+
+    @Test
+    fun filterHomeThreads_ordersByPinThenLatestMessageIgnoringStaleUnpinnedPinOrder() {
+        val olderWithStalePinOrder = ChatEntity(
+            jid = "111@s.whatsapp.net",
+            name = "Zarr",
+            isPinned = false,
+            pinOrder = 9_999_999_999L,
+            lastMessageTimestamp = 1_700_000_100_000L,
+            lastMessagePreview = "Earlier msg"
+        )
+        val newestUnpinned = ChatEntity(
+            jid = "222@g.us",
+            name = "M A Q S A D",
+            isGroup = true,
+            isPinned = false,
+            pinOrder = 0L,
+            lastMessageTimestamp = 1_700_000_900_000L,
+            lastMessagePreview = "Latest response"
+        )
+        val midUnpinned = ChatEntity(
+            jid = "333@s.whatsapp.net",
+            name = "Ufone",
+            isPinned = false,
+            pinOrder = 5_000_000L,
+            lastMessageTimestamp = 1_700_000_500_000L,
+            lastMessagePreview = "Voice message"
+        )
+        val pinnedOlder = ChatEntity(
+            jid = "444@g.us",
+            name = "Pinned Group",
+            isGroup = true,
+            isPinned = true,
+            pinOrder = 100L,
+            lastMessageTimestamp = 1_699_000_000_000L,
+            lastMessagePreview = "Pinned"
+        )
+
+        val sorted = filterHomeThreads(
+            listOf(olderWithStalePinOrder, midUnpinned, newestUnpinned, pinnedOlder),
+            HomeFilterChip.ALL,
+            query = "",
+            hideLocked = true
+        )
+        assertEquals(
+            listOf(pinnedOlder, newestUnpinned, midUnpinned, olderWithStalePinOrder),
+            sorted
+        )
+    }
+
+    @Test
+    fun canPinMoreChats_enforcesThreePinnedChatLimitAcrossDmsAndGroups() {
+        val pinned1 = dm1.copy(jid = "1@s.whatsapp.net", isPinned = true)
+        val pinned2 = grp1.copy(jid = "2@g.us", isPinned = true)
+        val pinned3 = dm1.copy(jid = "3@s.whatsapp.net", isPinned = true)
+        val pinnedChannel = channel.copy(jid = "123@newsletter", isPinned = true)
+        val unpinned4 = dm1.copy(jid = "4@s.whatsapp.net", isPinned = false)
+        val unpinned5 = dm1.copy(jid = "5@s.whatsapp.net", isPinned = false)
+
+        // Two pinned chats + a pinned channel still leaves 1 regular pin slot.
+        val twoPinned = listOf(pinned1, pinned2, pinnedChannel, unpinned4, unpinned5)
+        assertEquals(true, canPinMoreChats(twoPinned, listOf("4@s.whatsapp.net")))
+        assertEquals(false, canPinMoreChats(twoPinned, listOf("4@s.whatsapp.net", "5@s.whatsapp.net")))
+
+        // Three regular pinned chats block a 4th chat pin while still allowing channels / re-pinning existing.
+        val threePinned = listOf(pinned1, pinned2, pinned3, pinnedChannel, unpinned4)
+        assertEquals(false, canPinMoreChats(threePinned, listOf("4@s.whatsapp.net")))
+        assertEquals(true, canPinMoreChats(threePinned, listOf("1@s.whatsapp.net")))
+        assertEquals(true, canPinMoreChats(threePinned, listOf("999@newsletter")))
+    }
 }

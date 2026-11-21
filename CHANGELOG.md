@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.3.5-pre.18] - 2026-11-22
+
+### ✨ Features & Fixes
+- Replaced the background bridge and browser calling stack with a unified native core.
+- Added native in-app voice and video calling using a single linked device.
+- Fixed contact statuses not appearing and marked viewed statuses as seen across devices.
+- Removed automatic saving of View-Once media to restore standard behavior.
+- Fixed incoming call log names, missed or silenced call labels, and punctuation-only contact names.
+- Fixed rotated and stretched video call streams on both local and remote screens.
+- Fixed outgoing calls showing "Calling" and "Ringing" before starting the call timer.
+- Fixed chat list sorting so latest replies move to the top and reactions do not replace chat timestamps.
+- Limited pinned chats to 3 to stay synced with WhatsApp.
+- Added a setup guide and setting to prevent double ringing when Official WhatsApp is installed.
+
 ## [0.3.5-pre.17] - 2026-11-21
 
 ### 🛠️ Fixes

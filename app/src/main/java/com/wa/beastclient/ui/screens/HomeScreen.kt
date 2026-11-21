@@ -232,6 +232,7 @@ import com.wa.beastclient.ui.components.StatusComposerSheet
 import com.wa.beastclient.ui.components.StatusGroup
 import com.wa.beastclient.ui.components.StorageUsageDialog
 import com.wa.beastclient.ui.components.WhatsAppAccountPrivacyDialog
+import com.wa.beastclient.ui.components.buildContactStatusSummaries
 import com.wa.beastclient.ui.components.formatFontScaleLabel
 import com.wa.beastclient.ui.components.isOwnStatusSender
 import com.wa.beastclient.ui.components.partitionOwnAndContactStatuses
@@ -409,7 +410,7 @@ fun HomeScreen(
                 Toast.makeText(context, "Disable Offline Mode to place calls", Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            if (stealth.callBackendMode == CallBackendMode.OFF || !stealth.callingLinked) {
+            if (stealth.callBackendMode == CallBackendMode.OFF) {
                 showHomeCallingSetupDialog = true
                 return@launch
             }
@@ -453,7 +454,7 @@ fun HomeScreen(
     val launchHomeCall: (String, String, String?, Boolean) -> Unit = { peerJid, peerName, avatarPath, isVideo ->
         if (stealth.offlineMode) {
             Toast.makeText(context, "Disable Offline Mode to place calls", Toast.LENGTH_SHORT).show()
-        } else if (stealth.callBackendMode == CallBackendMode.OFF || !stealth.callingLinked) {
+        } else if (stealth.callBackendMode == CallBackendMode.OFF) {
             showHomeCallingSetupDialog = true
         } else {
             val missing = buildList {
@@ -1367,7 +1368,11 @@ fun HomeScreen(
 
     activeStatusViewer?.let { st ->
         val myStatusLabel = stringResource(R.string.status_my_status)
-        val statusGroups = remember(statuses, allChats, bridgeStatus.ownJid, myStatusLabel, st.id) {
+        val lockedSenderOrder = remember(st.id) {
+            val (_, initialContacts) = partitionOwnAndContactStatuses(statuses, bridgeStatus.ownJid, filterExpired = true)
+            buildContactStatusSummaries(initialContacts).map { it.senderKey }
+        }
+        val statusGroups = remember(statuses, allChats, bridgeStatus.ownJid, myStatusLabel, st.id, lockedSenderOrder) {
             val (chatsByJid, chatsByUser) = buildStatusChatLookup(allChats)
             val (ownStatuses, contactStatuses) = partitionOwnAndContactStatuses(statuses, bridgeStatus.ownJid, filterExpired = true)
             val viewedOwn = isOwnStatusSender(st.senderJid, bridgeStatus.ownJid)
@@ -1398,9 +1403,12 @@ fun HomeScreen(
                 listOf(toStatusGroup(normalizeStatusSenderJid(st.senderJid), ownItems, isOwn = true))
             } else {
                 val bySender = contactStatuses.groupBy { normalizeStatusSenderJid(it.senderJid) }
-                val groupsList = bySender.entries.map { (senderJid, items) ->
-                    toStatusGroup(senderJid, items, isOwn = false)
-                }
+                val rankBySender = lockedSenderOrder.withIndex().associate { it.value to it.index }
+                val groupsList = bySender.entries
+                    .sortedBy { (senderJid, _) -> rankBySender[senderJid] ?: Int.MAX_VALUE }
+                    .map { (senderJid, items) ->
+                        toStatusGroup(senderJid, items, isOwn = false)
+                    }
                 groupsList.ifEmpty {
                     val normSender = normalizeStatusSenderJid(st.senderJid)
                     listOf(toStatusGroup(normSender, listOf(st), isOwn = false))
@@ -1422,6 +1430,9 @@ fun HomeScreen(
             failedStatusIds = failedMediaIds,
             onRequestDownload = { target ->
                 viewModel.requestStatusMediaDownload(target, userInitiated = true)
+            },
+            onStatusViewed = { viewed ->
+                viewModel.markStatusViewed(viewed)
             },
             onDismiss = { activeStatusViewer = null },
             onSaveToGallery = { target ->
@@ -1571,7 +1582,7 @@ private fun CallsTab(
 ) {
     val colors = LocalWaColors.current
     val use24Hour = LocalWuppUse24Hour.current
-    val isCallingReady = stealth.callingLinked && stealth.callBackendMode != CallBackendMode.OFF
+    val isCallingReady = stealth.callBackendMode != CallBackendMode.OFF
 
     AnimatedContent(
         targetState = isCallingReady,
@@ -1815,9 +1826,13 @@ private fun CallsTab(
                     } ?: "No answer"
                     val isVideoCall = callTitle.contains("Video", ignoreCase = true)
                     val isMissed = !log.isFromMe && (
-                        callSubtitle.contains("No answer", ignoreCase = true) ||
+                        callTitle.contains("Missed", ignoreCase = true) ||
+                            callTitle.contains("Silenced", ignoreCase = true) ||
+                            callSubtitle.contains("No answer", ignoreCase = true) ||
                             callSubtitle.contains("Missed", ignoreCase = true) ||
-                            callSubtitle.contains("Declined", ignoreCase = true)
+                            callSubtitle.contains("Declined", ignoreCase = true) ||
+                            callSubtitle.contains("Do Not Disturb", ignoreCase = true) ||
+                            callSubtitle.contains("Unknown caller", ignoreCase = true)
                         )
                     val directionIcon = when {
                         isMissed -> Icons.AutoMirrored.Rounded.CallMissed
@@ -2896,12 +2911,13 @@ private fun UpdatesStatusTab(
     }
     val groupedStatuses = remember(contactStatuses, allChats, searchQuery) {
         val q = searchQuery.trim().lowercase()
-        val grouped = contactStatuses.groupBy { normalizeStatusSenderJid(it.senderJid) }.values.map { it.first() }
-        if (q.isEmpty()) grouped
-        else grouped.filter { st ->
+        val summaries = buildContactStatusSummaries(contactStatuses)
+        if (q.isEmpty()) summaries
+        else summaries.filter { summary ->
+            val st = summary.representativeStatus
             val senderChat = resolveStatusSenderChat(st.senderJid, chatsByJid, chatsByUser)
             val name = resolveStatusDisplayName(st.senderJid, st.senderName, senderChat)
-            name.lowercase().contains(q) || st.caption.lowercase().contains(q)
+            name.lowercase().contains(q) || summary.items.any { it.caption.lowercase().contains(q) }
         }
     }
     val filteredChannels = remember(channels, searchQuery) {
@@ -3041,9 +3057,15 @@ private fun UpdatesStatusTab(
                     )
                 }
             } else {
-                items(groupedStatuses, key = { "status_vert_${it.id}" }) { st ->
+                items(groupedStatuses, key = { "status_vert_${it.senderKey}" }) { summary ->
+                    val st = summary.representativeStatus
                     val senderChat = resolveStatusSenderChat(st.senderJid, chatsByJid, chatsByUser)
                     val displayName = resolveStatusDisplayName(st.senderJid, st.senderName, senderChat)
+                    val ringColor = when {
+                        summary.hasRevoked -> colors.antiDeleteRed
+                        summary.hasUnviewed -> colors.brightGreen
+                        else -> colors.textSecondary.copy(alpha = 0.55f)
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -3055,7 +3077,7 @@ private fun UpdatesStatusTab(
                             modifier = Modifier
                                 .size(52.dp)
                                 .clip(CircleShape)
-                                .border(2.dp, colors.brightGreen, CircleShape)
+                                .border(2.dp, ringColor, CircleShape)
                                 .padding(3.dp)
                         ) {
                             WhatsAppAvatar(
@@ -3118,11 +3140,14 @@ private fun UpdatesStatusTab(
                             onAddStatus = { onAddStatus(StatusComposerMode.MEDIA) }
                         )
                     }
-                    items(groupedStatuses, key = { "status_card_${it.id}" }) { st ->
+                    items(groupedStatuses, key = { "status_card_${it.senderKey}" }) { summary ->
+                        val st = summary.representativeStatus
                         val senderChat = resolveStatusSenderChat(st.senderJid, chatsByJid, chatsByUser)
                         StatusStoryCard(
                             status = st,
                             senderChat = senderChat,
+                            hasUnviewed = summary.hasUnviewed,
+                            hasRevoked = summary.hasRevoked,
                             onClick = { onOpenStatus(st) }
                         )
                     }
@@ -3409,6 +3434,8 @@ private fun resolveStatusDisplayName(
 private fun StatusStoryCard(
     status: StatusEntity,
     senderChat: ChatEntity?,
+    hasUnviewed: Boolean,
+    hasRevoked: Boolean,
     onClick: () -> Unit
 ) {
     val colors = LocalWaColors.current
@@ -3474,7 +3501,11 @@ private fun StatusStoryCard(
                 .clip(CircleShape)
                 .border(
                     width = 2.dp,
-                    color = if (status.isRevoked) colors.antiDeleteRed else colors.brightGreen,
+                    color = when {
+                        hasRevoked || status.isRevoked -> colors.antiDeleteRed
+                        hasUnviewed -> colors.brightGreen
+                        else -> colors.textSecondary.copy(alpha = 0.55f)
+                    },
                     shape = CircleShape
                 )
                 .padding(3.dp)
@@ -4226,11 +4257,12 @@ private fun ToolsVaultTab(
         }
 
         item(key = "patch_section_calling") {
-            ExpressiveSegmentedGroup(title = "Voice & Video Calling (Beta)") {
-                val linkBadge = if (stealth.callingLinked) "Linked" else "Unlinked"
+            ExpressiveSegmentedGroup(title = "Voice & Video Calling") {
+                val nativeActive = stealth.callBackendMode != CallBackendMode.OFF
+                val linkBadge = if (nativeActive) "Native VoIP" else "Official App"
                 val statusSummary = when {
                     stealth.offlineMode -> "Paused while Offline Mode is enabled"
-                    !stealth.callingLinked -> "Link a companion session once via 8-digit code"
+                    !nativeActive -> "Handing off calls to Official WhatsApp"
                     else -> "Active backend: ${stealth.callBackendMode.title}"
                 }
                 ExpressiveSegmentedActionRow(
@@ -4242,31 +4274,41 @@ private fun ToolsVaultTab(
                     onClick = { showCallingSetupDialog = true }
                 )
                 val orderedModes = listOf(CallBackendMode.ALWAYS_READY, CallBackendMode.SMART_WARM, CallBackendMode.OFF)
-                orderedModes.forEachIndexed { index, mode ->
-                    val pos = if (index == orderedModes.lastIndex) {
-                        ExpressiveSegmentPosition.BOTTOM
-                    } else {
-                        ExpressiveSegmentPosition.MIDDLE
-                    }
+                orderedModes.forEach { mode ->
                     val selected = stealth.callBackendMode == mode
                     ExpressiveSegmentedSwitchRow(
                         icon = Icons.Rounded.Call,
                         title = mode.title,
                         subtitle = mode.subtitle,
                         checked = selected,
-                        position = pos,
+                        position = ExpressiveSegmentPosition.MIDDLE,
                         onCheckedChange = { checked ->
                             if (checked) {
                                 viewModel.updateGlobalStealth { c -> c.copy(callBackendMode = mode) }
-                                if (mode != CallBackendMode.OFF && !stealth.callingLinked) {
-                                    showCallingSetupDialog = true
-                                }
                             } else if (selected && mode != CallBackendMode.OFF) {
                                 viewModel.updateGlobalStealth { c -> c.copy(callBackendMode = CallBackendMode.OFF) }
                             }
                         }
                     )
                 }
+                ExpressiveSegmentedSwitchRow(
+                    icon = Icons.Rounded.NotificationsOff,
+                    title = "Let Official WhatsApp Ring Instead",
+                    subtitle = "Silence Wupp's incoming ringtone and popup when Official WhatsApp is installed on this phone",
+                    checked = stealth.suppressIncomingRingWhenOfficialInstalled,
+                    position = ExpressiveSegmentPosition.BOTTOM,
+                    onCheckedChange = { enabled ->
+                        viewModel.updateGlobalStealth { c ->
+                            c.copy(
+                                suppressIncomingRingWhenOfficialInstalled = enabled,
+                                officialCallMuteConfirmed = if (enabled) false else c.officialCallMuteConfirmed
+                            )
+                        }
+                        com.wa.beastclient.core.calling.CallStateManager.onConfigChanged(
+                            com.wa.beastclient.domain.stealth.StealthMatrixManager.config.value
+                        )
+                    }
+                )
             }
         }
 

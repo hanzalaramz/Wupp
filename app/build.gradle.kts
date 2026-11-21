@@ -156,7 +156,6 @@ kotlin {
 }
 
 dependencies {
-    implementation(files("libs/whatsbridge.aar"))
 
     implementation(platform("androidx.compose:compose-bom:2026.09.00"))
     implementation("androidx.compose.ui:ui")
@@ -169,7 +168,6 @@ dependencies {
     implementation("androidx.compose.animation:animation")
 
     implementation("androidx.core:core-ktx:1.19.1")
-    implementation("org.mozilla.geckoview:geckoview-omni-arm64-v8a:160.0.20261116130455")
     implementation("androidx.emoji2:emoji2-emojipicker:1.7.0")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.activity:activity-compose:1.13.0")

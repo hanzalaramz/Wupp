@@ -23,7 +23,7 @@ class SyncWatchdogJobService : JobService() {
     override fun onStartJob(params: JobParameters?): Boolean {
         val appCtx = applicationContext
         StealthMatrixManager.init(appCtx)
-        if (StealthMatrixManager.config.value.offlineMode) {
+        if (WaRealtimeService.shouldSkipBackgroundReconnect()) {
             jobFinished(params, false)
             return false
         }

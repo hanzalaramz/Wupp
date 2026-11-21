@@ -57,7 +57,7 @@ Chats, statuses, `@newsletter` channels, communities, swipe-to-reply, floating e
 
 Wupp runs as a linked WhatsApp Web companion device rather than replacing your primary WhatsApp install. Your existing phone remains the primary account holder, and Wupp connects to it through WhatsApp's multidevice protocol.
 
-Under the hood, a Go library (`whatsbridge`, built on `whatsmeow` and compiled to `whatsbridge.aar`) runs inside a foreground Android service (`WaRealtimeService`). It handles encrypted WebSocket traffic, history sync, receipt updates, and media decryption directly on your phone, then stores threads and downloaded files locally in Room.
+Under the hood, a native Rust library (`whatsbridge_rs`, built on `whatsapp-rust` and compiled to `libwhatsbridge_rs.so`) runs inside a foreground Android service (`WaRealtimeService`). It handles encrypted Noise/WebSocket traffic, history sync, receipt updates, media decryption, and native E2EE VoIP voice & video calling directly on your phone, then stores threads and downloaded files locally in Room.
 
 ## Get started
 
@@ -72,7 +72,7 @@ Future versions prompt inside the app, automatically match your phone's CPU arch
 
 Wupp sends no telemetry, analytics, or crash dumps to any developer server.
 
-- WhatsApp protocol messages, avatars, status updates, channel posts, and media travel directly between your device and WhatsApp servers over `whatsmeow`.
+- WhatsApp protocol messages, avatars, status updates, channel posts, VoIP calls, and media travel directly between your device and WhatsApp servers over `whatsapp-rust`.
 - Update checks query `https://api.github.com/repos/hanzalaramz/Wupp/releases/latest` (and `/releases?per_page=1` if only pre-releases exist) to read version tags and APK URLs without needing a GitHub account.
 - Bug reports, feature requests, and feedback open GitHub's new-issue page in your browser only when you tap **Open GitHub** (GitHub asks you to sign in before posting; tap **Copy** to save the text locally without logging in).
 
@@ -90,21 +90,25 @@ Wupp is an independent client and is not affiliated with, sponsored by, or endor
 
 ### Layout
 
-`app/` contains the Kotlin and Jetpack Compose Android client (`applicationId = "com.wupp.app"`, `minSdk = 26`, `targetSdk = 34`, outputting `arm64-v8a` and multi-ABI `universal` release APKs). `whatsbridge/` contains the Go bridge wrapping `go.mau.fi/whatsmeow`, built into `app/libs/whatsbridge.aar` (`arm64-v8a`, `armeabi-v7a`, `x86_64`).
+`app/` contains the Kotlin and Jetpack Compose Android client (`applicationId = "com.wupp.app"`, `minSdk = 26`, `targetSdk = 34`, outputting `arm64-v8a` release APKs). `rustbridge/` contains the Rust JNI bridge wrapping `oxidezap/whatsapp-rust`, compiled into `app/src/main/jniLibs/arm64-v8a/libwhatsbridge_rs.so`.
 
 ### Requirements and local build
 
-Install Go 1.26 or newer, `gomobile`, JDK 17, Gradle 8.9 or newer, and Android SDK 34 with NDK.
+Install Rust (`aarch64-linux-android` target), JDK 21, Gradle 9.6.1 or newer, and Android SDK with NDK.
 
-Build the Go AAR first:
+Build the Rust native library first:
 
 ```bash
-gomobile init
-cd whatsbridge
-gomobile bind -javapkg=com.wa.bridge -target=android/arm64,android/arm,android/amd64 -androidapi 26 -o ../app/libs/whatsbridge.aar .
+bash rustbridge/build-android.sh
 ```
 
-`app/build.gradle.kts` reads `BuildConfig.GITHUB_REPO` from `git remote origin`, falling back to `WUPP_GITHUB_REPO` in `gradle.properties`. Once `whatsbridge.aar` is in `app/libs/`, build the debug APKs:
+On Windows PowerShell:
+
+```powershell
+& .\rustbridge\build-android.ps1
+```
+
+`app/build.gradle.kts` reads `BuildConfig.GITHUB_REPO` from `git remote origin`, falling back to `WUPP_GITHUB_REPO` in `gradle.properties`. Once `libwhatsbridge_rs.so` is in `app/src/main/jniLibs/arm64-v8a/`, build the debug APK:
 
 ```bash
 gradle assembleDebug
@@ -112,14 +116,14 @@ gradle assembleDebug
 
 ### CI and releases
 
-- Every push and pull request on `main` runs `.github/workflows/ci.yml`, which vets `whatsbridge`, binds `whatsbridge.aar`, and compiles a debug APK.
-- Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds `whatsbridge.aar`, compiles and signs `Wupp-<tag>-arm64-v8a.apk` and `Wupp-<tag>-universal.apk`, generates `SHA256SUMS.txt`, and publishes the GitHub Release.
+- Every push and pull request on `main` runs `.github/workflows/ci.yml`, which checks `rustbridge`, builds `libwhatsbridge_rs.so`, and compiles a debug APK.
+- Pushing a `v*` tag triggers `.github/workflows/release.yml`, which compiles `libwhatsbridge_rs.so`, builds and signs `Wupp-<tag>-arm64-v8a.apk`, generates `SHA256SUMS.txt`, and publishes the GitHub Release.
 - Tags with a hyphen (such as `v0.1.0-beta.1`) publish as pre-releases. Tags without a hyphen (such as `v1.0.0`) publish as the latest stable release.
 - When `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, and `KEY_PASSWORD` are set in Actions secrets, CI signs release APKs with that permanent key so in-app updates install over older versions cleanly.
 
 ## Credits
 
-- [whatsmeow](https://github.com/tulir/whatsmeow) by tulir and contributors for the Go WhatsApp Web multidevice library.
+- [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust) for the pure-Rust WhatsApp Web multidevice & VoIP library.
 - Jetpack Compose, Material 3, Room, Media3, and Coil for the Android UI, local storage, and media playback stack.
 
 ## License

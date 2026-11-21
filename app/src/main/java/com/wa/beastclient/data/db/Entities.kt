@@ -233,7 +233,9 @@ data class StatusEntity(
     @ColumnInfo(name = "is_revoked")
     val isRevoked: Boolean = false,
     @ColumnInfo(name = "revoked_at")
-    val revokedAt: Long = 0L
+    val revokedAt: Long = 0L,
+    @ColumnInfo(name = "is_viewed", defaultValue = "0")
+    val isViewed: Boolean = false
 )
 
 @Entity(

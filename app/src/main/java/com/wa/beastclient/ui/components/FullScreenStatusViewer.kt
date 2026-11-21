@@ -105,6 +105,41 @@ data class StatusGroup(
     val isOwn: Boolean = false
 )
 
+internal data class ContactStatusGroupSummary(
+    val senderKey: String,
+    val representativeStatus: StatusEntity,
+    val items: List<StatusEntity>,
+    val hasUnviewed: Boolean,
+    val hasRevoked: Boolean,
+    val latestTimestamp: Long
+)
+
+internal fun buildContactStatusSummaries(
+    contactStatuses: List<StatusEntity>
+): List<ContactStatusGroupSummary> {
+    if (contactStatuses.isEmpty()) return emptyList()
+    return contactStatuses
+        .groupBy { canonicalStatusGroupJid(it.senderJid) }
+        .entries
+        .mapNotNull { (senderKey, groupItems) ->
+            if (groupItems.isEmpty()) return@mapNotNull null
+            val ordered = groupItems.sortedBy { it.timestamp }
+            val representative = ordered.firstOrNull { !it.isViewed } ?: ordered.last()
+            ContactStatusGroupSummary(
+                senderKey = senderKey,
+                representativeStatus = representative,
+                items = ordered,
+                hasUnviewed = ordered.any { !it.isViewed },
+                hasRevoked = ordered.any { it.isRevoked },
+                latestTimestamp = ordered.maxOf { it.timestamp }
+            )
+        }
+        .sortedWith(
+            compareByDescending<ContactStatusGroupSummary> { it.hasUnviewed }
+                .thenByDescending { it.latestTimestamp }
+        )
+}
+
 internal fun normalizedStatusUser(raw: String): String =
     raw.trim().substringBefore("@").substringBefore(":").lowercase(Locale.ROOT)
 
@@ -174,6 +209,7 @@ fun FullScreenStatusViewer(
     downloadingStatusIds: Set<String> = emptySet(),
     failedStatusIds: Map<String, String> = emptyMap(),
     onRequestDownload: (StatusEntity) -> Unit = {},
+    onStatusViewed: (StatusEntity) -> Unit = {},
     onDismiss: () -> Unit,
     onSaveToGallery: (StatusEntity) -> Unit,
     onReply: ((StatusEntity) -> Unit)? = null,
@@ -302,6 +338,7 @@ fun FullScreenStatusViewer(
                     downloadingStatusIds = downloadingStatusIds,
                     failedStatusIds = failedStatusIds,
                     onRequestDownload = onRequestDownload,
+                    onStatusViewed = onStatusViewed,
                     onAdvanceNext = {
                         if (storyIndex < group.items.lastIndex) {
                             storyIndices[group.senderJid] = storyIndex + 1
@@ -347,6 +384,7 @@ private fun StatusGroupPage(
     downloadingStatusIds: Set<String>,
     failedStatusIds: Map<String, String>,
     onRequestDownload: (StatusEntity) -> Unit,
+    onStatusViewed: (StatusEntity) -> Unit,
     onAdvanceNext: () -> Unit,
     onStepPrevious: (resetProgress: () -> Unit) -> Unit,
     onDismiss: () -> Unit,
@@ -385,6 +423,12 @@ private fun StatusGroupPage(
     val isDownloading = downloadingStatusIds.contains(current.id)
     val failedReason = failedStatusIds[current.id]
     val isMediaPending = isMediaStatus && ((isVideo && mediaFile == null) || (!isVideo && bitmap == null))
+
+    LaunchedEffect(current.id, isPageActive) {
+        if (isPageActive && !current.isViewed) {
+            onStatusViewed(current)
+        }
+    }
 
     LaunchedEffect(current.id, isPageActive, isMediaPending) {
         if (isPageActive && isMediaPending && !isDownloading && failedReason == null) {

@@ -29,13 +29,13 @@ enum class AutoDownloadNetwork(val label: String) {
 }
 
 enum class CallBackendMode(val storageKey: String, val title: String, val subtitle: String) {
-    OFF("OFF", "Off (Official WhatsApp Handoff)", "0 MB RAM · Opens or declines calls without background WebView"),
-    SMART_WARM("SMART_WARM", "Smart Warm (Battery Saver)", "Warms engine while using Wupp + 10m after backgrounding, then 0 MB idle"),
-    ALWAYS_READY("ALWAYS_READY", "Always Ready (Recommended)", "Keeps calling engine connected 24/7 for instant incoming & outgoing calls");
+    OFF("OFF", "Official WhatsApp App", "Hand off incoming and outgoing calls to the official WhatsApp app"),
+    SMART_WARM("SMART_WARM", "In-app Native VoIP (Battery Balanced)", "Answer and place E2EE voice & video calls directly inside Wupp"),
+    ALWAYS_READY("ALWAYS_READY", "In-app Native VoIP (Recommended)", "Instant native Rust voice & video calling on your single Wupp linked device");
 
     companion object {
         fun fromStorageKey(raw: String?): CallBackendMode =
-            entries.firstOrNull { it.storageKey.equals(raw, ignoreCase = true) } ?: OFF
+            entries.firstOrNull { it.storageKey.equals(raw, ignoreCase = true) } ?: ALWAYS_READY
     }
 }
 
@@ -94,8 +94,9 @@ data class GlobalStealthConfig(
     val hiddenGalleryJids: Set<String> = emptySet(),
     val visibleGalleryJids: Set<String> = emptySet(),
     val primaryLastSeenEpochMs: Long = System.currentTimeMillis(),
-    val callBackendMode: CallBackendMode = CallBackendMode.OFF,
-    val callingLinked: Boolean = false
+    val callBackendMode: CallBackendMode = CallBackendMode.ALWAYS_READY,
+    val suppressIncomingRingWhenOfficialInstalled: Boolean = false,
+    val officialCallMuteConfirmed: Boolean = false
 )
 
 data class EffectiveChatPrivacy(
@@ -176,7 +177,8 @@ object StealthMatrixManager {
     private const val KEY_VISIBLE_GALLERY_JIDS = "visible_gallery_jids"
     private const val KEY_PRIMARY_HEARTBEAT_MS = "primary_last_seen_ms"
     private const val KEY_CALL_BACKEND_MODE = "call_backend_mode"
-    private const val KEY_CALLING_LINKED = "calling_webview_linked"
+    private const val KEY_SUPPRESS_RING_WITH_OFFICIAL = "suppress_ring_with_official"
+    private const val KEY_OFFICIAL_CALL_MUTE_CONFIRMED = "official_call_mute_confirmed"
 
     private const val FOURTEEN_DAYS_MS = 14L * 24L * 60L * 60L * 1000L
     private const val WARNING_THRESHOLD_DAYS = 10
@@ -267,7 +269,8 @@ object StealthMatrixManager {
                 visibleGalleryJids = prefs.getStringSet(KEY_VISIBLE_GALLERY_JIDS, emptySet())?.toSet() ?: emptySet(),
                 primaryLastSeenEpochMs = prefs.getLong(KEY_PRIMARY_HEARTBEAT_MS, now),
                 callBackendMode = CallBackendMode.fromStorageKey(prefs.getString(KEY_CALL_BACKEND_MODE, null)),
-                callingLinked = prefs.getBoolean(KEY_CALLING_LINKED, false)
+                suppressIncomingRingWhenOfficialInstalled = prefs.getBoolean(KEY_SUPPRESS_RING_WITH_OFFICIAL, false),
+                officialCallMuteConfirmed = prefs.getBoolean(KEY_OFFICIAL_CALL_MUTE_CONFIRMED, false)
             )
             initialized = true
         }
@@ -325,7 +328,8 @@ object StealthMatrixManager {
                 .putStringSet(KEY_VISIBLE_GALLERY_JIDS, updated.visibleGalleryJids.toSet())
                 .putLong(KEY_PRIMARY_HEARTBEAT_MS, updated.primaryLastSeenEpochMs)
                 .putString(KEY_CALL_BACKEND_MODE, updated.callBackendMode.storageKey)
-                .putBoolean(KEY_CALLING_LINKED, updated.callingLinked)
+                .putBoolean(KEY_SUPPRESS_RING_WITH_OFFICIAL, updated.suppressIncomingRingWhenOfficialInstalled)
+                .putBoolean(KEY_OFFICIAL_CALL_MUTE_CONFIRMED, updated.officialCallMuteConfirmed)
                 .apply()
         }
     }

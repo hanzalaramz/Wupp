@@ -1,18 +1,21 @@
 package com.wa.beastclient.core.calling
 
-import android.content.ComponentCallbacks2
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
-import android.view.ViewGroup
+import android.view.Surface
+import android.widget.Toast
+import androidx.core.content.ContextCompat
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.domain.stealth.CallBackendMode
 import com.wa.beastclient.domain.stealth.GlobalStealthConfig
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.calling.CallActivity
+import com.wa.bridge.whatsbridge.Whatsbridge
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -22,311 +25,76 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Deterministic single source of truth for Voice & Video call state,
- * lifecycle throttling (OFF / SMART_WARM / ALWAYS_READY), and Go/WebView coordination.
+ * Coordinates native Rust (`whatsapp-rust`) VoIP signaling, Android full-duplex audio/video
+ * pipelines, call foreground service, and call screen state without any browser backend.
  */
 object CallStateManager {
-    private const val SMART_WARM_IDLE_DESTROY_MS = 10 * 60 * 1000L
-    private const val DIAL_TIMEOUT_MS = 35_000L
-    private const val TERMINATION_GRACE_MS = 320L
+    private const val TAG = "CallStateManager"
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _uiState = MutableStateFlow(CallUiState())
     val uiState: StateFlow<CallUiState> = _uiState.asStateFlow()
 
-    private val _linkState = MutableStateFlow(WebLinkState.UNINITIALIZED)
-    val linkState: StateFlow<WebLinkState> = _linkState.asStateFlow()
-
-    private val _pairingCode = MutableStateFlow("")
-    val pairingCode: StateFlow<String> = _pairingCode.asStateFlow()
-
-    private val _pairingStatus = MutableStateFlow("")
-    val pairingStatus: StateFlow<String> = _pairingStatus.asStateFlow()
-
-    private val _pairingPreviewActive = MutableStateFlow(false)
-    val pairingPreviewActive: StateFlow<Boolean> = _pairingPreviewActive.asStateFlow()
-
-    private val _webEnvDiag = MutableStateFlow("")
-    val webEnvDiag: StateFlow<String> = _webEnvDiag.asStateFlow()
-
-    @Volatile
-    private var pairingInProgress: Boolean = false
     @Volatile
     private var appContext: Context? = null
+
+    private val loggedCallIds = ConcurrentHashMap.newKeySet<String>()
+
     @Volatile
-    private var engine: WebCallEngine? = null
+    private var initialized = false
+
     @Volatile
+    private var appInForeground = false
+
     private var audioController: CallAudioController? = null
+    private var audioPipeline: NativeVoipAudioPipeline? = null
+    private var videoPipeline: NativeVoipVideoPipeline? = null
+    private var localPreviewSurface: Surface? = null
+    private var remoteVideoSurface: Surface? = null
+    private var callTimerJob: Job? = null
+    private var failedDismissJob: Job? = null
 
-    private var smartWarmDestroyJob: Job? = null
-    private var dialTimeoutJob: Job? = null
-    private var durationTickerJob: Job? = null
-    private var pendingDialRunnable: Job? = null
-    private var pairingWatchdogJob: Job? = null
-    private var reviveJob: Job? = null
-    private var appInForeground: Boolean = false
-    private var lastWebCallState: String = "IDLE"
-    private var sawActiveWebCallInCurrentSession: Boolean = false
-    private var consecutiveReviveAttempts: Int = 0
-
+    @Synchronized
     fun init(context: Context) {
+        if (initialized) return
         val ctx = context.applicationContext
-        if (appContext != null) return
-        synchronized(this) {
-            if (appContext != null) return
-            appContext = ctx
-            audioController = CallAudioController(
-                context = ctx,
-                onRoutesChanged = { available, active ->
-                    _uiState.update { it.copy(availableRoutes = available, audioRoute = active) }
-                },
-                onVoicePlaybackStarted = {
-                    onVoiceAudioPlaybackConfirmed()
-                }
-            )
-            engine = WebCallEngine(
-                context = ctx,
-                listener = object : WebCallEngine.Listener {
-                    override fun onLinkStateChanged(state: WebLinkState, pairingCode: String) {
-                        _linkState.value = state
-                        if (pairingCode.isNotBlank()) {
-                            pairingWatchdogJob?.cancel()
-                            _pairingCode.value = pairingCode
-                            _pairingStatus.value = ""
-                        } else if (state == WebLinkState.LOADING) {
-                            if (_pairingCode.value.isNotBlank()) {
-                                _pairingCode.value = ""
-                            }
-                        } else if (state == WebLinkState.AUTHENTICATED) {
-                            pairingWatchdogJob?.cancel()
-                            reviveJob?.cancel()
-                            consecutiveReviveAttempts = 0
-                            if (pairingInProgress) {
-                                _pairingPreviewActive.value = false
-                            }
-                            pairingInProgress = false
-                            _pairingCode.value = ""
-                            _pairingStatus.value = ""
-                            if (!StealthMatrixManager.config.value.callingLinked) {
-                                StealthMatrixManager.updateConfig { cfg ->
-                                    val nextMode = if (cfg.callBackendMode == CallBackendMode.OFF) {
-                                        CallBackendMode.ALWAYS_READY
-                                    } else {
-                                        cfg.callBackendMode
-                                    }
-                                    cfg.copy(callingLinked = true, callBackendMode = nextMode)
-                                }
-                            }
-                        } else if (state == WebLinkState.ERROR) {
-                            pairingWatchdogJob?.cancel()
-                            pairingInProgress = false
-                        }
-                    }
-
-                    override fun onPairingStatusChanged(status: String) {
-                        if (status.isNotBlank()) {
-                            _pairingStatus.value = status
-                        }
-                    }
-
-                    override fun onWebCallEvent(
-                        state: String,
-                        callerHint: String,
-                        isVideo: Boolean,
-                        canAnswer: Boolean,
-                        hasActiveVideo: Boolean
-                    ) {
-                        handleWebCallStateChange(state, callerHint, isVideo, canAnswer, hasActiveVideo)
-                    }
-
-                    override fun onWebRtcMediaCapture(hasVideo: Boolean) {
-                        if (hasVideo && (_uiState.value.phase == CallPhase.DIALING || _uiState.value.phase == CallPhase.INCOMING_RINGING)) {
-                            _uiState.update { it.copy(isVideo = true) }
-                        }
-                    }
-
-                    override fun onDialAttemptFinished(dispatched: Boolean, reason: String) {
-                        Log.i("WuppCalling", "dialResult dispatched=$dispatched reason=$reason")
-                        if (!dispatched && _uiState.value.phase == CallPhase.DIALING) {
-                            failCall(reason.ifBlank { "Couldn't place call in WhatsApp Web" })
-                        }
-                    }
-
-                    override fun onEnvDiagnostics(diag: String) {
-                        if (diag.isNotBlank()) {
-                            _webEnvDiag.value = diag
-                        }
-                    }
-
-                    override fun onSessionDied(reason: String) {
-                        Log.w("WuppCalling", "GeckoView session terminated: $reason")
-                        _linkState.value = WebLinkState.UNINITIALIZED
-                        val cfg = StealthMatrixManager.config.value
-                        val wantAlwaysReady = !cfg.offlineMode &&
-                            cfg.callingLinked &&
-                            cfg.callBackendMode == CallBackendMode.ALWAYS_READY
-                        if (!wantAlwaysReady || consecutiveReviveAttempts >= 5) return
-                        reviveJob?.cancel()
-                        val backoffMs = (30_000L shl minOf(consecutiveReviveAttempts, 3))
-                        consecutiveReviveAttempts++
-                        reviveJob = scope.launch {
-                            delay(backoffMs)
-                            val latest = StealthMatrixManager.config.value
-                            if (!latest.offlineMode &&
-                                latest.callingLinked &&
-                                latest.callBackendMode == CallBackendMode.ALWAYS_READY &&
-                                _uiState.value.phase == CallPhase.IDLE
-                            ) {
-                                engine?.ensureWarm(respectCooldown = false)
-                            }
-                        }
-                    }
-                }
-            )
-            engine?.setIdleKeepProcessUnfrozen(
-                StealthMatrixManager.config.value.callBackendMode == CallBackendMode.ALWAYS_READY
-            )
-        }
-    }
-
-    fun attachWebViewHost(container: ViewGroup, showVideoSurface: Boolean) {
-        init(container.context)
-        engine?.attachToContainer(container, showVideoSurface = showVideoSurface, showPairingSurface = false)
-    }
-
-    fun detachWebViewHost(container: ViewGroup) {
-        engine?.detachIfHostedBy(container)
-    }
-
-    fun attachPairingPreviewHost(container: ViewGroup) {
-        init(container.context)
-        _pairingPreviewActive.value = true
-        engine?.ensureWarm(respectCooldown = false)
-        engine?.syncPermissions()
-        engine?.attachToContainer(container, showVideoSurface = false, showPairingSurface = true)
-    }
-
-    fun refreshCallingPermissions() {
-        engine?.syncPermissions()
-    }
-
-    fun detachPairingPreviewHost(container: ViewGroup) {
-        _pairingPreviewActive.value = false
-        engine?.detachIfHostedBy(container)
-    }
-
-    fun reloadCallingEngine() {
-        engine?.reloadCleanPreservingLogin()
+        appContext = ctx
+        StealthMatrixManager.init(ctx)
+        audioController = CallAudioController(
+            context = ctx,
+            onRoutesChanged = { available, active ->
+                _uiState.update { it.copy(availableRoutes = available, audioRoute = active) }
+            },
+            onVoicePlaybackStarted = {
+                // Local AudioTrack.play() starts immediately for audio pipeline priming while dialing;
+                // never promote to ACTIVE or start the call timer until Rust signals MediaConnected.
+            }
+        )
+        initialized = true
     }
 
     fun onConfigChanged(config: GlobalStealthConfig) {
-        if (config.offlineMode || config.callBackendMode == CallBackendMode.OFF) {
-            pairingWatchdogJob?.cancel()
-            reviveJob?.cancel()
-            pairingInProgress = false
-            _pairingStatus.value = ""
-            engine?.setIdleKeepProcessUnfrozen(false)
-            if (_uiState.value.phase == CallPhase.IDLE) {
-                smartWarmDestroyJob?.cancel()
-                engine?.teardownImmediate(clearSessionData = false)
+        if (_uiState.value.phase == CallPhase.INCOMING_RINGING) {
+            val officialPresent = appContext?.let { OfficialWhatsAppHelper.findInstalledPackage(it) != null } == true
+            if (config.offlineMode || (config.suppressIncomingRingWhenOfficialInstalled && officialPresent)) {
+                audioController?.stopRinging()
             }
-            return
-        }
-        if (!config.callingLinked) {
-            engine?.setIdleKeepProcessUnfrozen(false)
-            if (pairingInProgress) {
-                smartWarmDestroyJob?.cancel()
-                engine?.ensureWarm(respectCooldown = false)
-            } else if (_uiState.value.phase == CallPhase.IDLE) {
-                smartWarmDestroyJob?.cancel()
-                engine?.teardownImmediate(clearSessionData = false)
-            }
-            return
-        }
-        engine?.setIdleKeepProcessUnfrozen(config.callBackendMode == CallBackendMode.ALWAYS_READY)
-        when (config.callBackendMode) {
-            CallBackendMode.ALWAYS_READY -> {
-                smartWarmDestroyJob?.cancel()
-                engine?.ensureWarm(respectCooldown = true)
-            }
-            CallBackendMode.SMART_WARM -> {
-                if (appInForeground) {
-                    smartWarmDestroyJob?.cancel()
-                    engine?.ensureWarm(respectCooldown = true)
-                }
-            }
-            CallBackendMode.OFF -> Unit
-        }
-    }
-
-    fun onTrimMemory(level: Int) {
-        if (level < ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) return
-        val cfg = StealthMatrixManager.config.value
-        if (cfg.offlineMode || !cfg.callingLinked || cfg.callBackendMode != CallBackendMode.ALWAYS_READY) return
-        if (_uiState.value.phase == CallPhase.IDLE && !_pairingPreviewActive.value && !appInForeground) {
-            engine?.maybeRecycleIfStale()
         }
     }
 
     fun onAppForegroundChanged(inForeground: Boolean) {
         appInForeground = inForeground
-        val cfg = StealthMatrixManager.config.value
-        if (cfg.offlineMode || !cfg.callingLinked || cfg.callBackendMode == CallBackendMode.OFF) return
-
-        if (inForeground) {
-            smartWarmDestroyJob?.cancel()
-            engine?.ensureWarm(respectCooldown = true)
-            engine?.syncPermissions()
-        } else if (cfg.callBackendMode == CallBackendMode.SMART_WARM && _uiState.value.phase == CallPhase.IDLE) {
-            smartWarmDestroyJob?.cancel()
-            smartWarmDestroyJob = scope.launch {
-                delay(SMART_WARM_IDLE_DESTROY_MS)
-                if (!appInForeground &&
-                    _uiState.value.phase == CallPhase.IDLE &&
-                    StealthMatrixManager.config.value.callBackendMode == CallBackendMode.SMART_WARM
-                ) {
-                    engine?.teardownImmediate(clearSessionData = false)
-                }
-            }
-        }
     }
 
-    fun requestPhonePairingCode(phoneDigits: String) {
-        appContext?.let { init(it) }
-        pairingWatchdogJob?.cancel()
-        pairingInProgress = true
-        _pairingCode.value = ""
-        _pairingStatus.value = "Loading WhatsApp Web engine…"
-        _linkState.value = WebLinkState.LOADING
-        engine?.requestPhonePairingCode(phoneDigits)
-        pairingWatchdogJob = scope.launch {
-            delay(35_000L)
-            if (pairingInProgress && _pairingCode.value.isBlank() && _linkState.value != WebLinkState.AUTHENTICATED) {
-                pairingInProgress = false
-                _pairingStatus.value = "Pairing timed out — open Live Pairing Screen or tap Retry"
-                _linkState.value = WebLinkState.ERROR
-            }
-        }
-    }
-
-    fun unlinkCallingEngine() {
-        smartWarmDestroyJob?.cancel()
-        pairingWatchdogJob?.cancel()
-        reviveJob?.cancel()
-        consecutiveReviveAttempts = 0
-        pairingInProgress = false
-        engine?.setIdleKeepProcessUnfrozen(false)
-        _pairingCode.value = ""
-        _pairingStatus.value = ""
-        StealthMatrixManager.updateConfig {
-            it.copy(callingLinked = false, callBackendMode = CallBackendMode.OFF)
-        }
-        engine?.teardownImmediate(clearSessionData = true)
+    @Suppress("UNUSED_PARAMETER")
+    fun onTrimMemory(level: Int) {
+        // No WebView/Gecko engine retained in RAM.
     }
 
     fun startOutgoingCall(
@@ -336,82 +104,73 @@ object CallStateManager {
         peerAvatarPath: String?,
         phoneDigits: String,
         isVideo: Boolean,
-        isGroup: Boolean
+        isGroup: Boolean = false
     ) {
+        init(context)
         val ctx = context.applicationContext
-        init(ctx)
-        if (StealthMatrixManager.config.value.offlineMode) return
+        val cfg = StealthMatrixManager.config.value
+
         if (_uiState.value.phase != CallPhase.IDLE) {
             launchCallActivity(ctx)
             return
         }
 
-        smartWarmDestroyJob?.cancel()
-        lastWebCallState = "IDLE"
-        sawActiveWebCallInCurrentSession = false
-        engine?.setHighPriorityRenderer(true)
-        engine?.setWebRingingMuted(true)
-        audioController?.startInCallAudio(isVideo)
+        if (cfg.offlineMode || cfg.callBackendMode == CallBackendMode.OFF) {
+            openOfficialWhatsApp(ctx, phoneDigits)
+            return
+        }
+
+        failedDismissJob?.cancel()
+        val displayTitle = peerName.ifBlank { peerJid.substringBefore("@").ifBlank { "WhatsApp Call" } }
 
         _uiState.value = CallUiState(
             phase = CallPhase.DIALING,
+            callId = "",
             peerJid = peerJid,
             peerFromJid = peerJid,
             peerPhoneDigits = phoneDigits,
-            peerName = peerName.ifBlank { peerJid.substringBefore("@") },
+            peerName = displayTitle,
             peerAvatarPath = peerAvatarPath,
             direction = CallDirection.OUTGOING,
             isVideo = isVideo,
             isGroup = isGroup,
+            isMuted = false,
+            isCameraOff = !isVideo,
+            hasRemoteVideo = false,
+            remoteOrientationDegrees = 0,
+            pendingVideoUpgrade = false,
             canAnswerInApp = false,
-            statusText = "Calling…"
+            statusText = if (isVideo) "Video calling…" else "Calling…"
         )
 
+        audioController?.startInCallAudio(isVideo = isVideo)
         CallForegroundService.sync(ctx, _uiState.value)
         launchCallActivity(ctx)
 
-        pendingDialRunnable?.cancel()
-        pendingDialRunnable = scope.launch {
-            engine?.ensureWarm(respectCooldown = false)
-            var waited = 0L
-            var needsPairingMs = 0L
-            while (waited < 22_000L && _linkState.value != WebLinkState.AUTHENTICATED) {
-                if (_linkState.value == WebLinkState.ERROR) break
-                if (_linkState.value == WebLinkState.NEEDS_PAIRING_CODE) {
-                    needsPairingMs += 250L
-                    if (needsPairingMs >= 5_000L) break
-                } else {
-                    needsPairingMs = 0L
+        ioScope.launch {
+            runCatching {
+                Whatsbridge.startOutgoingCall(peerJid, isVideo, isGroup)
+            }.onSuccess { callId ->
+                mainScope.launch {
+                    val cur = _uiState.value
+                    if (cur.phase == CallPhase.IDLE || cur.phase == CallPhase.FAILED) {
+                        if (callId.isNotBlank()) {
+                            ioScope.launch { runCatching { Whatsbridge.terminateCall(callId) } }
+                        }
+                        return@launch
+                    }
+                    if (callId.isBlank()) {
+                        failCall("Could not obtain call ID")
+                        return@launch
+                    }
+                    _uiState.update { it.copy(callId = callId) }
+                    ensureMediaPipelinesStarted(callId = callId, startVideo = isVideo)
                 }
-                if (waited == 1_500L && _uiState.value.phase == CallPhase.DIALING) {
-                    _uiState.update { it.copy(statusText = "Connecting calling session…") }
+            }.onFailure { err ->
+                Log.w(TAG, "startOutgoingCall failed: ${err.message}", err)
+                mainScope.launch {
+                    failCall(err.message?.ifBlank { null } ?: "Couldn't place call")
                 }
-                delay(250L)
-                waited += 250L
-            }
-            if (_uiState.value.phase != CallPhase.DIALING) return@launch
-            if (_linkState.value != WebLinkState.AUTHENTICATED) {
-                val msg = if (_linkState.value == WebLinkState.NEEDS_PAIRING_CODE) {
-                    "WhatsApp Web session needs re-linking — open Settings → Voice & Video Calling"
-                } else {
-                    "WhatsApp Web session is still loading — please try again in a few seconds"
-                }
-                failCall(msg)
-                return@launch
-            }
-            // Wait for CallActivity to finish reparenting WebView & acquiring window focus
-            if (waited < 750L) {
-                delay(750L - waited)
-            }
-            if (_uiState.value.phase != CallPhase.DIALING) return@launch
-            engine?.dialContactInWeb(peerJid, phoneDigits, peerName, isVideo, isGroup)
-        }
-
-        dialTimeoutJob?.cancel()
-        dialTimeoutJob = scope.launch {
-            delay(DIAL_TIMEOUT_MS)
-            if (_uiState.value.phase == CallPhase.DIALING) {
-                failCall("Couldn't connect call")
             }
         }
     }
@@ -424,373 +183,592 @@ object CallStateManager {
         peerName: String,
         peerAvatarPath: String?,
         isVideo: Boolean,
-        isGroup: Boolean,
-        isNotice: Boolean
+        isGroup: Boolean = false,
+        @Suppress("UNUSED_PARAMETER") isNotice: Boolean = false
     ) {
         val ctx = appContext ?: return
-        val cfg = StealthMatrixManager.config.value
-        if (cfg.offlineMode || !cfg.callingLinked || cfg.callBackendMode == CallBackendMode.OFF) {
+        init(ctx)
+        if (callId.isBlank()) return
+
+        val cur = _uiState.value
+        if (cur.phase != CallPhase.IDLE && cur.phase != CallPhase.FAILED) {
             return
         }
-        val cur = _uiState.value
-        if (cur.phase != CallPhase.IDLE) return
 
-        val dialableDigits = extractDialablePhoneDigits(callerJid, callerAltJid)
-        val canAnswer = engine?.isAttachedAndLoaded == true && _linkState.value == WebLinkState.AUTHENTICATED
-        if (!canAnswer && isNotice) {
-            engine?.ensureWarm(respectCooldown = false)
+        failedDismissJob?.cancel()
+        val cfg = StealthMatrixManager.config.value
+        val canAnswerInApp = !cfg.offlineMode && cfg.callBackendMode != CallBackendMode.OFF
+        val primaryPeer = callerJid.ifBlank { fromJid }
+        val digits = extractDialablePhoneDigits(primaryPeer, callerAltJid)
+        val label = peerName.ifBlank {
+            digits.takeIf { it.isNotEmpty() }?.let { "+$it" }
+                ?: primaryPeer.substringBefore("@").ifBlank { "WhatsApp Call" }
         }
-
-        smartWarmDestroyJob?.cancel()
-        engine?.setHighPriorityRenderer(true)
-        engine?.setWebRingingMuted(true)
-        audioController?.refreshRoutes(isVideo)
-        audioController?.startRinging()
 
         _uiState.value = CallUiState(
             phase = CallPhase.INCOMING_RINGING,
             callId = callId,
-            peerJid = callerJid.ifBlank { fromJid },
-            peerFromJid = fromJid.ifBlank { callerJid },
-            peerPhoneDigits = dialableDigits,
-            peerName = peerName.ifBlank { dialableDigits.ifBlank { callerJid.substringBefore("@") } },
+            peerJid = primaryPeer,
+            peerFromJid = fromJid.ifBlank { primaryPeer },
+            peerPhoneDigits = digits,
+            peerName = label,
             peerAvatarPath = peerAvatarPath,
             direction = CallDirection.INCOMING,
             isVideo = isVideo,
-            isGroup = isGroup,
-            canAnswerInApp = canAnswer,
+            isGroup = isGroup || primaryPeer.endsWith("@g.us"),
+            isMuted = false,
+            isCameraOff = !isVideo,
+            hasRemoteVideo = false,
+            remoteOrientationDegrees = 0,
+            pendingVideoUpgrade = false,
+            canAnswerInApp = canAnswerInApp,
             statusText = if (isVideo) "Incoming video call…" else "Incoming voice call…"
         )
 
-        CallForegroundService.sync(ctx, _uiState.value)
-        launchCallActivity(ctx)
-    }
-
-    fun onGoCallAcceptedElsewhere(callId: String) {
-        val cur = _uiState.value
-        if (cur.phase == CallPhase.INCOMING_RINGING && shouldDismissCallFromGoSignal(cur, callId)) {
-            mainHandler.postDelayed({
-                if (_uiState.value.phase == CallPhase.INCOMING_RINGING && lastWebCallState != "ACTIVE") {
-                    finishCallInternal()
-                }
-            }, TERMINATION_GRACE_MS)
-        }
-    }
-
-    fun onGoCallTerminated(callId: String, reason: String) {
-        val cur = _uiState.value
-        if (!shouldDismissCallFromGoSignal(cur, callId)) return
-        if (cur.phase == CallPhase.INCOMING_RINGING || cur.phase == CallPhase.DIALING) {
-            mainHandler.postDelayed({
-                if (lastWebCallState == "IDLE" || _uiState.value.phase == CallPhase.INCOMING_RINGING) {
-                    finishCallInternal()
-                }
-            }, TERMINATION_GRACE_MS)
+        val officialInstalled = OfficialWhatsAppHelper.findInstalledPackage(ctx) != null
+        if (shouldRingLocallyForIncomingCall(cfg.suppressIncomingRingWhenOfficialInstalled, officialInstalled)) {
+            audioController?.startRinging()
+            CallForegroundService.sync(ctx, _uiState.value)
+            launchCallActivity(ctx)
         }
     }
 
     fun answerIncomingCall(audioOnly: Boolean = false) {
+        val ctx = appContext ?: return
         val cur = _uiState.value
         if (cur.phase != CallPhase.INCOMING_RINGING) return
-        val useVideo = cur.isVideo && !audioOnly
-        val sessionReady = engine?.isAttachedAndLoaded == true && _linkState.value == WebLinkState.AUTHENTICATED
-        if (!cur.canAnswerInApp && !sessionReady) {
-            val ctx = appContext ?: return
-            openOfficialWhatsApp(ctx, cur.peerPhoneDigits)
-            finishCallInternal()
+
+        if (!cur.canAnswerInApp) {
+            openOfficialWhatsAppFallback()
             return
         }
-        audioController?.startInCallAudio(useVideo)
-        engine?.setHighPriorityRenderer(true)
-        engine?.answerIncomingCall(audioOnly)
+
+        val answerVideo = cur.isVideo && !audioOnly
+        audioController?.stopRinging()
         _uiState.update {
             it.copy(
                 phase = CallPhase.CONNECTING,
-                isVideo = useVideo,
+                isVideo = answerVideo,
+                isCameraOff = !answerVideo,
                 statusText = "Connecting…"
             )
         }
-        engine?.setVideoCssActive(useVideo)
-        appContext?.let { CallForegroundService.sync(it, _uiState.value) }
+        audioController?.startInCallAudio(isVideo = answerVideo)
+        CallForegroundService.sync(ctx, _uiState.value)
+
+        val targetCallId = cur.callId
+        ioScope.launch {
+            runCatching {
+                Whatsbridge.acceptIncomingCall(targetCallId, answerVideo)
+            }.onSuccess { actualId ->
+                mainScope.launch {
+                    val activeId = actualId.ifBlank { targetCallId }
+                    if (_uiState.value.phase == CallPhase.IDLE) {
+                        if (activeId.isNotBlank()) {
+                            ioScope.launch { runCatching { Whatsbridge.terminateCall(activeId) } }
+                        }
+                        return@launch
+                    }
+                    _uiState.update { it.copy(callId = activeId) }
+                    ensureMediaPipelinesStarted(callId = activeId, startVideo = answerVideo)
+                }
+            }.onFailure { err ->
+                Log.w(TAG, "acceptIncomingCall failed: ${err.message}", err)
+                mainScope.launch {
+                    failCall(err.message?.ifBlank { null } ?: "Couldn't answer call")
+                }
+            }
+        }
     }
 
     fun declineOrEndCall() {
         val cur = _uiState.value
         if (cur.phase == CallPhase.IDLE) return
 
-        if (cur.phase == CallPhase.INCOMING_RINGING && cur.callId.isNotBlank() && !cur.canAnswerInApp) {
-            val targetFrom = cur.peerFromJid.ifBlank { cur.peerJid }
-            WaRealtimeService.rejectCallViaGoBridge(targetFrom, cur.callId)
-        } else {
-            engine?.declineOrEndCall()
+        val callId = cur.callId
+        val fromJid = cur.peerFromJid.ifBlank { cur.peerJid }
+        val wasIncomingRinging = cur.phase == CallPhase.INCOMING_RINGING
+
+        val isOutgoing = cur.direction == CallDirection.OUTGOING
+        recordFinishedCallLog(
+            cur = cur,
+            titleOverride = null,
+            subtitleOverride = when {
+                cur.phase == CallPhase.ACTIVE && cur.durationSec > 0 -> null
+                wasIncomingRinging -> "Declined"
+                isOutgoing -> "No answer"
+                else -> "Ended"
+            }
+        )
+        resetToIdle()
+
+        if (callId.isNotBlank()) {
+            ioScope.launch {
+                runCatching {
+                    if (wasIncomingRinging) {
+                        Whatsbridge.rejectCall(fromJid, callId)
+                    } else {
+                        Whatsbridge.terminateCall(callId)
+                    }
+                }.onFailure {
+                    Log.w(TAG, "Remote call reject/terminate note: ${it.message}")
+                }
+            }
         }
-        finishCallInternal()
+    }
+
+    fun onGoCallTerminated(callId: String, reason: String) {
+        mainScope.launch {
+            val cur = _uiState.value
+            if (!shouldDismissCallFromGoSignal(cur, callId)) return@launch
+
+            val cleanReason = reason.trim()
+            val wasMissed = cleanReason.equals("missed", ignoreCase = true) ||
+                cleanReason.equals("timeout", ignoreCase = true) ||
+                cleanReason.equals("unanswered", ignoreCase = true)
+            recordFinishedCallLog(
+                cur = cur,
+                titleOverride = when {
+                    wasMissed && cur.direction == CallDirection.INCOMING ->
+                        if (cur.isVideo) "Missed video call" else "Missed voice call"
+                    else -> null
+                },
+                subtitleOverride = when {
+                    cur.phase == CallPhase.ACTIVE && cur.durationSec > 0 -> null
+                    wasMissed && cur.direction == CallDirection.INCOMING -> "Tap to call back"
+                    cleanReason.equals("busy", ignoreCase = true) -> "No answer"
+                    cleanReason.equals("rejected", ignoreCase = true) ||
+                        cleanReason.equals("declined", ignoreCase = true) ->
+                        if (cur.direction == CallDirection.OUTGOING) "No answer" else "Declined"
+                    cleanReason.equals("terminated", ignoreCase = true) && cur.direction == CallDirection.INCOMING && cur.phase == CallPhase.INCOMING_RINGING ->
+                        "Tap to call back"
+                    else -> if (cur.durationSec > 0) null else "No answer"
+                }
+            )
+            val showReason = cur.phase != CallPhase.ACTIVE &&
+                cleanReason.isNotBlank() &&
+                !cleanReason.equals("ended", ignoreCase = true) &&
+                !cleanReason.equals("closed", ignoreCase = true)
+            if (showReason) {
+                failCall(formatTerminationReason(cleanReason))
+            } else {
+                resetToIdle()
+            }
+        }
+    }
+
+    fun onGoCallAcceptedElsewhere(callId: String) {
+        mainScope.launch {
+            val cur = _uiState.value
+            if (!shouldDismissCallFromGoSignal(cur, callId)) return@launch
+            recordFinishedCallLog(
+                cur = cur,
+                titleOverride = null,
+                subtitleOverride = "Answered elsewhere"
+            )
+            resetToIdle()
+        }
+    }
+
+    fun onNativeCallStateUpdate(callId: String, state: String, isVideo: Boolean) {
+        mainScope.launch {
+            val cur = _uiState.value
+            when (val decision = resolveNativeCallStateUpdate(cur, callId, state, isVideo)) {
+                is CallStateUpdateDecision.Ignore -> return@launch
+                is CallStateUpdateDecision.SyncState -> {
+                    _uiState.value = decision.newState
+                    appContext?.let { CallForegroundService.sync(it, decision.newState) }
+                }
+                is CallStateUpdateDecision.ActivateCall -> {
+                    transitionToActive(decision.effectiveCallId, decision.remoteVideo)
+                }
+            }
+        }
+    }
+
+    fun onNativeVideoStateUpdate(
+        callId: String,
+        videoState: String,
+        orientationQuarterTurns: Int,
+        upgradePending: Boolean,
+        isVideo: Boolean
+    ) {
+        mainScope.launch {
+            val cur = _uiState.value
+            if (cur.phase == CallPhase.IDLE || cur.phase == CallPhase.FAILED) return@launch
+            if (callId.isNotBlank() && cur.callId.isNotBlank() && cur.callId != callId) return@launch
+
+            val deg = whatsappOrientationToClockwiseDegrees(orientationQuarterTurns)
+            val activeId = cur.callId.ifBlank { callId }
+
+            when (videoState.trim()) {
+                "Enabled", "UpgradeAccept" -> {
+                    _uiState.update {
+                        it.copy(
+                            isVideo = true,
+                            hasRemoteVideo = true,
+                            pendingVideoUpgrade = false,
+                            remoteOrientationDegrees = deg
+                        )
+                    }
+                    audioController?.updateVideoState(true)
+                    ensureMediaPipelinesStarted(activeId, startVideo = true)
+                    appContext?.let { CallForegroundService.sync(it, _uiState.value) }
+                }
+                "UpgradeRequest" -> {
+                    _uiState.update {
+                        it.copy(
+                            pendingVideoUpgrade = upgradePending,
+                            remoteOrientationDegrees = deg
+                        )
+                    }
+                }
+                "UpgradeReject" -> {
+                    _uiState.update { it.copy(pendingVideoUpgrade = false) }
+                }
+                "Paused", "Held", "Disabled", "Stopped" -> {
+                    _uiState.update {
+                        it.copy(
+                            hasRemoteVideo = false,
+                            isVideo = isVideo || !it.isCameraOff,
+                            pendingVideoUpgrade = false,
+                            remoteOrientationDegrees = deg
+                        )
+                    }
+                }
+                else -> {
+                    _uiState.update { it.copy(remoteOrientationDegrees = deg) }
+                }
+            }
+        }
+    }
+
+    fun onNativeKeyframeNeeded(callId: String) {
+        val cur = _uiState.value
+        if (callId.isNotBlank() && cur.callId.isNotBlank() && cur.callId != callId) return
+        videoPipeline?.requestSyncKeyframe()
+    }
+
+    fun onMediaPermissionsGranted() {
+        val cur = _uiState.value
+        if (cur.phase == CallPhase.IDLE || cur.phase == CallPhase.FAILED) return
+        if (cur.callId.isNotBlank()) {
+            ensureMediaPipelinesStarted(cur.callId, startVideo = cur.isVideo)
+        }
     }
 
     fun toggleMute() {
-        val next = !_uiState.value.isMuted
+        val cur = _uiState.value
+        if (!cur.isInProgress) return
+        val next = !cur.isMuted
         _uiState.update { it.copy(isMuted = next) }
-        engine?.toggleMuteInWeb(next)
+        audioPipeline?.setMuted(next)
+        if (cur.callId.isNotBlank()) {
+            ioScope.launch { runCatching { Whatsbridge.setCallMuted(cur.callId, next) } }
+        }
     }
 
     fun toggleCamera() {
         val cur = _uiState.value
-        if (!cur.isVideo) {
-            upgradeToVideo()
-            return
-        }
+        if (!cur.isInProgress) return
         val nextOff = !cur.isCameraOff
-        _uiState.update { it.copy(isCameraOff = nextOff) }
-        engine?.toggleCameraInWeb(nextOff)
-    }
-
-    fun flipCamera() {
-        engine?.flipCameraInWeb()
+        val enable = !nextOff
+        _uiState.update {
+            it.copy(
+                isCameraOff = nextOff,
+                isVideo = it.isVideo || enable,
+                pendingVideoUpgrade = false
+            )
+        }
+        if (enable && cur.callId.isNotBlank()) {
+            audioController?.updateVideoState(true)
+            ensureMediaPipelinesStarted(cur.callId, startVideo = true)
+        }
+        videoPipeline?.setCameraEnabled(enable && hasCameraPermission())
+        if (cur.callId.isNotBlank()) {
+            ioScope.launch { runCatching { Whatsbridge.setCallVideoEnabled(cur.callId, enable) } }
+        }
     }
 
     fun upgradeToVideo() {
-        _uiState.update { it.copy(isVideo = true, isCameraOff = false) }
+        val cur = _uiState.value
+        if (!cur.isInProgress) return
+        _uiState.update {
+            it.copy(
+                isVideo = true,
+                isCameraOff = false,
+                pendingVideoUpgrade = false
+            )
+        }
         audioController?.updateVideoState(true)
-        engine?.upgradeAudioCallToVideo()
-        if (_uiState.value.phase == CallPhase.ACTIVE) {
-            engine?.setVideoCssActive(true)
+        if (cur.callId.isNotBlank()) {
+            ensureMediaPipelinesStarted(cur.callId, startVideo = true)
+            videoPipeline?.setCameraEnabled(hasCameraPermission())
+            ioScope.launch { runCatching { Whatsbridge.setCallVideoEnabled(cur.callId, true) } }
         }
         appContext?.let { CallForegroundService.sync(it, _uiState.value) }
+    }
+
+    fun declineVideoUpgrade() {
+        val cur = _uiState.value
+        if (!cur.pendingVideoUpgrade) return
+        _uiState.update { it.copy(pendingVideoUpgrade = false) }
+        if (cur.callId.isNotBlank() && videoPipeline != null) {
+            ioScope.launch { runCatching { Whatsbridge.setCallVideoEnabled(cur.callId, false) } }
+        }
+    }
+
+    fun flipCamera() {
+        videoPipeline?.switchCamera()
     }
 
     fun setAudioRoute(route: CallAudioRoute) {
         audioController?.setAudioRoute(route)
     }
 
+    fun attachLocalVideoSurface(surface: Surface?) {
+        localPreviewSurface = surface
+        videoPipeline?.setLocalPreviewSurface(surface)
+    }
+
+    fun attachRemoteVideoSurface(surface: Surface?) {
+        remoteVideoSurface = surface
+        videoPipeline?.setRemoteSurface(surface)
+    }
+
     fun dismissFailedScreen() {
-        finishCallInternal()
-    }
-
-    fun openOfficialWhatsAppFallback() {
-        val ctx = appContext ?: return
-        val digits = _uiState.value.peerPhoneDigits
-        finishCallInternal()
-        openOfficialWhatsApp(ctx, digits)
-    }
-
-    private fun handleWebCallStateChange(
-        webState: String,
-        callerHint: String,
-        isVideo: Boolean,
-        canAnswer: Boolean,
-        hasActiveVideo: Boolean
-    ) {
-        lastWebCallState = webState
-        if (webState != "IDLE") {
-            sawActiveWebCallInCurrentSession = true
-        }
-        val cur = _uiState.value
-        when (webState) {
-            "INCOMING_RINGING" -> {
-                if (cur.phase == CallPhase.IDLE) {
-                    val ctx = appContext ?: return
-                    val cfg = StealthMatrixManager.config.value
-                    if (cfg.offlineMode || !cfg.callingLinked || cfg.callBackendMode == CallBackendMode.OFF) {
-                        return
-                    }
-                    audioController?.refreshRoutes(isVideo)
-                    audioController?.startRinging()
-                    engine?.setWebRingingMuted(true)
-                    engine?.setHighPriorityRenderer(true)
-                    _uiState.value = CallUiState(
-                        phase = CallPhase.INCOMING_RINGING,
-                        peerName = callerHint.ifBlank { "WhatsApp Call" },
-                        direction = CallDirection.INCOMING,
-                        isVideo = isVideo,
-                        canAnswerInApp = canAnswer,
-                        statusText = if (isVideo) "Incoming video call…" else "Incoming voice call…"
-                    )
-                    CallForegroundService.sync(ctx, _uiState.value)
-                    launchCallActivity(ctx)
-                } else if (cur.phase == CallPhase.INCOMING_RINGING) {
-                    _uiState.update {
-                        it.copy(
-                            canAnswerInApp = canAnswer || it.canAnswerInApp,
-                            peerName = it.peerName.ifBlank { callerHint }
-                        )
-                    }
-                }
-            }
-
-            "CALLING", "DIALING" -> {
-                dialTimeoutJob?.cancel()
-                if (cur.phase == CallPhase.DIALING ||
-                    (cur.phase == CallPhase.CONNECTING && cur.direction == CallDirection.OUTGOING)
-                ) {
-                    _uiState.update {
-                        it.copy(
-                            phase = CallPhase.DIALING,
-                            isVideo = it.isVideo || isVideo || hasActiveVideo,
-                            statusText = "Calling…"
-                        )
-                    }
-                    appContext?.let { CallForegroundService.sync(it, _uiState.value) }
-                }
-            }
-
-            "RINGING" -> {
-                dialTimeoutJob?.cancel()
-                if (cur.phase == CallPhase.DIALING ||
-                    (cur.phase == CallPhase.CONNECTING && cur.direction == CallDirection.OUTGOING)
-                ) {
-                    _uiState.update {
-                        it.copy(
-                            phase = CallPhase.DIALING,
-                            isVideo = it.isVideo || isVideo || hasActiveVideo,
-                            statusText = "Ringing…"
-                        )
-                    }
-                    appContext?.let { CallForegroundService.sync(it, _uiState.value) }
-                }
-            }
-
-            "CONNECTING" -> {
-                dialTimeoutJob?.cancel()
-                if (cur.phase == CallPhase.DIALING || cur.phase == CallPhase.INCOMING_RINGING) {
-                    _uiState.update {
-                        it.copy(
-                            phase = CallPhase.CONNECTING,
-                            isVideo = it.isVideo || isVideo || hasActiveVideo,
-                            hasRemoteVideo = it.hasRemoteVideo || hasActiveVideo,
-                            statusText = "Connecting…"
-                        )
-                    }
-                    appContext?.let { CallForegroundService.sync(it, _uiState.value) }
-                }
-            }
-
-            "ACTIVE" -> {
-                dialTimeoutJob?.cancel()
-                if (cur.phase == CallPhase.DIALING || cur.phase == CallPhase.CONNECTING) {
-                    _uiState.update { it.copy(hasRemoteVideo = hasActiveVideo) }
-                    markCallActive(cur.isVideo || hasActiveVideo)
-                } else if (cur.phase == CallPhase.ACTIVE) {
-                    if (hasActiveVideo != cur.hasRemoteVideo || (hasActiveVideo && !cur.isVideo)) {
-                        _uiState.update {
-                            it.copy(
-                                isVideo = it.isVideo || hasActiveVideo,
-                                hasRemoteVideo = hasActiveVideo
-                            )
-                        }
-                        if (hasActiveVideo) {
-                            engine?.setVideoCssActive(true)
-                        }
-                    }
-                }
-            }
-
-            "IDLE" -> {
-                if (cur.phase == CallPhase.CONNECTING ||
-                    cur.phase == CallPhase.ACTIVE ||
-                    (cur.phase == CallPhase.DIALING && sawActiveWebCallInCurrentSession)
-                ) {
-                    finishCallInternal()
-                }
-            }
-        }
-    }
-
-    private fun onVoiceAudioPlaybackConfirmed() {
-        val cur = _uiState.value
-        if (cur.phase == CallPhase.CONNECTING && lastWebCallState != "DIALING") {
-            markCallActive(cur.isVideo)
-        }
-    }
-
-    private fun markCallActive(isVideo: Boolean) {
-        dialTimeoutJob?.cancel()
-        val now = System.currentTimeMillis()
-        _uiState.update {
-            it.copy(
-                phase = CallPhase.ACTIVE,
-                isVideo = isVideo,
-                connectedAtEpochMs = if (it.connectedAtEpochMs > 0L) it.connectedAtEpochMs else now,
-                statusText = formatCallTimer(0)
-            )
-        }
-        engine?.setVideoCssActive(isVideo)
-        audioController?.updateVideoState(isVideo)
-        startDurationTicker()
-        appContext?.let { CallForegroundService.sync(it, _uiState.value) }
-    }
-
-    private fun startDurationTicker() {
-        durationTickerJob?.cancel()
-        durationTickerJob = scope.launch {
-            while (_uiState.value.phase == CallPhase.ACTIVE) {
-                val start = _uiState.value.connectedAtEpochMs
-                val sec = if (start > 0L) ((System.currentTimeMillis() - start) / 1000L).toInt().coerceAtLeast(0) else 0
-                _uiState.update {
-                    it.copy(durationSec = sec, statusText = formatCallTimer(sec))
-                }
-                delay(1000L)
-            }
-        }
-    }
-
-    private fun failCall(reason: String) {
-        pendingDialRunnable?.cancel()
-        dialTimeoutJob?.cancel()
-        durationTickerJob?.cancel()
-        sawActiveWebCallInCurrentSession = false
-        audioController?.stopAll()
-        engine?.setVideoCssActive(false)
-        engine?.setHighPriorityRenderer(false)
-        engine?.returnToNeutralLandingAfterDelay()
-        _uiState.update {
-            it.copy(
-                phase = CallPhase.FAILED,
-                statusText = "Call failed",
-                errorReason = reason
-            )
-        }
-        appContext?.let { CallForegroundService.stop(it) }
-    }
-
-    private fun finishCallInternal() {
-        pendingDialRunnable?.cancel()
-        dialTimeoutJob?.cancel()
-        durationTickerJob?.cancel()
-        lastWebCallState = "IDLE"
-        sawActiveWebCallInCurrentSession = false
-        audioController?.stopAll()
-        engine?.setVideoCssActive(false)
-        engine?.setWebRingingMuted(false)
-        engine?.setHighPriorityRenderer(false)
-        engine?.returnToNeutralLandingAfterDelay()
-        _uiState.value = CallUiState(phase = CallPhase.IDLE)
-        appContext?.let { ctx ->
-            CallForegroundService.stop(ctx)
-            onConfigChanged(StealthMatrixManager.config.value)
+        failedDismissJob?.cancel()
+        if (_uiState.value.phase == CallPhase.FAILED) {
+            resetToIdle()
         }
     }
 
     fun launchCallActivity(context: Context) {
-        val intent = Intent(context, CallActivity::class.java).apply {
-            addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-            )
+        runCatching {
+            val intent = Intent(context, CallActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            }
+            context.startActivity(intent)
+        }.onFailure {
+            Log.w(TAG, "Failed launching CallActivity: ${it.message}")
         }
-        runCatching { context.startActivity(intent) }
+    }
+
+    fun openOfficialWhatsAppFallback() {
+        val ctx = appContext ?: return
+        val cur = _uiState.value
+        openOfficialWhatsApp(ctx, cur.peerPhoneDigits)
+        if (cur.phase != CallPhase.IDLE) {
+            resetToIdle()
+        }
     }
 
     fun openOfficialWhatsApp(context: Context, phoneDigits: String = "") {
-        val clean = phoneDigits.filter { it.isDigit() }
-        val waIntent = if (clean.isNotBlank()) {
-            Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$clean"))
+        val cleanDigits = phoneDigits.filter { it.isDigit() }
+        val pm = context.packageManager
+        val targetPkg = OfficialWhatsAppHelper.findInstalledPackage(context)
+
+        val intent = if (cleanDigits.length >= 7) {
+            Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$cleanDigits")).apply {
+                targetPkg?.let { setPackage(it) }
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        } else if (targetPkg != null) {
+            pm.getLaunchIntentForPackage(targetPkg)?.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        } else null
+
+        if (intent != null) {
+            runCatching { context.startActivity(intent) }.onFailure {
+                Toast.makeText(context, "Official WhatsApp is not installed", Toast.LENGTH_SHORT).show()
+            }
         } else {
-            context.packageManager.getLaunchIntentForPackage("com.whatsapp")
-                ?: context.packageManager.getLaunchIntentForPackage("com.whatsapp.w4b")
-                ?: Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/"))
+            Toast.makeText(context, "Official WhatsApp is not installed", Toast.LENGTH_SHORT).show()
         }
-        waIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching { context.startActivity(waIntent) }
+    }
+
+    private fun transitionToActive(callId: String, remoteVideo: Boolean) {
+        val cur = _uiState.value
+        if (cur.phase == CallPhase.IDLE || cur.phase == CallPhase.FAILED) return
+
+        val effectiveId = callId.ifBlank { cur.callId }
+        val wasActive = cur.phase == CallPhase.ACTIVE
+        val startedAt = if (cur.connectedAtEpochMs > 0L) cur.connectedAtEpochMs else System.currentTimeMillis()
+        val videoMode = cur.isVideo || remoteVideo
+
+        _uiState.update {
+            it.copy(
+                callId = effectiveId,
+                phase = CallPhase.ACTIVE,
+                peerAccepted = true,
+                isVideo = videoMode,
+                connectedAtEpochMs = startedAt,
+                statusText = if (wasActive) it.statusText else formatCallTimer(it.durationSec)
+            )
+        }
+
+        audioController?.startInCallAudio(isVideo = videoMode)
+        if (effectiveId.isNotBlank()) {
+            ensureMediaPipelinesStarted(effectiveId, startVideo = videoMode)
+        }
+        appContext?.let { CallForegroundService.sync(it, _uiState.value) }
+
+        if (callTimerJob?.isActive != true) {
+            callTimerJob = mainScope.launch {
+                while (isActive) {
+                    val snap = _uiState.value
+                    if (snap.phase != CallPhase.ACTIVE) break
+                    val elapsedSec = ((System.currentTimeMillis() - snap.connectedAtEpochMs) / 1000L)
+                        .toInt()
+                        .coerceAtLeast(0)
+                    _uiState.update { it.copy(durationSec = elapsedSec, statusText = formatCallTimer(elapsedSec)) }
+                    appContext?.let { CallForegroundService.sync(it, _uiState.value) }
+                    delay(1000L)
+                }
+            }
+        }
+    }
+
+    @Synchronized
+    private fun ensureMediaPipelinesStarted(callId: String, startVideo: Boolean) {
+        val ctx = appContext ?: return
+        if (callId.isBlank()) return
+
+        if (audioPipeline == null && hasMicPermission()) {
+            audioPipeline = NativeVoipAudioPipeline(callId).apply {
+                setMuted(_uiState.value.isMuted)
+                start()
+            }
+        }
+
+        if (startVideo) {
+            val sendCam = !_uiState.value.isCameraOff && hasCameraPermission()
+            if (videoPipeline == null) {
+                videoPipeline = NativeVoipVideoPipeline(
+                    context = ctx,
+                    callId = callId,
+                    onRemoteOrientationDegrees = { deg ->
+                        mainScope.launch {
+                            _uiState.update { it.copy(remoteOrientationDegrees = deg) }
+                        }
+                    },
+                    onRemoteVideoSizeChanged = { w, h ->
+                        mainScope.launch {
+                            _uiState.update {
+                                it.copy(
+                                    remoteVideoWidth = w,
+                                    remoteVideoHeight = h,
+                                    hasRemoteVideo = true
+                                )
+                            }
+                        }
+                    },
+                    onRemoteFirstFrameDecoded = {
+                        mainScope.launch {
+                            _uiState.update { cur ->
+                                if (cur.hasRemoteVideo) cur else cur.copy(hasRemoteVideo = true)
+                            }
+                        }
+                    }
+                ).apply {
+                    setLocalPreviewSurface(localPreviewSurface)
+                    setRemoteSurface(remoteVideoSurface)
+                    start(enableSendCamera = sendCam)
+                }
+            } else {
+                videoPipeline?.setCameraEnabled(sendCam)
+            }
+        }
+    }
+
+    @Synchronized
+    private fun stopPipelines() {
+        runCatching { audioPipeline?.stop() }
+        audioPipeline = null
+        runCatching { videoPipeline?.stop() }
+        videoPipeline = null
+    }
+
+    private fun failCall(reason: String) {
+        callTimerJob?.cancel()
+        callTimerJob = null
+        stopPipelines()
+        audioController?.stopAll()
+
+        _uiState.update {
+            it.copy(
+                phase = CallPhase.FAILED,
+                statusText = "Call ended",
+                errorReason = reason
+            )
+        }
+        appContext?.let { CallForegroundService.sync(it, _uiState.value) }
+
+        failedDismissJob?.cancel()
+        failedDismissJob = mainScope.launch {
+            delay(3000L)
+            if (_uiState.value.phase == CallPhase.FAILED) {
+                resetToIdle()
+            }
+        }
+    }
+
+    private fun resetToIdle() {
+        callTimerJob?.cancel()
+        callTimerJob = null
+        failedDismissJob?.cancel()
+        failedDismissJob = null
+        stopPipelines()
+        audioController?.stopAll()
+        _uiState.value = CallUiState(phase = CallPhase.IDLE)
+        appContext?.let { CallForegroundService.sync(it, _uiState.value) }
+    }
+
+    private fun hasMicPermission(): Boolean {
+        val ctx = appContext ?: return false
+        return ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun hasCameraPermission(): Boolean {
+        val ctx = appContext ?: return false
+        return ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun formatTerminationReason(raw: String): String = when (raw.lowercase()) {
+        "busy" -> "Contact is busy"
+        "rejected", "declined" -> "Call declined"
+        "timeout", "unanswered" -> "No answer"
+        "unavailable" -> "Recipient unavailable"
+        else -> raw
+    }
+
+    private fun recordFinishedCallLog(
+        cur: CallUiState,
+        titleOverride: String?,
+        subtitleOverride: String?
+    ) {
+        val ctx = appContext ?: return
+        if (cur.peerJid.isBlank()) return
+        val dedupKey = cur.callId.ifBlank { "${cur.peerJid}_${System.currentTimeMillis() / 10_000L}" }
+        if (loggedCallIds.size > 512) {
+            loggedCallIds.clear()
+        }
+        if (!loggedCallIds.add(dedupKey)) return
+        val tsMs = if (cur.connectedAtEpochMs > 0L) cur.connectedAtEpochMs else System.currentTimeMillis()
+        WaRealtimeService.recordLocalCallLog(
+            context = ctx,
+            callId = cur.callId,
+            peerJid = cur.peerJid,
+            isFromMe = cur.direction == CallDirection.OUTGOING,
+            isVideo = cur.isVideo,
+            isGroup = cur.isGroup,
+            timestampMs = tsMs,
+            durationSec = cur.durationSec,
+            titleOverride = titleOverride,
+            subtitleOverride = subtitleOverride
+        )
     }
 }

@@ -50,13 +50,15 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.wa.beastclient.core.calling.CallPhase
 import com.wa.beastclient.core.calling.CallStateManager
-import com.wa.beastclient.core.calling.WebLinkState
+import com.wa.beastclient.core.calling.OfficialWhatsAppHelper
+import com.wa.beastclient.core.calling.shouldPromptOfficialCallCoexistence
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.core.update.WuppUpdater
 import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.domain.stealth.CallBackendMode
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.MainViewModel
+import com.wa.beastclient.ui.calling.OfficialWhatsAppCoexistenceDialog
 import com.wa.beastclient.ui.components.AppLockOverlay
 import com.wa.beastclient.ui.components.AppUpdateDialog
 import com.wa.beastclient.ui.screens.ChatScreen
@@ -98,20 +100,33 @@ class MainActivity : FragmentActivity() {
             val isAppLocked by vm.isAppLocked.collectAsState()
             val bridgeStatus by vm.bridgeStatus.collectAsState()
             val callUiState by CallStateManager.uiState.collectAsState()
-            val linkState by CallStateManager.linkState.collectAsState()
-            val pairingPreviewActive by CallStateManager.pairingPreviewActive.collectAsState()
             val updateState by vm.updateState.collectAsState()
             val showUpdatePrompt by vm.showUpdatePrompt.collectAsState()
             var setupDone by remember { mutableStateOf(initialSetupDone) }
             var selectedChatJid by rememberSaveable { mutableStateOf<String?>(null) }
             var activeContactInfoJid by rememberSaveable { mutableStateOf<String?>(null) }
             val requestedChatJid by pendingOpenChatJid.collectAsState()
+            var officialCoexistenceDismissed by remember {
+                mutableStateOf(setupPrefs.getBoolean("official_call_coexistence_prompted_v1", false))
+            }
+            val installedOfficialPkg = remember(setupDone, bridgeStatus.isLoggedIn) {
+                OfficialWhatsAppHelper.findInstalledPackage(this@MainActivity)
+            }
+            val showOfficialCoexistenceDialog = shouldPromptOfficialCallCoexistence(
+                setupDone = setupDone,
+                isLoggedIn = bridgeStatus.isLoggedIn,
+                isAppLocked = isAppLocked,
+                alreadyPrompted = officialCoexistenceDismissed,
+                officialAppInstalled = installedOfficialPkg != null,
+                officialMuteConfirmed = stealth.officialCallMuteConfirmed,
+                suppressWhenOfficialInstalled = stealth.suppressIncomingRingWhenOfficialInstalled
+            )
 
             LaunchedEffect(appLockConfig) {
                 AppLockManager.applyWindowSecureFlag(this@MainActivity, appLockConfig)
             }
 
-            LaunchedEffect(stealth.offlineMode, stealth.callBackendMode, stealth.callingLinked) {
+            LaunchedEffect(stealth.offlineMode, stealth.callBackendMode) {
                 CallStateManager.onConfigChanged(stealth)
             }
 
@@ -151,54 +166,8 @@ class MainActivity : FragmentActivity() {
             ) {
                 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
                 val motionScheme = MaterialTheme.motionScheme
-                val shouldHostWarmWebView = setupDone &&
-                    bridgeStatus.isLoggedIn &&
-                    !stealth.offlineMode
-                var warmHostContainer by remember { mutableStateOf<FrameLayout?>(null) }
-
-                LaunchedEffect(
-                    shouldHostWarmWebView,
-                    callUiState.phase,
-                    warmHostContainer,
-                    linkState,
-                    stealth.callBackendMode,
-                    stealth.callingLinked,
-                    pairingPreviewActive
-                ) {
-                    val container = warmHostContainer ?: return@LaunchedEffect
-                    val activeEngineRequested = (stealth.callingLinked && stealth.callBackendMode != CallBackendMode.OFF) ||
-                        linkState != WebLinkState.UNINITIALIZED
-                    if (shouldHostWarmWebView &&
-                        callUiState.phase == CallPhase.IDLE &&
-                        activeEngineRequested &&
-                        !pairingPreviewActive
-                    ) {
-                        CallStateManager.attachWebViewHost(container, showVideoSurface = false)
-                    }
-                }
 
                 Box(modifier = Modifier.fillMaxSize()) {
-                    if (shouldHostWarmWebView) {
-                        AndroidView(
-                            factory = { ctx ->
-                                FrameLayout(ctx).apply {
-                                    isClickable = false
-                                    isFocusable = false
-                                    importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-                                    warmHostContainer = this
-                                }
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        )
-                        DisposableEffect(warmHostContainer) {
-                            val container = warmHostContainer
-                            onDispose {
-                                if (container != null) {
-                                    CallStateManager.detachWebViewHost(container)
-                                }
-                            }
-                        }
-                    }
 
                     if (!setupDone) {
                     FirstInstallSetupScreen(
@@ -354,6 +323,17 @@ class MainActivity : FragmentActivity() {
                             }
                         }
                     }
+                }
+
+                if (showOfficialCoexistenceDialog && installedOfficialPkg != null) {
+                    OfficialWhatsAppCoexistenceDialog(
+                        officialPkg = installedOfficialPkg,
+                        stealth = stealth,
+                        onDismiss = {
+                            setupPrefs.edit().putBoolean("official_call_coexistence_prompted_v1", true).apply()
+                            officialCoexistenceDismissed = true
+                        }
+                    )
                 }
 
                 if (showUpdatePrompt && setupDone && !isAppLocked) {

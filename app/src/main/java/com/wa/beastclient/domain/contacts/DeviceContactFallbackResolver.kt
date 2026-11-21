@@ -118,6 +118,8 @@ object DeviceContactFallbackResolver {
     ): Boolean {
         val clean = candidate?.trim().orEmpty()
         if (clean.isBlank()) return true
+        // Punctuation/dot-only pushnames (e.g. ".", "...", "-", "~") carry no real name
+        if (!clean.any { it.isLetterOrDigit() }) return true
         val cleanJid = jid.trim()
         val cleanAlt = altJid.trim()
         val bare = cleanJid.substringBefore("@").substringBefore(":")
@@ -132,6 +134,12 @@ object DeviceContactFallbackResolver {
             clean.all { it.isDigit() || it == '+' || it == '-' || it == ' ' || it == '(' || it == ')' }
         return looksLikePhoneOnly
     }
+
+    internal fun isUsableDisplayName(
+        candidate: String?,
+        jid: String,
+        altJid: String = ""
+    ): Boolean = !isServerNameMissing(candidate, jid, altJid)
 
     internal fun clearCacheForTest() {
         cachedIndex = DeviceContactIndex.EMPTY
@@ -212,17 +220,19 @@ object DeviceContactFallbackResolver {
             if (!isServerNameMissing(chat.name, chat.jid)) continue
             val existingContact = dao.getContact(chat.jid)
             if (existingContact != null && !isServerNameMissing(existingContact.name, chat.jid)) {
+                dao.updateChatName(chat.jid, existingContact.name, overwrite = true)
+                updatedCount++
                 continue
             }
             val localName = index.lookup(chat.jid, chat.name) ?: continue
-            dao.updateChatName(chat.jid, localName, overwrite = false)
+            dao.updateChatName(chat.jid, localName, overwrite = true)
             contactUpdates.add(
                 ContactEntity(
                     jid = chat.jid,
                     name = localName,
                     aboutText = chat.aboutText,
                     avatarPath = chat.avatarPath,
-                    isSaved = false,
+                    isSaved = true,
                     updatedAt = maxOf(chat.lastMessageTimestamp, now)
                 )
             )

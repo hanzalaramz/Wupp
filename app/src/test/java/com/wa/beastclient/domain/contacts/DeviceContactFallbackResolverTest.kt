@@ -15,9 +15,14 @@ class DeviceContactFallbackResolverTest {
         assertTrue(DeviceContactFallbackResolver.isServerNameMissing("+923001234567", "923001234567@s.whatsapp.net"))
         assertTrue(DeviceContactFallbackResolver.isServerNameMissing("+92 300 1234567", "112233@lid", "923001234567@s.whatsapp.net"))
         assertTrue(DeviceContactFallbackResolver.isServerNameMissing("~ User · …4567", "112233@lid"))
+        assertTrue(DeviceContactFallbackResolver.isServerNameMissing(".", "112233@lid"))
+        assertTrue(DeviceContactFallbackResolver.isServerNameMissing("...", "923001234567@s.whatsapp.net"))
+        assertTrue(DeviceContactFallbackResolver.isServerNameMissing("-", "923001234567@s.whatsapp.net"))
+        assertTrue(DeviceContactFallbackResolver.isServerNameMissing("~", "923001234567@s.whatsapp.net"))
 
         assertFalse(DeviceContactFallbackResolver.isServerNameMissing("Alice Khan", "923001234567@s.whatsapp.net"))
         assertFalse(DeviceContactFallbackResolver.isServerNameMissing("Mom", "923001234567@s.whatsapp.net"))
+        assertFalse(DeviceContactFallbackResolver.isServerNameMissing("Mramzan1", "923001234567@s.whatsapp.net"))
     }
 
     @Test

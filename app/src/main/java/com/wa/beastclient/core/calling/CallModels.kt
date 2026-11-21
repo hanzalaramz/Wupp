@@ -1,6 +1,5 @@
 package com.wa.beastclient.core.calling
 
-import java.net.URI
 import java.util.Locale
 
 enum class CallDirection {
@@ -25,15 +24,6 @@ enum class CallAudioRoute(val label: String) {
     WIRED_HEADSET("Headset")
 }
 
-enum class WebLinkState {
-    UNINITIALIZED,
-    LOADING,
-    NEEDS_PAIRING_CODE,
-    PAIRING_CODE_READY,
-    AUTHENTICATED,
-    ERROR
-}
-
 data class CallUiState(
     val phase: CallPhase = CallPhase.IDLE,
     val callId: String = "",
@@ -48,9 +38,14 @@ data class CallUiState(
     val isMuted: Boolean = false,
     val isCameraOff: Boolean = false,
     val hasRemoteVideo: Boolean = false,
+    val remoteOrientationDegrees: Int = 0,
+    val remoteVideoWidth: Int = 640,
+    val remoteVideoHeight: Int = 480,
+    val pendingVideoUpgrade: Boolean = false,
     val audioRoute: CallAudioRoute = CallAudioRoute.EARPIECE,
     val availableRoutes: Set<CallAudioRoute> = setOf(CallAudioRoute.EARPIECE, CallAudioRoute.SPEAKER),
     val canAnswerInApp: Boolean = false,
+    val peerAccepted: Boolean = false,
     val connectedAtEpochMs: Long = 0L,
     val durationSec: Int = 0,
     val statusText: String = "",
@@ -60,39 +55,17 @@ data class CallUiState(
         get() = phase != CallPhase.IDLE
 }
 
-private val CHROME_VERSION_REGEX = Regex("""Chrome/\d+(?:\.\d+){0,3}""")
-private const val FALLBACK_CHROME_TOKEN = "Chrome/131.0.0.0"
-private val FIREFOX_VERSION_REGEX = Regex("""Firefox/(\d+(?:\.\d+)?)""")
-private const val FALLBACK_FIREFOX_VERSION = "160.0"
-
 /**
- * Constructs a Windows Desktop User-Agent embedding the exact Chromium token from the local
- * WebView binary so User-Agent, Sec-CH-UA client hints, and TLS fingerprints stay consistent.
+ * Converts WhatsApp `<video device_orientation="0..3">` quarter turns to clockwise UI rotation
+ * degrees (matching `wa-rs` / WhatsApp Web where 1 = 90° CCW = 270° CW, 3 = 90° CW).
  */
-fun buildChromiumMatchedDesktopUa(defaultWebViewUa: String): String {
-    val chromeToken = CHROME_VERSION_REGEX.find(defaultWebViewUa)?.value ?: FALLBACK_CHROME_TOKEN
-    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) $chromeToken Safari/537.36"
-}
-
-/**
- * Constructs a Windows Desktop Firefox User-Agent matching the embedded GeckoView major version.
- */
-fun buildDesktopFirefoxUa(defaultGeckoUa: String = ""): String {
-    val ver = FIREFOX_VERSION_REGEX.find(defaultGeckoUa)?.groupValues?.getOrNull(1) ?: FALLBACK_FIREFOX_VERSION
-    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:$ver) Gecko/20100101 Firefox/$ver"
-}
-
-/**
- * Authorizes WebRTC microphone/camera PermissionRequest strictly for HTTPS WhatsApp origins.
- */
-fun isAllowedWhatsAppPermissionOrigin(originUri: String?): Boolean {
-    val clean = originUri?.trim().orEmpty()
-    if (clean.isEmpty()) return false
-    val parsed = runCatching { URI(clean) }.getOrNull() ?: return false
-    if (!parsed.scheme.equals("https", ignoreCase = true)) return false
-    val host = parsed.host?.lowercase(Locale.ROOT)?.trimEnd('.') ?: return false
-    return host == "web.whatsapp.com" || host == "whatsapp.com" || host.endsWith(".whatsapp.com")
-}
+internal fun whatsappOrientationToClockwiseDegrees(orientationQuarterTurns: Int): Int =
+    when (orientationQuarterTurns and 0x03) {
+        1 -> 270
+        2 -> 180
+        3 -> 90
+        else -> 0
+    }
 
 /**
  * Extracts dialable phone digits from PN JIDs (`@s.whatsapp.net`) or resolved phone strings while
@@ -129,40 +102,6 @@ fun extractDialablePhoneDigits(
     return ""
 }
 
-/**
- * Converts a WhatsApp JID + resolved phone digits into WhatsApp Web's canonical WID string
- * (`<group>@g.us`, `<digits>@c.us`, or `<lid>@lid`) for direct VoIP / chat routing.
- */
-fun toWhatsAppWebChatWid(
-    peerJid: String,
-    phoneDigits: String = "",
-    isGroup: Boolean = false
-): String {
-    val rawJid = peerJid.trim()
-    val cleanUser = rawJid.substringBefore("@").substringBefore(":").trim()
-    val server = rawJid.substringAfter("@", "").lowercase(Locale.ROOT)
-    if (isGroup || server == "g.us") {
-        return if (cleanUser.isNotEmpty()) "$cleanUser@g.us" else ""
-    }
-    val digits = phoneDigits.filter { it.isDigit() }
-    if (digits.length in 7..16) {
-        return "$digits@c.us"
-    }
-    if (server == "lid" && cleanUser.isNotEmpty()) {
-        return "$cleanUser@lid"
-    }
-    if ((server == "s.whatsapp.net" || server == "c.us") && cleanUser.isNotEmpty()) {
-        val jidDigits = cleanUser.filter { it.isDigit() }
-        if (jidDigits.length in 7..16) {
-            return "$jidDigits@c.us"
-        }
-    }
-    return ""
-}
-
-/**
- * Blocks cold calls to unsaved 1:1 numbers with zero prior message history to avoid spam flags.
- */
 fun isColdCallBlocked(
     isSavedContact: Boolean,
     messageCount: Int,
@@ -189,4 +128,92 @@ internal fun shouldDismissCallFromGoSignal(
     if (current.phase == CallPhase.IDLE) return false
     if (signalCallId.isBlank() || current.callId.isBlank()) return true
     return current.callId == signalCallId
+}
+
+internal sealed interface CallStateUpdateDecision {
+    data object Ignore : CallStateUpdateDecision
+    data class SyncState(val newState: CallUiState) : CallStateUpdateDecision
+    data class ActivateCall(val effectiveCallId: String, val remoteVideo: Boolean) : CallStateUpdateDecision
+}
+
+/**
+ * Maps native `CALL_STATE_UPDATE` signaling transitions cleanly so outgoing calls stay in
+ * `DIALING` (`Calling…` -> `Ringing…`) and `CONNECTING` (`Connecting…`) until media connects.
+ */
+internal fun resolveNativeCallStateUpdate(
+    current: CallUiState,
+    callId: String,
+    state: String,
+    isVideo: Boolean
+): CallStateUpdateDecision {
+    if (current.phase == CallPhase.IDLE || current.phase == CallPhase.FAILED) {
+        return CallStateUpdateDecision.Ignore
+    }
+    if (callId.isNotBlank() && current.callId.isNotBlank() && current.callId != callId) {
+        return CallStateUpdateDecision.Ignore
+    }
+
+    val effectiveId = current.callId.ifBlank { callId }
+    return when (state.trim().lowercase(Locale.US)) {
+        "ringing" -> {
+            if (current.direction == CallDirection.OUTGOING &&
+                current.phase == CallPhase.DIALING &&
+                !current.peerAccepted
+            ) {
+                CallStateUpdateDecision.SyncState(
+                    current.copy(
+                        callId = effectiveId,
+                        statusText = "Ringing…"
+                    )
+                )
+            } else {
+                CallStateUpdateDecision.Ignore
+            }
+        }
+        "accepted" -> {
+            when {
+                current.direction == CallDirection.OUTGOING &&
+                    (current.phase == CallPhase.DIALING || current.phase == CallPhase.CONNECTING) -> {
+                    CallStateUpdateDecision.SyncState(
+                        current.copy(
+                            callId = effectiveId,
+                            phase = CallPhase.CONNECTING,
+                            peerAccepted = true,
+                            statusText = "Connecting…"
+                        )
+                    )
+                }
+                current.direction == CallDirection.INCOMING && current.phase == CallPhase.CONNECTING -> {
+                    CallStateUpdateDecision.SyncState(
+                        current.copy(
+                            callId = effectiveId,
+                            peerAccepted = true
+                        )
+                    )
+                }
+                else -> CallStateUpdateDecision.Ignore
+            }
+        }
+        "connecting" -> {
+            if (current.phase == CallPhase.DIALING || current.phase == CallPhase.INCOMING_RINGING) {
+                CallStateUpdateDecision.SyncState(
+                    current.copy(
+                        callId = effectiveId,
+                        phase = CallPhase.CONNECTING,
+                        statusText = "Connecting…"
+                    )
+                )
+            } else {
+                CallStateUpdateDecision.Ignore
+            }
+        }
+        "connected", "active" -> {
+            if (current.direction == CallDirection.INCOMING && current.phase == CallPhase.INCOMING_RINGING) {
+                CallStateUpdateDecision.Ignore
+            } else {
+                CallStateUpdateDecision.ActivateCall(effectiveId, isVideo)
+            }
+        }
+        else -> CallStateUpdateDecision.Ignore
+    }
 }

@@ -9,90 +9,28 @@ import org.junit.Test
 class CallingEnginePolicyTest {
 
     @Test
-    fun buildChromiumMatchedDesktopUaPreservesInstalledChromeToken() {
-        val deviceUa =
-            "Mozilla/5.0 (Linux; Android 15; Pixel 8 Build/AP3A) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/134.0.6998.135 Mobile Safari/537.36"
-        val desktopUa = buildChromiumMatchedDesktopUa(deviceUa)
-
-        assertTrue(desktopUa.contains("Windows NT 10.0; Win64; x64"))
-        assertTrue(desktopUa.contains("Chrome/134.0.6998.135"))
-        assertFalse(desktopUa.contains("Android"))
-    }
-
-    @Test
-    fun buildChromiumMatchedDesktopUaFallsBackWhenTokenMissing() {
-        val desktopUa = buildChromiumMatchedDesktopUa("CustomWebView/1.0")
-        assertTrue(desktopUa.contains("Chrome/131.0.0.0"))
-    }
-
-    @Test
-    fun buildDesktopFirefoxUaPreservesGeckoFirefoxVersion() {
-        val mobileGeckoUa =
-            "Mozilla/5.0 (Android 15; Mobile; rv:160.0) Gecko/160.0 Firefox/160.0"
-        val desktopUa = buildDesktopFirefoxUa(mobileGeckoUa)
-
-        assertTrue(desktopUa.contains("Windows NT 10.0; Win64; x64; rv:160.0"))
-        assertTrue(desktopUa.contains("Gecko/20100101 Firefox/160.0"))
-        assertFalse(desktopUa.contains("Android"))
-    }
-
-    @Test
-    fun buildDesktopFirefoxUaFallsBackWhenTokenMissing() {
-        val desktopUa = buildDesktopFirefoxUa("CustomGecko/1.0")
-        assertEquals(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:160.0) Gecko/20100101 Firefox/160.0",
-            desktopUa
-        )
-    }
-
-    @Test
-    fun toWhatsAppWebChatWidFormatsContactsAndGroups() {
-        assertEquals("923356389511@c.us", toWhatsAppWebChatWid("12345@lid", "923356389511", false))
-        assertEquals("120363012345678901@g.us", toWhatsAppWebChatWid("120363012345678901@g.us", "", true))
-        assertEquals("923001234567@c.us", toWhatsAppWebChatWid("923001234567@s.whatsapp.net", "", false))
-        assertEquals("99887766@lid", toWhatsAppWebChatWid("99887766@lid", "", false))
-    }
-
-    @Test
-    fun isAllowedWhatsAppPermissionOriginAllowsOnlyHttpsWhatsAppHosts() {
-        assertTrue(isAllowedWhatsAppPermissionOrigin("https://web.whatsapp.com"))
-        assertTrue(isAllowedWhatsAppPermissionOrigin("https://web.whatsapp.com/"))
-        assertTrue(isAllowedWhatsAppPermissionOrigin("https://whatsapp.com"))
-        assertTrue(isAllowedWhatsAppPermissionOrigin("https://dyn.web.whatsapp.com"))
-
-        assertFalse(isAllowedWhatsAppPermissionOrigin(null))
-        assertFalse(isAllowedWhatsAppPermissionOrigin(""))
-        assertFalse(isAllowedWhatsAppPermissionOrigin("http://web.whatsapp.com"))
-        assertFalse(isAllowedWhatsAppPermissionOrigin("https://whatsapp.com.attacker.test"))
-        assertFalse(isAllowedWhatsAppPermissionOrigin("https://notwhatsapp.com"))
-    }
-
-    @Test
     fun extractDialablePhoneDigitsPrefersPnJidAndFallsBackPastLid() {
         assertEquals(
             "15551234567",
             extractDialablePhoneDigits("15551234567@s.whatsapp.net")
         )
         assertEquals(
-            "447700900123",
+            "923001234567",
             extractDialablePhoneDigits(
-                primaryJid = "1029384756@lid",
-                altJid = "447700900123:2@s.whatsapp.net"
+                primaryJid = "1234567890@lid",
+                altJid = "923001234567:2@s.whatsapp.net"
             )
         )
         assertEquals(
-            "923001234567",
+            "447911123456",
             extractDialablePhoneDigits(
-                primaryJid = "1029384756@lid",
-                resolvedPhone = "+92 300 1234567"
+                primaryJid = "1234567890@lid",
+                resolvedPhone = "+44 7911 123456"
             )
         )
         assertEquals(
             "",
-            extractDialablePhoneDigits(
-                primaryJid = "1029384756@lid",
-                resolvedPhone = "1029384756@lid"
-            )
+            extractDialablePhoneDigits(primaryJid = "987654321012345@lid")
         )
         assertEquals(
             "",
@@ -117,9 +55,10 @@ class CallingEnginePolicyTest {
     }
 
     @Test
-    fun callBackendModeParsesStorageKeysWithSafeDefault() {
-        assertEquals(CallBackendMode.OFF, CallBackendMode.fromStorageKey(null))
-        assertEquals(CallBackendMode.OFF, CallBackendMode.fromStorageKey("unknown"))
+    fun callBackendModeParsesStorageKeysWithNativeVoipDefault() {
+        assertEquals(CallBackendMode.ALWAYS_READY, CallBackendMode.fromStorageKey(null))
+        assertEquals(CallBackendMode.ALWAYS_READY, CallBackendMode.fromStorageKey("unknown"))
+        assertEquals(CallBackendMode.OFF, CallBackendMode.fromStorageKey("off"))
         assertEquals(CallBackendMode.SMART_WARM, CallBackendMode.fromStorageKey("SMART_WARM"))
         assertEquals(CallBackendMode.ALWAYS_READY, CallBackendMode.fromStorageKey("always_ready"))
         assertTrue(CallBackendMode.ALWAYS_READY.title.contains("Recommended"))
@@ -135,5 +74,163 @@ class CallingEnginePolicyTest {
         assertFalse(shouldDismissCallFromGoSignal(ringing, "call-99"))
         assertTrue(shouldDismissCallFromGoSignal(ringing, ""))
         assertTrue(shouldDismissCallFromGoSignal(ringing.copy(callId = ""), "call-99"))
+    }
+
+    @Test
+    fun whatsappOrientationQuarterTurnsMapsToClockwiseDisplayDegrees() {
+        assertEquals(0, whatsappOrientationToClockwiseDegrees(0))
+        assertEquals(270, whatsappOrientationToClockwiseDegrees(1))
+        assertEquals(180, whatsappOrientationToClockwiseDegrees(2))
+        assertEquals(90, whatsappOrientationToClockwiseDegrees(3))
+        assertEquals(270, whatsappOrientationToClockwiseDegrees(5))
+    }
+
+    @Test
+    fun outgoingCallProgressesCallingToRingingToConnectingBeforeTimerStarts() {
+        val dialing = CallUiState(
+            phase = CallPhase.DIALING,
+            callId = "",
+            direction = CallDirection.OUTGOING,
+            statusText = "Calling…"
+        )
+
+        val ringingDecision = resolveNativeCallStateUpdate(dialing, callId = "call-out-1", state = "ringing", isVideo = false)
+        assertTrue(ringingDecision is CallStateUpdateDecision.SyncState)
+        val ringingState = (ringingDecision as CallStateUpdateDecision.SyncState).newState
+        assertEquals(CallPhase.DIALING, ringingState.phase)
+        assertEquals("call-out-1", ringingState.callId)
+        assertEquals("Ringing…", ringingState.statusText)
+        assertEquals(0L, ringingState.connectedAtEpochMs)
+        assertEquals(0, ringingState.durationSec)
+        assertFalse(ringingState.peerAccepted)
+
+        // Mismatched callId updates must be ignored cleanly.
+        assertEquals(
+            CallStateUpdateDecision.Ignore,
+            resolveNativeCallStateUpdate(ringingState, callId = "other-call", state = "accepted", isVideo = false)
+        )
+
+        // Peer answering puts outgoing call into Connecting… before MediaConnected activates the timer.
+        val acceptedDecision = resolveNativeCallStateUpdate(ringingState, callId = "call-out-1", state = "accepted", isVideo = false)
+        assertTrue(acceptedDecision is CallStateUpdateDecision.SyncState)
+        val connectingState = (acceptedDecision as CallStateUpdateDecision.SyncState).newState
+        assertEquals(CallPhase.CONNECTING, connectingState.phase)
+        assertEquals("Connecting…", connectingState.statusText)
+        assertTrue(connectingState.peerAccepted)
+        assertEquals(0, connectingState.durationSec)
+
+        // Duplicate PreAccept after peer already accepted must not revert Connecting… back to Ringing…
+        assertEquals(
+            CallStateUpdateDecision.Ignore,
+            resolveNativeCallStateUpdate(connectingState, callId = "call-out-1", state = "ringing", isVideo = false)
+        )
+
+        val connectedDecision = resolveNativeCallStateUpdate(connectingState, callId = "call-out-1", state = "connected", isVideo = true)
+        assertEquals(
+            CallStateUpdateDecision.ActivateCall(effectiveCallId = "call-out-1", remoteVideo = true),
+            connectedDecision
+        )
+    }
+
+    @Test
+    fun incomingRingingCallIgnoresConnectedAndRingingUntilAnswered() {
+        val incoming = CallUiState(
+            phase = CallPhase.INCOMING_RINGING,
+            callId = "call-in-1",
+            direction = CallDirection.INCOMING,
+            statusText = "Incoming voice call…"
+        )
+        assertEquals(
+            CallStateUpdateDecision.Ignore,
+            resolveNativeCallStateUpdate(incoming, callId = "call-in-1", state = "ringing", isVideo = false)
+        )
+        assertEquals(
+            CallStateUpdateDecision.Ignore,
+            resolveNativeCallStateUpdate(incoming, callId = "call-in-1", state = "connected", isVideo = false)
+        )
+
+        val answering = incoming.copy(phase = CallPhase.CONNECTING, statusText = "Connecting…")
+        assertEquals(
+            CallStateUpdateDecision.ActivateCall(effectiveCallId = "call-in-1", remoteVideo = false),
+            resolveNativeCallStateUpdate(answering, callId = "call-in-1", state = "connected", isVideo = false)
+        )
+    }
+
+    @Test
+    fun shouldRingLocallyForIncomingCallSuppressesOnlyWhenEnabledAndOfficialInstalled() {
+        assertTrue(shouldRingLocallyForIncomingCall(suppressWhenOfficialInstalled = false, officialAppInstalled = false))
+        assertTrue(shouldRingLocallyForIncomingCall(suppressWhenOfficialInstalled = false, officialAppInstalled = true))
+        assertTrue(shouldRingLocallyForIncomingCall(suppressWhenOfficialInstalled = true, officialAppInstalled = false))
+        assertFalse(shouldRingLocallyForIncomingCall(suppressWhenOfficialInstalled = true, officialAppInstalled = true))
+    }
+
+    @Test
+    fun shouldPromptOfficialCallCoexistenceRequiresInstalledOfficialAndUnresolvedChoice() {
+        assertTrue(
+            shouldPromptOfficialCallCoexistence(
+                setupDone = true,
+                isLoggedIn = true,
+                isAppLocked = false,
+                alreadyPrompted = false,
+                officialAppInstalled = true,
+                officialMuteConfirmed = false,
+                suppressWhenOfficialInstalled = false
+            )
+        )
+        assertFalse(
+            shouldPromptOfficialCallCoexistence(
+                setupDone = true,
+                isLoggedIn = true,
+                isAppLocked = false,
+                alreadyPrompted = false,
+                officialAppInstalled = false,
+                officialMuteConfirmed = false,
+                suppressWhenOfficialInstalled = false
+            )
+        )
+        assertFalse(
+            shouldPromptOfficialCallCoexistence(
+                setupDone = true,
+                isLoggedIn = false,
+                isAppLocked = false,
+                alreadyPrompted = false,
+                officialAppInstalled = true,
+                officialMuteConfirmed = false,
+                suppressWhenOfficialInstalled = false
+            )
+        )
+        assertFalse(
+            shouldPromptOfficialCallCoexistence(
+                setupDone = true,
+                isLoggedIn = true,
+                isAppLocked = false,
+                alreadyPrompted = false,
+                officialAppInstalled = true,
+                officialMuteConfirmed = true,
+                suppressWhenOfficialInstalled = false
+            )
+        )
+        assertFalse(
+            shouldPromptOfficialCallCoexistence(
+                setupDone = true,
+                isLoggedIn = true,
+                isAppLocked = false,
+                alreadyPrompted = false,
+                officialAppInstalled = true,
+                officialMuteConfirmed = false,
+                suppressWhenOfficialInstalled = true
+            )
+        )
+        assertFalse(
+            shouldPromptOfficialCallCoexistence(
+                setupDone = true,
+                isLoggedIn = true,
+                isAppLocked = false,
+                alreadyPrompted = true,
+                officialAppInstalled = true,
+                officialMuteConfirmed = false,
+                suppressWhenOfficialInstalled = false
+            )
+        )
     }
 }

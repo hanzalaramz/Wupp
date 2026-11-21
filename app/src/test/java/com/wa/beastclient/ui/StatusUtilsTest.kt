@@ -1,6 +1,7 @@
 package com.wa.beastclient.ui
 
 import com.wa.beastclient.data.db.StatusEntity
+import com.wa.beastclient.ui.components.buildContactStatusSummaries
 import com.wa.beastclient.ui.components.isOwnStatusSender
 import com.wa.beastclient.ui.components.isStatusMediaType
 import com.wa.beastclient.ui.components.partitionOwnAndContactStatuses
@@ -177,5 +178,52 @@ class StatusUtilsTest {
                 use24Hour = true
             )
         )
+    }
+
+    @Test
+    fun buildContactStatusSummaries_prioritizesUnviewedContactsAndStartsOnFirstUnviewedStory() {
+        val seenContact = StatusEntity(
+            id = "seen_latest",
+            senderJid = "923001111111@s.whatsapp.net",
+            senderName = "Seen Friend",
+            timestamp = 5000L,
+            isViewed = true
+        )
+        val partialFirstViewed = StatusEntity(
+            id = "partial_1",
+            senderJid = "923002222222:1@s.whatsapp.net",
+            senderName = "Partial Friend",
+            timestamp = 2000L,
+            isViewed = true
+        )
+        val partialSecondUnviewed = StatusEntity(
+            id = "partial_2",
+            senderJid = "923002222222:2@s.whatsapp.net",
+            senderName = "Partial Friend",
+            timestamp = 3000L,
+            isViewed = false
+        )
+        val partialThirdUnviewed = StatusEntity(
+            id = "partial_3",
+            senderJid = "923002222222@s.whatsapp.net",
+            senderName = "Partial Friend",
+            timestamp = 4000L,
+            isViewed = false
+        )
+
+        val summaries = buildContactStatusSummaries(
+            listOf(seenContact, partialThirdUnviewed, partialFirstViewed, partialSecondUnviewed)
+        )
+
+        assertEquals(2, summaries.size)
+        // Unviewed contact appears before fully-seen contact even when seen contact posted later
+        assertEquals("923002222222@s.whatsapp.net", summaries[0].senderKey)
+        assertTrue(summaries[0].hasUnviewed)
+        assertEquals("partial_2", summaries[0].representativeStatus.id)
+        assertEquals(listOf("partial_1", "partial_2", "partial_3"), summaries[0].items.map { it.id })
+
+        assertEquals("923001111111@s.whatsapp.net", summaries[1].senderKey)
+        assertFalse(summaries[1].hasUnviewed)
+        assertEquals("seen_latest", summaries[1].representativeStatus.id)
     }
 }

@@ -329,7 +329,7 @@ fun ChatScreen(
                 Toast.makeText(context, "Disable Offline Mode to place calls", Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            if (stealthConfig.callBackendMode == CallBackendMode.OFF || !stealthConfig.callingLinked) {
+            if (stealthConfig.callBackendMode == CallBackendMode.OFF) {
                 pendingSetupOfficialFallbackDigits = digits
                 showCallingSetupDialog = true
                 return@launch
@@ -384,7 +384,7 @@ fun ChatScreen(
     val initiateCall: (Boolean) -> Unit = { isVideo ->
         if (stealthConfig.offlineMode) {
             Toast.makeText(context, "Disable Offline Mode to place calls", Toast.LENGTH_SHORT).show()
-        } else if (stealthConfig.callBackendMode == CallBackendMode.OFF || !stealthConfig.callingLinked) {
+        } else if (stealthConfig.callBackendMode == CallBackendMode.OFF) {
             scope.launch {
                 pendingSetupOfficialFallbackDigits = if (chatJid.endsWith("@g.us")) "" else resolvePhoneDigitsForChat()
                 showCallingSetupDialog = true
@@ -616,6 +616,40 @@ fun ChatScreen(
         if (isRecordingVoice || isGroupAnnounceLocked || !canSendOutbound) {
             showEmojiPicker = false
             holdDockForIme = false
+        }
+    }
+    var lastComposingSentMs by remember(chatJid) { mutableStateOf(0L) }
+    LaunchedEffect(
+        chatJid,
+        draftValue.text,
+        isRecordingVoice,
+        stealthConfig.offlineMode,
+        stealthConfig.ghostPresence,
+        stealthConfig.hideTypingRecording,
+        effectivePrivacy?.sendChatPresence
+    ) {
+        val canSendPresence = !stealthConfig.offlineMode &&
+            !stealthConfig.ghostPresence &&
+            (effectivePrivacy?.sendChatPresence ?: !stealthConfig.hideTypingRecording)
+        if (!canSendPresence) {
+            lastComposingSentMs = 0L
+            return@LaunchedEffect
+        }
+        if (isRecordingVoice) {
+            viewModel.sendChatPresence(chatJid, isComposing = true, isAudio = true)
+            lastComposingSentMs = System.currentTimeMillis()
+        } else if (draftValue.text.isNotEmpty()) {
+            val now = System.currentTimeMillis()
+            if (now - lastComposingSentMs >= 2_500L) {
+                viewModel.sendChatPresence(chatJid, isComposing = true, isAudio = false)
+                lastComposingSentMs = now
+            }
+            delay(4_000L)
+            viewModel.sendChatPresence(chatJid, isComposing = false, isAudio = false)
+            lastComposingSentMs = 0L
+        } else if (lastComposingSentMs > 0L) {
+            viewModel.sendChatPresence(chatJid, isComposing = false, isAudio = false)
+            lastComposingSentMs = 0L
         }
     }
 
@@ -3267,9 +3301,13 @@ private fun MessageBubbleRow(
                             }
                         } ?: "No answer"
                         val isVideoCall = callTitle.contains("Video", ignoreCase = true)
-                        val isMissed = callSubtitle.contains("No answer", ignoreCase = true) ||
+                        val isMissed = callTitle.contains("Missed", ignoreCase = true) ||
+                            callTitle.contains("Silenced", ignoreCase = true) ||
+                            callSubtitle.contains("No answer", ignoreCase = true) ||
                             callSubtitle.contains("Missed", ignoreCase = true) ||
-                            callSubtitle.contains("Declined", ignoreCase = true)
+                            callSubtitle.contains("Declined", ignoreCase = true) ||
+                            callSubtitle.contains("Do Not Disturb", ignoreCase = true) ||
+                            callSubtitle.contains("Unknown caller", ignoreCase = true)
                         val callCardBg = if (msg.isFromMe) {
                             if (colors.isDark) Color(0xFF0A4D3E) else Color(0xFFC5F2C0)
                         } else {
@@ -3332,7 +3370,7 @@ private fun MessageBubbleRow(
                                     timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour),
                                     isEdited = false,
                                     isEphemeral = false,
-                                    isFromMe = false,
+                                    isFromMe = msg.isFromMe,
                                     deliveryStatus = msg.deliveryStatus
                                 )
                             }

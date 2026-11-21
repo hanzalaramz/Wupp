@@ -206,7 +206,7 @@ fun ProfileEditorDialog(
                 }
                 if (!initialProfile.syncSupported) {
                     Text(
-                        text = "Server profile sync requires rebuilding whatsbridge.aar with the latest Go changes.",
+                        text = "Server profile sync requires an active Rust bridge connection.",
                         color = colors.textSecondary,
                         fontSize = 12.sp
                     )
@@ -378,7 +378,7 @@ fun WhatsAppAccountPrivacyDialog(
                             text = if (state.syncSupported) {
                                 "Synced directly with your WhatsApp account."
                             } else {
-                                "Server privacy controls activate once whatsbridge.aar is rebuilt."
+                                "Server privacy controls activate once connected to WhatsApp."
                             },
                             color = colors.textSecondary,
                             fontSize = 12.sp
@@ -647,7 +647,7 @@ fun BlockedContactsDialog(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (!syncSupported) {
                     Text(
-                        text = "Blocked list sync activates once whatsbridge.aar is rebuilt.",
+                        text = "Blocked list sync activates once connected to WhatsApp.",
                         color = colors.textSecondary,
                         fontSize = 12.5.sp
                     )

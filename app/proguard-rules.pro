@@ -1,15 +1,8 @@
-# Keep Go gomobile native bridge & methods accessed via reflection
--keep class com.wa.bridge.** { *; }
+# Keep Rust JNI bridge & native VoIP media pipeline entrypoints
+-keep class com.wa.bridge.whatsbridge.** { *; }
 -dontwarn com.wa.bridge.**
--keep class go.** { *; }
--dontwarn go.**
--keep class whatsbridge.** { *; }
--dontwarn whatsbridge.**
-
-# Keep Mozilla GeckoView engine & JNI bindings
--keep class org.mozilla.geckoview.** { *; }
--keep class org.mozilla.gecko.** { *; }
--dontwarn org.mozilla.**
+-keepclasseswithmembers class com.wa.beastclient.core.calling.NativeVoipAudioPipeline { *; }
+-keepclasseswithmembers class com.wa.beastclient.core.calling.NativeVoipVideoPipeline { *; }
 
 # Keep Room database & entities
 -keep class * extends androidx.room.RoomDatabase

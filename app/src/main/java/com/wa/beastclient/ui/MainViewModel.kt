@@ -74,6 +74,35 @@ enum class HomeFilterChip(val label: String) {
     EDITED("Edited")
 }
 
+internal const val MAX_PINNED_CHATS = 3
+
+internal fun canPinMoreChats(
+    chats: List<ChatEntity>,
+    targetJids: Collection<String>
+): Boolean {
+    val alreadyPinnedSet = chats
+        .filter {
+            it.isPinned &&
+                !it.isCommunityParent &&
+                !it.jid.endsWith("@newsletter") &&
+                it.jid != "status@broadcast" &&
+                !it.jid.endsWith("@broadcast")
+        }
+        .mapTo(HashSet()) { it.jid }
+    val additionalPins = targetJids
+        .asSequence()
+        .filter {
+            it.isNotBlank() &&
+                !it.endsWith("@newsletter") &&
+                it != "status@broadcast" &&
+                !it.endsWith("@broadcast") &&
+                it !in alreadyPinnedSet
+        }
+        .distinct()
+        .count()
+    return alreadyPinnedSet.size + additionalPins <= MAX_PINNED_CHATS
+}
+
 internal fun filterHomeThreads(
     chats: List<ChatEntity>,
     chip: HomeFilterChip,
@@ -105,13 +134,18 @@ internal fun filterHomeThreads(
         HomeFilterChip.EDITED -> chatThreads.filter { (!hideLocked || !it.isLocked) && it.hasEditedMessages }
     }
     val q = query.trim().lowercase()
-    return if (q.isEmpty()) byChip
+    val filtered = if (q.isEmpty()) byChip
     else byChip.filter {
         it.name.lowercase().contains(q) ||
             it.jid.lowercase().contains(q) ||
             it.lastMessagePreview.lowercase().contains(q) ||
             (it.isGroup && it.lastMessageSenderName.lowercase().contains(q))
     }
+    return filtered.sortedWith(
+        compareByDescending<ChatEntity> { it.isPinned }
+            .thenByDescending { if (it.isPinned) it.pinOrder else 0L }
+            .thenByDescending { it.lastMessageTimestamp }
+    )
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -271,7 +305,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             chats.filter { it.jid.endsWith("@newsletter") }
                 .sortedWith(
                     compareByDescending<ChatEntity> { it.isPinned }
-                        .thenByDescending { it.pinOrder }
+                        .thenByDescending { if (it.isPinned) it.pinOrder else 0L }
                         .thenByDescending { it.lastMessageTimestamp }
                         .thenBy { it.name.lowercase() }
                 )
@@ -363,6 +397,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun requestStatusMediaDownload(status: StatusEntity, userInitiated: Boolean = true) {
         WaRealtimeService.requestStatusMediaDownload(appContext, status, userInitiated)
+    }
+
+    fun markStatusViewed(status: StatusEntity) {
+        if (status.isViewed) return
+        viewModelScope.launch {
+            WaRealtimeService.markStatusViewed(appContext, status)
+        }
     }
 
     fun observeChat(chatJid: String): Flow<ChatEntity?> = dao.observeChat(chatJid)
@@ -571,10 +612,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateGlobalStealth(transform: (GlobalStealthConfig) -> GlobalStealthConfig) {
         val prevGhost = stealthConfig.value.ghostPresence
+        val prevImmunity = stealthConfig.value.disappearingImmunity
         StealthMatrixManager.updateConfig(transform)
         val newGhost = stealthConfig.value.ghostPresence
+        val newImmunity = stealthConfig.value.disappearingImmunity
         if (prevGhost != newGhost) {
             viewModelScope.launch { WaRealtimeService.setGhostPresence(newGhost) }
+        }
+        if (prevImmunity && !newImmunity) {
+            WaRealtimeService.sweepExpiredEphemeralNow(appContext)
+        }
+    }
+
+    fun sendChatPresence(chatJid: String, isComposing: Boolean, isAudio: Boolean = false) {
+        viewModelScope.launch {
+            WaRealtimeService.sendChatPresence(appContext, chatJid, isComposing, isAudio)
         }
     }
 
@@ -669,16 +721,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun togglePinChat(chat: ChatEntity) {
+        val targetPinned = !chat.isPinned
         viewModelScope.launch(Dispatchers.IO) {
-            dao.updatePinned(chat.jid, !chat.isPinned, System.currentTimeMillis())
+            if (targetPinned &&
+                !chat.jid.endsWith("@newsletter") &&
+                dao.getChat(chat.jid)?.isPinned != true &&
+                dao.countPinnedChats() >= MAX_PINNED_CHATS
+            ) {
+                showToast("You can only pin up to $MAX_PINNED_CHATS chats")
+                return@launch
+            }
+            dao.updatePinned(chat.jid, targetPinned, if (targetPinned) System.currentTimeMillis() else 0L)
+            WaRealtimeService.syncChatPin(chat.jid, targetPinned)
         }
     }
 
     fun pinChats(jids: Collection<String>, pinned: Boolean) {
         if (jids.isEmpty()) return
+        val distinctJids = jids.filter { it.isNotBlank() }.distinct()
+        if (distinctJids.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
+            if (pinned) {
+                val currentlyPinned = dao.countPinnedChats()
+                val newNonNewsletterPins = distinctJids.count { jid ->
+                    !jid.endsWith("@newsletter") &&
+                        jid != "status@broadcast" &&
+                        !jid.endsWith("@broadcast") &&
+                        dao.getChat(jid)?.isPinned != true
+                }
+                if (currentlyPinned + newNonNewsletterPins > MAX_PINNED_CHATS) {
+                    showToast("You can only pin up to $MAX_PINNED_CHATS chats")
+                    return@launch
+                }
+            }
             val order = if (pinned) System.currentTimeMillis() else 0L
-            jids.forEach { dao.updatePinned(it, pinned, order) }
+            distinctJids.forEach { jid ->
+                dao.updatePinned(jid, pinned, order)
+                WaRealtimeService.syncChatPin(jid, pinned)
+            }
         }
     }
 
@@ -687,7 +767,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             jids.forEach { jid ->
                 dao.updateMuted(jid, muted, 0L)
-                WaRealtimeService.toggleChannelMute(appContext, jid, muted)
+                WaRealtimeService.syncChatMute(jid, muted)
             }
         }
     }
@@ -695,7 +775,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun archiveChats(jids: Collection<String>, archived: Boolean) {
         if (jids.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
-            jids.forEach { dao.updateArchived(it, archived) }
+            jids.forEach { jid ->
+                dao.updateArchived(jid, archived)
+                WaRealtimeService.syncChatArchive(jid, archived)
+            }
         }
     }
 

@@ -1,11 +1,10 @@
 # Connection, Rate-Limit & Protocol Architecture
 
-This page breaks down every safeguard Wupp uses across the Kotlin app (`WaRealtimeService`, `StealthMatrixManager`) and Go bridge (`whatsbridge.go`) to maintain connection stability and avoid rate-limiting on WhatsApp's multidevice protocol.
+This page breaks down every safeguard Wupp uses across the Kotlin app (`WaRealtimeService`, `StealthMatrixManager`) and native Rust bridge (`rustbridge/src/`, `whatsapp-rust`) to maintain connection stability and avoid rate-limiting on WhatsApp's multidevice protocol.
 
 ## 1. Companion Identity & HTTP Headers
-- **Browser fingerprint (`applyDeviceFingerprint`, `PairWithPhoneNumber`):** Wupp links as **Chrome (Mac OS)** (`DeviceProps_CHROME`, OS `Mac OS 14.4.1`) with full-sync capability enabled (`RequireFullSync = true`).
-- **24-hour version caching (`refreshWAVersionIfNeeded`):** The WhatsApp Web protocol version is cached in `wa_version_cache.json` for `86,400s` (24 hours) so reconnects do not hammer WhatsApp version endpoints.
-- **Browser-matched CDN headers (`setWhatsAppCDNHeaders`):** Avatar and CDN HTTP fetches attach Chrome Mac OS `User-Agent`, `Origin: https://web.whatsapp.com`, and `Referer: https://web.whatsapp.com/`.
+- **Browser fingerprint (`client.rs`, `pair_with_code`):** Wupp links as a single Chrome companion (`PlatformType::CHROME`, OS `Android`) handling messaging, history sync, and native E2EE VoIP (`voip-mlow` / `voip-encoded` / `voip-relay-native`) over one linked session.
+- **Persistent SQLite state (`wa_rust.db`):** Device keys, Signal sessions, LID/PN mappings, media metadata (`wa_media_meta`), contact cache (`wa_contacts`), and 6-hour avatar miss cache (`wa_avatar_miss`) live inside a shared WAL SQLite database.
 
 ## 2. Preventing `429: rate-overlimit` Sync Storms
 - **Serialized 90-second global cooldown (`SyncContactsAndAvatars`):** Full group (`GetJoinedGroups`), channel (`GetSubscribedNewsletters`), and contact sweeps are protected by `contactsSyncRunning` and `lastContactsSyncUnix`, allowing at most one global sweep every `90` seconds.
@@ -31,4 +30,4 @@ This page breaks down every safeguard Wupp uses across the Kotlin app (`WaRealti
 - **14-day primary phone tracker (`computeHeartbeatStatus`):** Wupp monitors WhatsApp's 14-day linked-device window and flags you starting at day `10` (`WARNING_THRESHOLD_DAYS`) so your primary phone checks in before your session is invalidated.
 
 ## Protocol Boundaries
-Wupp connects via `whatsmeow` as an independent companion client. Standard protocol limits apply if an account sends bulk or automated unsolicited messages or triggers spam reports.
+Wupp connects via `whatsapp-rust` as an independent companion client. Standard protocol limits apply if an account sends bulk or automated unsolicited messages or triggers spam reports.

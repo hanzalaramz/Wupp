@@ -21,7 +21,7 @@ interface WaDao {
         """
         SELECT * FROM chats
         WHERE (:includeArchived = 1 OR is_archived = 0)
-        ORDER BY is_pinned DESC, pin_order DESC, last_message_timestamp DESC
+        ORDER BY is_pinned DESC, (CASE WHEN is_pinned = 1 THEN pin_order ELSE 0 END) DESC, last_message_timestamp DESC
         """
     )
     fun observeChats(includeArchived: Boolean = false): Flow<List<ChatEntity>>
@@ -128,6 +128,24 @@ interface WaDao {
     @Query("UPDATE chats SET is_pinned = :pinned, pin_order = :pinOrder WHERE jid = :chatJid")
     suspend fun updatePinned(chatJid: String, pinned: Boolean, pinOrder: Long)
 
+    @Query(
+        """
+        SELECT COUNT(*) FROM chats
+        WHERE is_pinned = 1
+          AND is_community_parent = 0
+          AND jid NOT LIKE '%@newsletter'
+          AND jid != 'status@broadcast'
+          AND jid NOT LIKE '%@broadcast'
+        """
+    )
+    suspend fun countPinnedChats(): Int
+
+    @Query("UPDATE chats SET pin_order = 0 WHERE is_pinned = 0 AND pin_order != 0")
+    suspend fun clearStaleUnpinnedPinOrders()
+
+    @Query("SELECT * FROM chats WHERE last_message_preview LIKE '% reacted %'")
+    suspend fun getChatsWithReactionPreview(): List<ChatEntity>
+
     @Query("UPDATE chats SET is_muted = :muted, mute_end_time = :muteEnd WHERE jid = :chatJid")
     suspend fun updateMuted(chatJid: String, muted: Boolean, muteEnd: Long)
 
@@ -197,6 +215,7 @@ interface WaDao {
         WHERE jid = :jid
           AND (
             name = ''
+            OR name IN ('.', '..', '...', '-', '_', '~')
             OR name = jid
             OR (instr(jid, '@') > 1 AND (name = substr(jid, 1, instr(jid, '@') - 1) OR name = '+' || substr(jid, 1, instr(jid, '@') - 1)))
             OR (name LIKE '+%' AND :name NOT LIKE '+%')
@@ -205,6 +224,39 @@ interface WaDao {
         """
     )
     suspend fun updateChatName(jid: String, name: String, overwrite: Boolean = false)
+
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE chat_jid = :chatJid
+          AND msg_type = 'CALL'
+          AND body LIKE '%|Incoming call'
+          AND ABS(timestamp - :targetTs) <= :windowMs
+        ORDER BY ABS(timestamp - :targetTs) ASC
+        LIMIT 1
+        """
+    )
+    suspend fun findPlaceholderCallMessage(
+        chatJid: String,
+        targetTs: Long,
+        windowMs: Long = 120_000L
+    ): MessageEntity?
+
+    @Query(
+        """
+        UPDATE messages
+        SET body = :body,
+            duration_sec = :durationSec,
+            is_from_me = :isFromMe
+        WHERE id = :messageId
+        """
+    )
+    suspend fun updateCallMessageDetails(
+        messageId: String,
+        body: String,
+        durationSec: Int,
+        isFromMe: Boolean
+    )
 
     @Query("UPDATE chats SET is_online = :isOnline, last_seen = CASE WHEN :lastSeen > 0 THEN :lastSeen ELSE last_seen END WHERE jid = :jid")
     suspend fun updateChatPresenceOnline(jid: String, isOnline: Boolean, lastSeen: Long)
@@ -354,6 +406,19 @@ interface WaDao {
 
     @Query("UPDATE chats SET about_text = :aboutText WHERE jid = :jid")
     suspend fun updateChatAbout(jid: String, aboutText: String)
+
+    @Query("UPDATE chats SET ephemeral_duration = :ephemeralSec WHERE jid = :jid")
+    suspend fun updateChatEphemeralDuration(jid: String, ephemeralSec: Int)
+
+    @Query(
+        """
+        SELECT id FROM messages
+        WHERE is_ephemeral = 1
+          AND ephemeral_duration > 0
+          AND (CASE WHEN ephemeral_start > 0 THEN ephemeral_start ELSE timestamp END) + (CAST(ephemeral_duration AS INTEGER) * 1000) <= :nowMs
+        """
+    )
+    suspend fun getExpiredEphemeralMessageIds(nowMs: Long): List<String>
 
     @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, rowid DESC")
     fun pagingMessages(chatJid: String): PagingSource<Int, MessageEntity>
@@ -655,6 +720,12 @@ interface WaDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertStatus(status: StatusEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertStatuses(statuses: List<StatusEntity>)
+
+    @Query("SELECT * FROM statuses WHERE id IN (:statusIds)")
+    suspend fun getStatusesByIds(statusIds: List<String>): List<StatusEntity>
+
     @Query("SELECT * FROM statuses ORDER BY timestamp DESC")
     fun observeStatuses(): Flow<List<StatusEntity>>
 
@@ -673,6 +744,9 @@ interface WaDao {
     @Query("UPDATE statuses SET local_media_path = :localPath WHERE id = :statusId")
     suspend fun updateStatusMedia(statusId: String, localPath: String)
 
+    @Query("UPDATE statuses SET is_viewed = 1 WHERE id = :statusId")
+    suspend fun markStatusViewed(statusId: String)
+
     @Query("UPDATE statuses SET is_revoked = 1, revoked_at = :revokedAt WHERE id = :statusId")
     suspend fun markStatusRevoked(statusId: String, revokedAt: Long)
 
@@ -688,6 +762,7 @@ interface WaDao {
           )
           AND (
             sender_name = ''
+            OR sender_name IN ('.', '..', '...', '-', '_', '~')
             OR sender_name = 'Status'
             OR sender_name = sender_jid
             OR (:jidUser != '' AND (sender_name = :jidUser OR sender_name = '+' || :jidUser))
@@ -834,6 +909,15 @@ interface WaDao {
             -1 -> false
             else -> canonical.isArchived && duplicate.isArchived
         }
+        val mergedPinned = canonical.isPinned || duplicate.isPinned
+        val mergedPinOrder = if (mergedPinned) {
+            maxOf(
+                if (canonical.isPinned) canonical.pinOrder else 0L,
+                if (duplicate.isPinned) duplicate.pinOrder else 0L
+            )
+        } else {
+            0L
+        }
         upsertChat(
             canonical.copy(
                 name = resolvedName,
@@ -843,8 +927,8 @@ interface WaDao {
                 isArchived = mergedArchived,
                 isLocked = canonical.isLocked || duplicate.isLocked,
                 localArchiveOverride = mergedOverride,
-                isPinned = canonical.isPinned || duplicate.isPinned,
-                pinOrder = maxOf(canonical.pinOrder, duplicate.pinOrder),
+                isPinned = mergedPinned,
+                pinOrder = mergedPinOrder,
                 isMuted = canonical.isMuted || duplicate.isMuted,
                 muteEndTime = maxOf(canonical.muteEndTime, duplicate.muteEndTime),
                 isFavorite = canonical.isFavorite || duplicate.isFavorite,
@@ -899,10 +983,16 @@ interface WaDao {
                     -1 -> false
                     else -> chat.isArchived
                 }
+                val mergedPinOrder = if (chat.isPinned) {
+                    maxOf(chat.pinOrder, if (existing.isPinned) existing.pinOrder else 0L)
+                } else {
+                    0L
+                }
                 upsertChat(
                     existing.copy(
                         name = resolvedName,
-                        isPinned = chat.isPinned || existing.isPinned,
+                        isPinned = chat.isPinned,
+                        pinOrder = mergedPinOrder,
                         isMuted = chat.isMuted || existing.isMuted,
                         isArchived = resolvedArchived,
                         isLocked = chat.isLocked || existing.isLocked,
