@@ -32,16 +32,28 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Restore cached multi-ABI Rust libraries
+        id: so-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/src/main/jniLibs/arm64-v8a/libwhatsbridge_rs.so
+            app/src/main/jniLibs/armeabi-v7a/libwhatsbridge_rs.so
+            app/src/main/jniLibs/x86_64/libwhatsbridge_rs.so
+          key: so-multi-abi-${{ runner.os }}-ndk27-${{ hashFiles('rustbridge/**') }}
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - if: steps.so-cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
 
-      - uses: Swatinem/rust-cache@v2
+      - if: steps.so-cache.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: rustbridge
           prefix-key: release-multi-abi-v1
@@ -50,8 +62,13 @@ jobs:
         with:
           packages: platform-tools
 
-      - name: Install Android NDK & Build Tools
-        run: sdkmanager "ndk;27.0.12077973" "platforms;android-37.2" "build-tools;36.0.0"
+      - name: Install Android SDK & Build Tools
+        run: |
+          if [ "${{ steps.so-cache.outputs.cache-hit }}" != "true" ]; then
+            sdkmanager "ndk;27.0.12077973" "platforms;android-37.2" "build-tools;36.0.0"
+          else
+            sdkmanager "platforms;android-37.2" "build-tools;36.0.0"
+          fi
 
       - name: Derive version metadata from tag
         id: meta
@@ -84,6 +101,7 @@ jobs:
           echo "is_prerelease=${IS_PRE}" >> "$GITHUB_OUTPUT"
 
       - name: Build multi-ABI libwhatsbridge_rs.so
+        if: steps.so-cache.outputs.cache-hit != 'true'
         env:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
