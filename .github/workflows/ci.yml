@@ -20,12 +20,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rustbridge
+          prefix-key: ci-host-v1
       - name: Check Rust bridge library
         run: cargo check --lib
 
   android-build:
     name: Android Build (Rust + Gradle)
-    needs: rust-bridge-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +41,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rustbridge
+          prefix-key: ci-arm64-v1
 
       - uses: android-actions/setup-android@v3
         with:

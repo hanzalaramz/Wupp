@@ -41,6 +41,11 @@ jobs:
         with:
           targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rustbridge
+          prefix-key: release-multi-abi-v1
+
       - uses: android-actions/setup-android@v3
         with:
           packages: platform-tools
