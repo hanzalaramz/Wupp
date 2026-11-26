@@ -1,0 +1,58 @@
+name: Cache Multi-ABI Rust Libraries
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "rustbridge/**"
+      - ".github/workflows/rust-so-cache.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: wupp-rust-so-cache
+  cancel-in-progress: true
+
+jobs:
+  warm-rust-so-cache:
+    name: Build & Cache Multi-ABI libwhatsbridge_rs.so
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore or build multi-ABI Rust libraries cache
+        id: so-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/src/main/jniLibs/arm64-v8a/libwhatsbridge_rs.so
+            app/src/main/jniLibs/armeabi-v7a/libwhatsbridge_rs.so
+            app/src/main/jniLibs/x86_64/libwhatsbridge_rs.so
+          key: so-multi-abi-${{ runner.os }}-ndk27-${{ hashFiles('rustbridge/**') }}
+
+      - if: steps.so-cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+
+      - if: steps.so-cache.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rustbridge
+          prefix-key: release-multi-abi-v1
+
+      - if: steps.so-cache.outputs.cache-hit != 'true'
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android NDK 27
+        if: steps.so-cache.outputs.cache-hit != 'true'
+        run: sdkmanager "ndk;27.0.12077973"
+
+      - name: Build multi-ABI libwhatsbridge_rs.so
+        if: steps.so-cache.outputs.cache-hit != 'true'
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
+          WUPP_RUST_ABIS: "arm64-v8a armeabi-v7a x86_64"
+        run: bash rustbridge/build-android.sh
