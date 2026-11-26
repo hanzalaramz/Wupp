@@ -86,6 +86,8 @@ fun VoiceNoteBubble(
     ghostPlayedActive: Boolean,
     onManualSendPlayedReceipt: () -> Unit,
     onRequestDownload: () -> Unit = {},
+    isDownloadingMedia: Boolean = false,
+    mediaDownloadError: String? = null,
     modifier: Modifier = Modifier,
     avatarPath: String? = null,
     onClickAvatar: (() -> Unit)? = null
@@ -137,6 +139,15 @@ fun VoiceNoteBubble(
                     onManualSendPlayedReceipt()
                 }
             }
+        }
+    }
+
+    val effectiveDownloading = !mediaFileExists && (isDownloading || isDownloadingMedia)
+
+    LaunchedEffect(mediaDownloadError, isDownloadingMedia) {
+        if (!mediaDownloadError.isNullOrBlank() && !isDownloadingMedia) {
+            isDownloading = false
+            autoPlayOnDownload = false
         }
     }
 
@@ -307,7 +318,7 @@ fun VoiceNoteBubble(
                 }
                 .semantics {
                     contentDescription = when {
-                        isDownloading -> "Downloading voice message"
+                        effectiveDownloading -> "Downloading voice message"
                         isPlaying -> "Pause voice message"
                         !mediaFileExists -> "Download voice message"
                         else -> "Play voice message"
@@ -315,7 +326,7 @@ fun VoiceNoteBubble(
                 },
             contentAlignment = Alignment.Center
         ) {
-            if (isDownloading && !mediaFileExists) {
+            if (effectiveDownloading) {
                 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
                 LoadingIndicator(
                     modifier = Modifier.size(22.dp),

@@ -1824,6 +1824,7 @@ class WaRealtimeService : Service() {
                 _failedMediaIds.value = _failedMediaIds.value - messageId
             }
             "FAILED" -> {
+                downloadingStartedAtMs.remove(messageId)
                 _downloadingMediaIds.value = _downloadingMediaIds.value - messageId
                 _failedMediaIds.value = _failedMediaIds.value + (messageId to reason.ifBlank { "Tap to retry" })
             }
@@ -1843,6 +1844,7 @@ class WaRealtimeService : Service() {
         val mimeType = json.optString("mimeType")
 
         if (messageId.isNotBlank()) {
+            downloadingStartedAtMs.remove(messageId)
             _downloadingMediaIds.value = _downloadingMediaIds.value - messageId
             _failedMediaIds.value = _failedMediaIds.value - messageId
         }
@@ -3132,11 +3134,7 @@ class WaRealtimeService : Service() {
                     val missingMedia = dao.getUndownloadedMediaMessages(chatJid, limit = 25)
                     for (msg in missingMedia) {
                         if (StealthMatrixManager.isAutoDownloadAllowed(appCtx, msg.msgType, msg.mimeType, chatJid = chatJid)) {
-                            runCatching {
-                                triggerMediaDownloadWithAnchor(dao, msg)
-                            }.onFailure {
-                                Log.w(TAG, "requestMediaDownload(onChatOpened) failed for ${msg.id}: ${it.message}")
-                            }
+                            requestMediaDownload(appCtx, msg, userInitiated = false)
                             delay(120L)
                         }
                     }
@@ -3238,20 +3236,35 @@ class WaRealtimeService : Service() {
             }
         }
 
+        private val downloadingStartedAtMs = ConcurrentHashMap<String, Long>()
+
         fun requestMediaDownload(context: Context, msg: MessageEntity, userInitiated: Boolean = true) {
             if (msg.id.isBlank()) return
             if (msg.isViewOnce || msg.msgType == "VIEW_ONCE_STRIPPED" || msg.viewOnceState == "STRIPPED") return
-            if (_downloadingMediaIds.value.contains(msg.id)) return
+            val nowMs = System.currentTimeMillis()
+            val alreadyDownloading = _downloadingMediaIds.value.contains(msg.id)
+            val elapsedMs = downloadingStartedAtMs[msg.id]?.let { nowMs - it } ?: Long.MAX_VALUE
+            if (!shouldAllowMediaDownloadRequest(alreadyDownloading, userInitiated, elapsedMs)) return
             if (!userInitiated && _failedMediaIds.value.containsKey(msg.id)) return
             if (!userInitiated && !StealthMatrixManager.isAutoDownloadAllowed(context, msg.msgType, msg.mimeType, chatJid = msg.chatJid)) return
 
             val appCtx = context.applicationContext
+            downloadingStartedAtMs[msg.id] = nowMs
             _downloadingMediaIds.value = _downloadingMediaIds.value + msg.id
             if (userInitiated) {
                 _failedMediaIds.value = _failedMediaIds.value - msg.id
             }
             companionScope.launch {
+                val dao = WaUiDatabase.getInstance(appCtx).waDao()
+                val existingLocal = dao.getMessage(msg.id)?.localMediaPath
+                if (!existingLocal.isNullOrBlank() && File(existingLocal).let { it.exists() && it.length() > 0L }) {
+                    downloadingStartedAtMs.remove(msg.id)
+                    _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
+                    _failedMediaIds.value = _failedMediaIds.value - msg.id
+                    return@launch
+                }
                 if (StealthMatrixManager.config.value.offlineMode) {
+                    downloadingStartedAtMs.remove(msg.id)
                     _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
                     if (userInitiated) {
                         _failedMediaIds.value = _failedMediaIds.value + (msg.id to "Offline — go Live to download")
@@ -3259,27 +3272,32 @@ class WaRealtimeService : Service() {
                     return@launch
                 }
                 if (!runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+                    downloadingStartedAtMs.remove(msg.id)
                     _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
                     return@launch
                 }
-                val dao = WaUiDatabase.getInstance(appCtx).waDao()
                 runCatching {
                     val hasCached = runCatching { Whatsbridge.hasCachedMediaMeta(msg.id) }.getOrDefault(false)
                     if (hasCached) {
                         Whatsbridge.requestMediaDownload(msg.chatJid, msg.senderJid, msg.id, msg.timestamp)
-                        delay(125_000L)
+                        delay(25_000L)
                     } else {
                         triggerMediaDownloadWithAnchor(dao, msg)
                         delay(30_000L)
                     }
                     val refreshed = dao.getMessage(msg.id)
-                    if (refreshed?.localMediaPath.isNullOrBlank() && _downloadingMediaIds.value.contains(msg.id)) {
+                    if (refreshed?.localMediaPath.isNullOrBlank() &&
+                        _downloadingMediaIds.value.contains(msg.id) &&
+                        downloadingStartedAtMs[msg.id] == nowMs
+                    ) {
+                        downloadingStartedAtMs.remove(msg.id)
                         _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
                         if (refreshed?.viewOnceState != "STRIPPED") {
                             _failedMediaIds.value = _failedMediaIds.value + (msg.id to "Tap to retry")
                         }
                     }
                 }.onFailure {
+                    downloadingStartedAtMs.remove(msg.id)
                     _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
                     _failedMediaIds.value = _failedMediaIds.value + (msg.id to (it.message ?: "Download failed"))
                     Log.w(TAG, "requestMediaDownload failed for ${msg.id}: ${it.message}")
@@ -4968,3 +4986,13 @@ data class WuppStorageStats(
     val vaultBytes: Long = 0L,
     val tempCacheBytes: Long = 0L
 )
+
+internal fun shouldAllowMediaDownloadRequest(
+    isAlreadyDownloading: Boolean,
+    userInitiated: Boolean,
+    elapsedSinceStartMs: Long,
+    manualRetryGraceMs: Long = 4_000L
+): Boolean {
+    if (!isAlreadyDownloading) return true
+    return userInitiated && elapsedSinceStartMs >= manualRetryGraceMs
+}

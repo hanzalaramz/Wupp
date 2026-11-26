@@ -4379,6 +4379,8 @@ private fun MessageBubbleRow(
                             ghostPlayedActive = ghostPlayedActive,
                             onManualSendPlayedReceipt = onManualSendPlayedReceipt,
                             onRequestDownload = onRequestDownload,
+                            isDownloadingMedia = isDownloadingMedia,
+                            mediaDownloadError = mediaDownloadError,
                             avatarPath = if (msg.isFromMe) null else senderAvatarPath,
                             onClickAvatar = if (msg.isFromMe) null else onClickSenderAvatar
                         )
