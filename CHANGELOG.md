@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.10-pre.9] - 2026-11-26
+
+### Improved
+- Removed the faint border outline on the top chat header and bottom message bar and softened their edges to blend smoothly into the chat background.
+
 ## [0.3.10-pre.8] - 2026-11-26
 
 ### Improved

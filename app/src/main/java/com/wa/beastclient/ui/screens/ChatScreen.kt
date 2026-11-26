@@ -3147,7 +3147,8 @@ fun ChatScreen(
                         val hasDraftText = draftValue.text.isNotBlank()
                         WuppGlassBottomBar(
                             backdropState = wallpaperBackdropState,
-                            classicMode = stealthConfig.classicWhatsAppLook
+                            classicMode = stealthConfig.classicWhatsAppLook,
+                            fadeBottom = !showAttachTray && !showEmojiPicker
                         ) {
                             Row(
                                 modifier = Modifier

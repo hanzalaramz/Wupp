@@ -58,9 +58,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -116,6 +119,18 @@ internal fun resolveLiquidGlassSurfaceAlpha(
     if (isDark) 0.44f else 0.56f
 } else {
     if (isDark) 0.88f else 0.94f
+}
+
+internal fun resolveChromeBarTintColor(colors: WaColors): Color = colors.appSurface
+
+internal fun resolveChromeBarSurfaceAlpha(
+    isDark: Boolean,
+    renderEffectSupported: Boolean,
+    classicMode: Boolean
+): Float = when {
+    classicMode -> 1f
+    renderEffectSupported -> if (isDark) 0.56f else 0.72f
+    else -> if (isDark) 0.88f else 0.94f
 }
 
 /**
@@ -387,117 +402,221 @@ fun WuppGlassTopBar(
     val colors = LocalWaColors.current
     val hasLiveBackdrop = !classicMode && backdropState != null && isRenderEffectSupported()
     val backdrop: Backdrop = backdropState?.backdrop ?: emptyBackdrop()
-    val barTint = if (colors.isDark) Color(0xFF0E1215) else Color(0xFFF6F8FA)
-    val barAlpha = when {
-        classicMode -> 1f
-        hasLiveBackdrop -> if (colors.isDark) 0.66f else 0.72f
-        else -> if (colors.isDark) 0.90f else 0.96f
-    }
+    val barTint = resolveChromeBarTintColor(colors)
+    val barAlpha = resolveChromeBarSurfaceAlpha(
+        isDark = colors.isDark,
+        renderEffectSupported = hasLiveBackdrop,
+        classicMode = classicMode
+    )
 
-    val barModifier = if (classicMode) {
-        modifier
-            .fillMaxWidth()
-            .background(colors.appSurface)
+    val glassBgModifier = if (classicMode) {
+        Modifier.background(colors.appSurface)
     } else {
-        modifier
-            .fillMaxWidth()
+        Modifier
+            .then(
+                if (!showBottomDivider) {
+                    Modifier
+                        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                        .drawWithContent {
+                            drawContent()
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    0.0f to Color.Black,
+                                    0.64f to Color.Black,
+                                    1.0f to Color.Transparent
+                                ),
+                                blendMode = BlendMode.DstIn
+                            )
+                        }
+                } else {
+                    Modifier
+                }
+            )
             .drawBackdrop(
                 backdrop = backdrop,
                 shape = { RectangleShape },
                 effects = {
                     if (hasLiveBackdrop) {
                         vibrancy()
-                        blur(18.dp.toPx())
+                        blur(16.dp.toPx())
                     }
                 },
+                highlight = {
+                    Highlight(
+                        width = 0.dp,
+                        alpha = 0f,
+                        style = HighlightStyle.Default
+                    )
+                },
+                shadow = {
+                    Shadow(
+                        radius = 0.dp,
+                        color = Color.Transparent
+                    )
+                },
+                innerShadow = {
+                    InnerShadow(
+                        radius = 0.dp,
+                        alpha = 0f
+                    )
+                },
                 onDrawSurface = {
-                    drawRect(barTint.copy(alpha = barAlpha))
+                    if (showBottomDivider) {
+                        drawRect(barTint.copy(alpha = barAlpha))
+                    } else {
+                        drawRect(
+                            brush = Brush.verticalGradient(
+                                0.0f to barTint.copy(alpha = barAlpha),
+                                0.64f to barTint.copy(alpha = barAlpha * 0.80f),
+                                1.0f to Color.Transparent
+                            )
+                        )
+                    }
                 }
             )
     }
 
-    Column(modifier = barModifier.statusBarsPadding()) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(height)
-                .padding(horizontal = 12.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Row(
-                modifier = Modifier.align(Alignment.CenterStart),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                content = leading
-            )
-            Box(
-                modifier = Modifier.align(Alignment.Center),
-                contentAlignment = Alignment.Center,
-                content = center
-            )
-            Row(
-                modifier = Modifier.align(Alignment.CenterEnd),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                content = trailing
-            )
-        }
-        if (showBottomDivider) {
+    Box(modifier = modifier.fillMaxWidth()) {
+        Box(modifier = Modifier.matchParentSize().then(glassBgModifier))
+        Column(modifier = Modifier.fillMaxWidth().statusBarsPadding()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(0.5.dp)
-                    .background(
-                        if (colors.isDark) Color.White.copy(alpha = 0.08f)
-                        else colors.divider
-                    )
-            )
+                    .height(height)
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(
+                    modifier = Modifier.align(Alignment.CenterStart),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    content = leading
+                )
+                Box(
+                    modifier = Modifier.align(Alignment.Center),
+                    contentAlignment = Alignment.Center,
+                    content = center
+                )
+                Row(
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    content = trailing
+                )
+            }
+            if (showBottomDivider) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(0.5.dp)
+                        .background(
+                            if (colors.isDark) Color.White.copy(alpha = 0.08f)
+                            else colors.divider
+                        )
+                )
+            }
         }
     }
 }
 
 /**
  * Unified translucent frosted glass bottom bar (e.g. chat composer dock) with smooth live backdrop
- * blur and zero shiny button borders.
+ * blur and soft top-edge feathering so there is no border line or boxy cutoff.
  */
 @Composable
 fun WuppGlassBottomBar(
     modifier: Modifier = Modifier,
     backdropState: WuppBackdropState? = null,
     classicMode: Boolean = LocalWuppClassicUi.current,
+    fadeBottom: Boolean = true,
     content: @Composable BoxScope.() -> Unit
 ) {
     val colors = LocalWaColors.current
     val hasLiveBackdrop = !classicMode && backdropState != null && isRenderEffectSupported()
     val backdrop: Backdrop = backdropState?.backdrop ?: emptyBackdrop()
-    val barTint = if (colors.isDark) Color(0xFF0E1215) else Color(0xFFF6F8FA)
-    val barAlpha = when {
-        classicMode -> 1f
-        hasLiveBackdrop -> if (colors.isDark) 0.72f else 0.78f
-        else -> if (colors.isDark) 0.92f else 0.96f
-    }
-    val barModifier = if (classicMode) {
-        modifier
-            .fillMaxWidth()
-            .background(colors.appSurface)
+    val barTint = resolveChromeBarTintColor(colors)
+    val barAlpha = resolveChromeBarSurfaceAlpha(
+        isDark = colors.isDark,
+        renderEffectSupported = hasLiveBackdrop,
+        classicMode = classicMode
+    )
+    val glassBgModifier = if (classicMode) {
+        Modifier.background(colors.appSurface)
     } else {
-        modifier
-            .fillMaxWidth()
+        Modifier
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+            .drawWithContent {
+                drawContent()
+                val maskBrush = if (fadeBottom) {
+                    Brush.verticalGradient(
+                        0.0f to Color.Transparent,
+                        0.32f to Color.Black,
+                        0.76f to Color.Black,
+                        1.0f to Color.Transparent
+                    )
+                } else {
+                    Brush.verticalGradient(
+                        0.0f to Color.Transparent,
+                        0.34f to Color.Black,
+                        1.0f to Color.Black
+                    )
+                }
+                drawRect(
+                    brush = maskBrush,
+                    blendMode = BlendMode.DstIn
+                )
+            }
             .drawBackdrop(
                 backdrop = backdrop,
                 shape = { RectangleShape },
                 effects = {
                     if (hasLiveBackdrop) {
                         vibrancy()
-                        blur(18.dp.toPx())
+                        blur(16.dp.toPx())
                     }
                 },
+                highlight = {
+                    Highlight(
+                        width = 0.dp,
+                        alpha = 0f,
+                        style = HighlightStyle.Default
+                    )
+                },
+                shadow = {
+                    Shadow(
+                        radius = 0.dp,
+                        color = Color.Transparent
+                    )
+                },
+                innerShadow = {
+                    InnerShadow(
+                        radius = 0.dp,
+                        alpha = 0f
+                    )
+                },
                 onDrawSurface = {
-                    drawRect(barTint.copy(alpha = barAlpha))
+                    val surfaceBrush = if (fadeBottom) {
+                        Brush.verticalGradient(
+                            0.0f to Color.Transparent,
+                            0.32f to barTint.copy(alpha = barAlpha * 0.85f),
+                            0.76f to barTint.copy(alpha = barAlpha * 0.85f),
+                            1.0f to Color.Transparent
+                        )
+                    } else {
+                        Brush.verticalGradient(
+                            0.0f to Color.Transparent,
+                            0.34f to barTint.copy(alpha = barAlpha * 0.80f),
+                            1.0f to barTint.copy(alpha = barAlpha)
+                        )
+                    }
+                    drawRect(brush = surfaceBrush)
                 }
             )
     }
-    Box(modifier = barModifier, content = content)
+    Box(modifier = modifier.fillMaxWidth()) {
+        Box(modifier = Modifier.matchParentSize().then(glassBgModifier))
+        Box(modifier = Modifier.fillMaxWidth(), content = content)
+    }
 }
 
 private data class GlassNavTab(

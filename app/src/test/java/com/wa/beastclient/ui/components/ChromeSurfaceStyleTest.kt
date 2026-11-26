@@ -33,6 +33,26 @@ class ChromeSurfaceStyleTest {
     }
 
     @Test
+    fun resolveChromeBarTintAndAlpha_matchThemeSurfaceAndBlurSupport() {
+        val amoled = colorsForTheme(WuppThemeMode.AMOLED, WuppAccentColor.DEFAULT)
+        val light = colorsForTheme(WuppThemeMode.LIGHT, WuppAccentColor.DEFAULT)
+        assertEquals(amoled.appSurface, resolveChromeBarTintColor(amoled))
+        assertEquals(light.appSurface, resolveChromeBarTintColor(light))
+
+        assertEquals(
+            1f,
+            resolveChromeBarSurfaceAlpha(isDark = true, renderEffectSupported = true, classicMode = true),
+            0.001f
+        )
+        assertTrue(
+            resolveChromeBarSurfaceAlpha(isDark = true, renderEffectSupported = true, classicMode = false) < 0.7f
+        )
+        assertTrue(
+            resolveChromeBarSurfaceAlpha(isDark = false, renderEffectSupported = false, classicMode = false) > 0.85f
+        )
+    }
+
+    @Test
     fun colorsForTheme_appliesCustomAccentOverrideCleanly() {
         val defaultDark = colorsForTheme(WuppThemeMode.DARK, WuppAccentColor.DEFAULT)
         val oceanDark = colorsForTheme(WuppThemeMode.DARK, WuppAccentColor.OCEAN)
