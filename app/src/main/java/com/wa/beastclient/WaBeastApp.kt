@@ -8,6 +8,7 @@ import coil.ImageLoaderFactory
 import coil.decode.GifDecoder
 import coil.decode.ImageDecoderDecoder
 import com.wa.beastclient.core.calling.CallStateManager
+import com.wa.beastclient.core.logging.AppLogManager
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.data.db.WaUiDatabase
 import com.wa.beastclient.data.media.EagerMediaVault
@@ -36,6 +37,7 @@ class WaBeastApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        AppLogManager.installCrashHandler(this)
         EagerMediaVault.ensureDirectories(this)
         StealthMatrixManager.init(this)
         AppLockManager.init(this)

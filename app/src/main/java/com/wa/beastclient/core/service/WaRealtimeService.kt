@@ -913,6 +913,7 @@ class WaRealtimeService : Service() {
                 val lvl = json.optString("level", "INFO")
                 val mod = json.optString("module", "Go")
                 val msg = json.optString("msg")
+                com.wa.beastclient.core.logging.AppLogManager.log(lvl, "Bridge/$mod", msg)
                 if (lvl == "ERROR" || lvl == "WARN") {
                     Log.w("WaBridgeRs", "[$lvl/$mod] $msg")
                 } else {

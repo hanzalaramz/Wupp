@@ -28,6 +28,20 @@ internal data class RelayTransformParams(
 )
 
 /**
+ * Computes OpenGL quad scales for center-crop (aspect-fill) output so the camera texture
+ * fills the encoder viewport edge-to-edge without baking black letterbox or pillarbox bars.
+ */
+internal fun computeRelayCenterCropScales(srcAspect: Float, encAspect: Float): Pair<Float, Float> {
+    if (srcAspect <= 0f || encAspect <= 0f) return 1f to 1f
+    if (kotlin.math.abs(srcAspect - encAspect) <= 0.01f) return 1f to 1f
+    return if (srcAspect > encAspect) {
+        (srcAspect / encAspect) to 1f
+    } else {
+        1f to (encAspect / srcAspect)
+    }
+}
+
+/**
  * Determines the remaining clockwise rotation and effective source dimensions for [CameraVideoGlRelay].
  *
  * On most Android Camera2 devices, [SurfaceTexture.getTransformMatrix] already includes the camera
@@ -269,15 +283,12 @@ internal class CameraVideoGlRelay(
             }
 
             Matrix.setIdentityM(mvpMatrix, 0)
-            // Keep proportional fit if camera and encoder aspect ratios differ (e.g. phone held sideways)
+            // Center-crop fill so the encoded frame never ships black letterbox/pillarbox bars to peer
             val srcAspect = rotatedW / rotatedH.coerceAtLeast(1f)
             val encAspect = encWidth.toFloat() / encHeight.toFloat().coerceAtLeast(1f)
-            if (kotlin.math.abs(srcAspect - encAspect) > 0.01f) {
-                if (srcAspect > encAspect) {
-                    Matrix.scaleM(mvpMatrix, 0, 1f, encAspect / srcAspect, 1f)
-                } else {
-                    Matrix.scaleM(mvpMatrix, 0, srcAspect / encAspect, 1f, 1f)
-                }
+            val (cropScaleX, cropScaleY) = computeRelayCenterCropScales(srcAspect, encAspect)
+            if (cropScaleX != 1f || cropScaleY != 1f) {
+                Matrix.scaleM(mvpMatrix, 0, cropScaleX, cropScaleY, 1f)
             }
             if (cwRot != 0) {
                 Matrix.rotateM(mvpMatrix, 0, -cwRot.toFloat(), 0f, 0f, 1f)

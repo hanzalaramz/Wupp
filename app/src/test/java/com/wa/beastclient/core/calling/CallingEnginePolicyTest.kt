@@ -1,6 +1,8 @@
 package com.wa.beastclient.core.calling
 
+import com.wa.beastclient.core.logging.AppLogManager
 import com.wa.beastclient.domain.stealth.CallBackendMode
+import com.wa.beastclient.domain.stealth.CallPipTapAction
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -12,6 +14,59 @@ class CallingEnginePolicyTest {
         assertEquals(270, resolveRemoteOrientation(270, -1))
         assertEquals(0, resolveRemoteOrientation(270, 0))
         assertEquals(90, resolveRemoteOrientation(0, 3))
+    }
+
+    @Test
+    fun effectiveRemoteRotationProtectsAlreadyPortraitFramesFromQuarterTurnFlip() {
+        assertEquals(
+            0,
+            resolveEffectiveRemoteDisplayRotation(
+                videoWidth = 480,
+                videoHeight = 640,
+                wireOrientationDegrees = 90
+            )
+        )
+        assertEquals(
+            270,
+            resolveEffectiveRemoteDisplayRotation(
+                videoWidth = 640,
+                videoHeight = 480,
+                wireOrientationDegrees = 270
+            )
+        )
+        assertEquals(
+            90,
+            resolveEffectiveRemoteDisplayRotation(
+                videoWidth = 480,
+                videoHeight = 640,
+                wireOrientationDegrees = 90,
+                manualOffsetDegrees = 90
+            )
+        )
+    }
+
+    @Test
+    fun callPipTapActionParsesStorageKeysWithSwapLayoutDefault() {
+        assertEquals(CallPipTapAction.SWAP_LAYOUT, CallPipTapAction.fromStorageKey(null))
+        assertEquals(CallPipTapAction.SWAP_LAYOUT, CallPipTapAction.fromStorageKey("invalid"))
+        assertEquals(CallPipTapAction.FLIP_CAMERA, CallPipTapAction.fromStorageKey("flip_camera"))
+    }
+
+    @Test
+    fun diagnosticReportHeaderIncludesVersionAndDeviceMetadata() {
+        val header = AppLogManager.formatDiagnosticReportHeader(
+            versionName = "0.3.10-pre.6",
+            versionCode = 10,
+            manufacturer = "Realme",
+            model = "RMX3660",
+            androidRelease = "14",
+            sdkInt = 34,
+            abisCsv = "arm64-v8a",
+            generatedAtFormatted = "2026-11-26 20:00:00.000"
+        )
+        assertTrue(header.contains("0.3.10-pre.6"))
+        assertTrue(header.contains("Realme RMX3660"))
+        assertTrue(header.contains("API 34"))
     }
 
 

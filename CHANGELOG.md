@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.10-pre.6] - 2026-11-26
+
+### ✨ Features
+- Added a setting to choose what tapping the self-preview window does during a video call (`Swap Video Layout` like WhatsApp by default, or `Flip Camera`), plus quick controls to swap views or rotate peer video in the call menu (#188).
+- Added automatic crash log capture and a **Diagnostics & Crash Logs** viewer in Settings to save log files to Downloads or share them with developers (#163).
+
+### 🛠️ Fixes
+- Fixed video calls showing rotated, stretched, or black-barred feeds by stabilizing RTP keyframe orientation, encoding upright 9:16 video with center-crop fill, and rendering full-screen edge-to-edge video (#188).
+
 ## [0.3.10-pre.5] - 2026-11-26
 
 ### ✨ Features

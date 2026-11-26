@@ -20,6 +20,7 @@ import android.os.HandlerThread
 import android.util.Log
 import android.view.Display
 import android.view.Surface
+import com.wa.beastclient.core.logging.AppLogManager
 import com.wa.bridge.whatsbridge.Whatsbridge
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -41,8 +42,9 @@ internal data class VideoEncoderCandidate(
 )
 
 internal fun buildAvcEncoderCandidates(): List<VideoEncoderCandidate> = listOf(
-    VideoEncoderCandidate(width = 480, height = 640, bitrateMode = AvcBitrateMode.VBR, bitrate = 800_000),
-    VideoEncoderCandidate(width = 480, height = 640, bitrateMode = AvcBitrateMode.CBR, bitrate = 800_000),
+    VideoEncoderCandidate(width = 544, height = 960, bitrateMode = AvcBitrateMode.VBR, bitrate = 1_000_000),
+    VideoEncoderCandidate(width = 544, height = 960, bitrateMode = AvcBitrateMode.CBR, bitrate = 1_000_000),
+    VideoEncoderCandidate(width = 480, height = 848, bitrateMode = AvcBitrateMode.DEFAULT, bitrate = 850_000),
     VideoEncoderCandidate(width = 480, height = 640, bitrateMode = AvcBitrateMode.DEFAULT, bitrate = 800_000),
     VideoEncoderCandidate(width = 368, height = 480, bitrateMode = AvcBitrateMode.DEFAULT, bitrate = 500_000)
 )
@@ -84,16 +86,18 @@ class NativeVoipVideoPipeline(
     private val context: Context,
     private val callId: String,
     private val onRemoteOrientationDegrees: (Int) -> Unit = {},
+    private val onRemoteCodecRotationDegrees: (Int) -> Unit = {},
     private val onRemoteVideoSizeChanged: (Int, Int) -> Unit = { _, _ -> },
+    private val onLocalVideoSizeChanged: (Int, Int) -> Unit = { _, _ -> },
     private val onRemoteFirstFrameDecoded: () -> Unit = {}
 ) {
     companion object {
         private const val TAG = "NativeVoipVideo"
         private const val MIME_AVC = MediaFormat.MIMETYPE_VIDEO_AVC
-        private const val CAM_WIDTH = 640
-        private const val CAM_HEIGHT = 480
-        private const val ENC_WIDTH = 480
-        private const val ENC_HEIGHT = 640
+        private const val CAM_WIDTH = 1280
+        private const val CAM_HEIGHT = 720
+        private const val ENC_WIDTH = 544
+        private const val ENC_HEIGHT = 960
         private const val BITRATE = 800_000
         private const val FPS = 24
         private const val I_FRAME_INTERVAL_SEC = 2
@@ -280,6 +284,7 @@ class NativeVoipVideoPipeline(
                     ?.map { it.width to it.height }
                     .orEmpty()
                 val (camW, camH) = selectBestCameraCaptureSize(availableSizes, CAM_WIDTH, CAM_HEIGHT)
+                onLocalVideoSizeChanged(camH.coerceAtMost(camW), maxOf(camW, camH))
 
                 val relay = CameraVideoGlRelay(
                     encWidth = encPreset.width,
@@ -519,6 +524,8 @@ class NativeVoipVideoPipeline(
         var configuredSurface: Surface? = null
         var cachedSpsPps: ByteArray? = null
         var lastOrientation = -1
+        var lastKeyframeOrientation = -1
+        var lastCodecRotation = -1
         var firstFrameReported = false
         val info = MediaCodec.BufferInfo()
 
@@ -539,10 +546,20 @@ class NativeVoipVideoPipeline(
 
                 val flags = packet[0].toInt() and 0xFF
                 val isKey = (flags and 1) != 0
-                val orientation = packet[1].toInt() and 0x03
-                if (orientation != lastOrientation) {
-                    lastOrientation = orientation
-                    onRemoteOrientationDegrees(whatsappOrientationToClockwiseDegrees(orientation))
+                val rawOrientation = packet[1].toInt() and 0x03
+                if (isKey) {
+                    lastKeyframeOrientation = rawOrientation
+                }
+                // Keep keyframe orientation across delta packets whose RTP extension omitted rotation,
+                // preventing the image from jumping between upright and sideways over time.
+                val effectiveOri = if (!isKey && rawOrientation == 0 && lastKeyframeOrientation > 0) {
+                    lastKeyframeOrientation
+                } else {
+                    rawOrientation
+                }
+                if (effectiveOri != lastOrientation) {
+                    lastOrientation = effectiveOri
+                    onRemoteOrientationDegrees(whatsappOrientationToClockwiseDegrees(effectiveOri))
                 }
 
                 val ts90k = ByteBuffer.wrap(packet, 4, 4)
@@ -623,6 +640,15 @@ class NativeVoipVideoPipeline(
                                 } else {
                                     0
                                 }
+                                val codecRot = if (outFmt.containsKey(MediaFormat.KEY_ROTATION)) {
+                                    ((outFmt.getInteger(MediaFormat.KEY_ROTATION) % 360) + 360) % 360
+                                } else {
+                                    0
+                                }
+                                if (codecRot != lastCodecRotation) {
+                                    lastCodecRotation = codecRot
+                                    onRemoteCodecRotationDegrees(codecRot)
+                                }
                                 if (w > 0 && h > 0) {
                                     onRemoteVideoSizeChanged(w, h)
                                 }
@@ -648,6 +674,7 @@ class NativeVoipVideoPipeline(
             }
         } catch (t: Throwable) {
             Log.e(TAG, "Video decoder loop error: ${t.message}", t)
+            AppLogManager.log("ERROR", TAG, "Video decoder loop error: ${t.message}", t)
         } finally {
             runCatching { decoder?.stop() }
             runCatching { decoder?.release() }

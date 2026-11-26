@@ -58,6 +58,8 @@ import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MicOff
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.PhoneInTalk
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
+import androidx.compose.material.icons.rounded.RotateRight
 import androidx.compose.material.icons.rounded.StopCircle
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.VideocamOff
@@ -77,6 +79,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -93,12 +96,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import com.wa.beastclient.core.calling.CallAudioRoute
 import com.wa.beastclient.core.calling.CallPhase
 import com.wa.beastclient.core.calling.CallStateManager
 import com.wa.beastclient.core.calling.CallUiState
 import com.wa.beastclient.core.calling.formatCallTimer
+import com.wa.beastclient.core.calling.resolveEffectiveRemoteDisplayRotation
+import com.wa.beastclient.domain.stealth.CallPipTapAction
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.screens.WhatsAppAvatar
 import com.wa.beastclient.ui.theme.LocalWaMonoFamily
@@ -242,6 +248,15 @@ class CallActivity : ComponentActivity() {
                 CallScreenContent(
                     state = callState,
                     isInPip = inPipModeState,
+                    pipTapAction = stealth.callPipTapAction,
+                    onTogglePipTapAction = {
+                        val next = if (stealth.callPipTapAction == CallPipTapAction.SWAP_LAYOUT) {
+                            CallPipTapAction.FLIP_CAMERA
+                        } else {
+                            CallPipTapAction.SWAP_LAYOUT
+                        }
+                        StealthMatrixManager.updateConfig { it.copy(callPipTapAction = next) }
+                    },
                     onMinimize = { finish() },
                     onAnswer = { audioOnly -> requestPermsAndAnswer(audioOnly, callState.isVideo && !audioOnly) },
                     onDeclineOrEnd = { CallStateManager.declineOrEndCall() },
@@ -291,6 +306,8 @@ class CallActivity : ComponentActivity() {
 private fun CallScreenContent(
     state: CallUiState,
     isInPip: Boolean,
+    pipTapAction: CallPipTapAction = CallPipTapAction.SWAP_LAYOUT,
+    onTogglePipTapAction: () -> Unit = {},
     onMinimize: () -> Unit,
     onAnswer: (audioOnly: Boolean) -> Unit,
     onDeclineOrEnd: () -> Unit,
@@ -315,6 +332,11 @@ private fun CallScreenContent(
     var showChrome by remember { mutableStateOf(true) }
     var showRouteMenu by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
+    var isLayoutSwapped by rememberSaveable(state.callId) { mutableStateOf(false) }
+    var manualRemoteRotationOffset by rememberSaveable(state.callId) { mutableIntStateOf(0) }
+
+    val canSwapViews = showVideoFeed && !state.isCameraOff && state.hasRemoteVideo
+    val effectiveSwapped = isLayoutSwapped && canSwapViews
 
     DisposableEffect(Unit) {
         onDispose {
@@ -345,44 +367,201 @@ private fun CallScreenContent(
             }
     ) {
         if (showVideoFeed) {
-            val remoteCwDeg by rememberUpdatedState(state.remoteOrientationDegrees)
-            val remoteW by rememberUpdatedState(state.remoteVideoWidth)
-            val remoteH by rememberUpdatedState(state.remoteVideoHeight)
-            AndroidView(
-                factory = { ctx ->
-                    TextureView(ctx).apply {
-                        isOpaque = false
-                        var boundSurface: Surface? = null
-                        surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                                applyVideoTextureTransform(this@apply, w, h, remoteW, remoteH, remoteCwDeg, fillCrop = false)
-                                val s = Surface(st)
-                                boundSurface = s
-                                CallStateManager.attachRemoteVideoSurface(s)
+            val effectiveRemoteDeg = resolveEffectiveRemoteDisplayRotation(
+                videoWidth = state.remoteVideoWidth,
+                videoHeight = state.remoteVideoHeight,
+                wireOrientationDegrees = state.remoteOrientationDegrees,
+                codecRotationDegrees = state.remoteCodecRotationDegrees,
+                manualOffsetDegrees = manualRemoteRotationOffset
+            )
+            val remoteCwDegState by rememberUpdatedState(effectiveRemoteDeg)
+            val remoteWState by rememberUpdatedState(state.remoteVideoWidth)
+            val remoteHState by rememberUpdatedState(state.remoteVideoHeight)
+            val localWState by rememberUpdatedState(state.localVideoWidth)
+            val localHState by rememberUpdatedState(state.localVideoHeight)
+
+            val pipCardModifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 74.dp, end = 16.dp)
+                .size(width = 108.dp, height = 162.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Color(0xFF101C22))
+                .border(1.5.dp, Color.White.copy(alpha = 0.28f), RoundedCornerShape(18.dp))
+                .zIndex(2f)
+
+            val handlePipTap = {
+                if (pipTapAction == CallPipTapAction.SWAP_LAYOUT && canSwapViews) {
+                    isLayoutSwapped = !isLayoutSwapped
+                } else {
+                    onFlipCamera()
+                }
+            }
+
+            // Remote video feed (either Full-Screen main view or Mini PiP when swapped)
+            if (state.hasRemoteVideo && !(effectiveSwapped && isInPip)) {
+                Box(
+                    modifier = (if (effectiveSwapped) pipCardModifier.clickable(onClick = handlePipTap) else Modifier.fillMaxSize().zIndex(0f))
+                ) {
+                    AndroidView(
+                        factory = { ctx ->
+                            TextureView(ctx).apply {
+                                isOpaque = false
+                                var boundSurface: Surface? = null
+                                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                    override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                                        applyVideoTextureTransform(
+                                            this@apply,
+                                            w,
+                                            h,
+                                            remoteWState,
+                                            remoteHState,
+                                            remoteCwDegState,
+                                            fillCrop = true
+                                        )
+                                        val s = Surface(st)
+                                        boundSurface = s
+                                        CallStateManager.attachRemoteVideoSurface(s)
+                                    }
+                                    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
+                                        applyVideoTextureTransform(
+                                            this@apply,
+                                            w,
+                                            h,
+                                            remoteWState,
+                                            remoteHState,
+                                            remoteCwDegState,
+                                            fillCrop = true
+                                        )
+                                    }
+                                    override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
+                                    override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                                        CallStateManager.attachRemoteVideoSurface(null)
+                                        boundSurface?.release()
+                                        boundSurface = null
+                                        return true
+                                    }
+                                }
                             }
-                            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
-                                applyVideoTextureTransform(this@apply, w, h, remoteW, remoteH, remoteCwDeg, fillCrop = false)
+                        },
+                        update = { tv ->
+                            val curW = state.remoteVideoWidth
+                            val curH = state.remoteVideoHeight
+                            val curDeg = effectiveRemoteDeg
+                            if (tv.width > 0 && tv.height > 0) {
+                                applyVideoTextureTransform(tv, tv.width, tv.height, curW, curH, curDeg, fillCrop = true)
                             }
-                            override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
-                            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-                                CallStateManager.attachRemoteVideoSurface(null)
-                                boundSurface?.release()
-                                boundSurface = null
-                                return true
-                            }
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    if (effectiveSwapped) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .background(Color(0x73000000))
+                                .padding(vertical = 3.dp, horizontal = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = state.peerName.ifBlank { "Peer" },
+                                color = Color.White,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
-                },
-                update = { tv ->
-                    if (tv.width > 0 && tv.height > 0) {
-                        applyVideoTextureTransform(tv, tv.width, tv.height, remoteW, remoteH, remoteCwDeg, fillCrop = false)
-                    }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-        }
+                }
+            }
 
-        if (!showVideoFeed || !state.hasRemoteVideo) {
+            if (!state.hasRemoteVideo && !effectiveSwapped) {
+                VoiceCallBackdropContent(state = state, isInPip = isInPip, accentColor = accentGreen)
+            }
+
+            // Local camera feed (either Mini PiP or Full-Screen main view when swapped)
+            if (!state.isCameraOff && (effectiveSwapped || !isInPip)) {
+                val showLocalAsPip = !effectiveSwapped
+                Box(
+                    modifier = if (showLocalAsPip) {
+                        pipCardModifier.clickable(onClick = handlePipTap)
+                    } else {
+                        Modifier.fillMaxSize().zIndex(0f)
+                    }
+                ) {
+                    AndroidView(
+                        factory = { ctx ->
+                            TextureView(ctx).apply {
+                                var boundSurface: Surface? = null
+                                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                    override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                                        st.setDefaultBufferSize(localHState, localWState)
+                                        applyLocalPreviewTransform(this@apply, w, h, localWState, localHState)
+                                        val s = Surface(st)
+                                        boundSurface = s
+                                        CallStateManager.attachLocalVideoSurface(s)
+                                    }
+                                    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
+                                        applyLocalPreviewTransform(this@apply, w, h, localWState, localHState)
+                                    }
+                                    override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
+                                    override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                                        CallStateManager.attachLocalVideoSurface(null)
+                                        boundSurface?.release()
+                                        boundSurface = null
+                                        return true
+                                    }
+                                }
+                            }
+                        },
+                        update = { tv ->
+                            val curLW = state.localVideoWidth
+                            val curLH = state.localVideoHeight
+                            if (tv.width > 0 && tv.height > 0) {
+                                applyLocalPreviewTransform(tv, tv.width, tv.height, curLW, curLH)
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    if (showLocalAsPip && state.isMuted) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(6.dp)
+                                .size(22.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xB3000000)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.MicOff,
+                                contentDescription = "Muted",
+                                tint = Color(0xFFFF8A80),
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                    }
+                    if (showLocalAsPip) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .background(Color(0x73000000))
+                                .padding(vertical = 3.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "You",
+                                color = Color.White,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
             VoiceCallBackdropContent(state = state, isInPip = isInPip, accentColor = accentGreen)
         }
 
@@ -393,6 +572,7 @@ private fun CallScreenContent(
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
                     .height(148.dp)
+                    .zIndex(1f)
                     .background(
                         Brush.verticalGradient(
                             listOf(Color(0xA6000000), Color.Transparent)
@@ -404,6 +584,7 @@ private fun CallScreenContent(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .height(180.dp)
+                    .zIndex(1f)
                     .background(
                         Brush.verticalGradient(
                             listOf(Color.Transparent, Color(0xB8000000))
@@ -412,92 +593,12 @@ private fun CallScreenContent(
             )
         }
 
-        if (showVideoFeed && !state.isCameraOff && !isInPip) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .statusBarsPadding()
-                    .padding(top = 74.dp, end = 16.dp)
-                    .size(width = 104.dp, height = 152.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(Color(0xFF101C22))
-                    .border(1.5.dp, Color.White.copy(alpha = 0.28f), RoundedCornerShape(18.dp))
-                    .clickable(onClick = onFlipCamera)
-            ) {
-                AndroidView(
-                    factory = { ctx ->
-                        TextureView(ctx).apply {
-                            var boundSurface: Surface? = null
-                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                                override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                                    st.setDefaultBufferSize(640, 480)
-                                    applyLocalPreviewTransform(this@apply, w, h)
-                                    val s = Surface(st)
-                                    boundSurface = s
-                                    CallStateManager.attachLocalVideoSurface(s)
-                                }
-                                override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
-                                    applyLocalPreviewTransform(this@apply, w, h)
-                                }
-                                override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
-                                override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-                                    CallStateManager.attachLocalVideoSurface(null)
-                                    boundSurface?.release()
-                                    boundSurface = null
-                                    return true
-                                }
-                            }
-                        }
-                    },
-                    update = { tv ->
-                        if (tv.width > 0 && tv.height > 0) {
-                            applyLocalPreviewTransform(tv, tv.width, tv.height)
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-                if (state.isMuted) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(6.dp)
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xB3000000)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.MicOff,
-                            contentDescription = "Muted",
-                            tint = Color(0xFFFF8A80),
-                            modifier = Modifier.size(13.dp)
-                        )
-                    }
-                }
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .background(Color(0x73000000))
-                        .padding(vertical = 3.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "You",
-                        color = Color.White,
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-            }
-        }
-
         if (!isInPip) {
             AnimatedVisibility(
                 visible = !showVideoFeed || showChrome || showMoreMenu || showRouteMenu,
                 enter = fadeIn(),
                 exit = fadeOut(),
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize().zIndex(3f)
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
                     // Top header bar: minimize button left, centered title & timer, flip/REC right
@@ -782,6 +883,58 @@ private fun CallScreenContent(
                                                     }
                                                 )
                                             }
+                                            if (canSwapViews) {
+                                                DropdownMenuItem(
+                                                    text = { Text("Swap main / mini view") },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            imageVector = Icons.Rounded.PictureInPictureAlt,
+                                                            contentDescription = null
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        showMoreMenu = false
+                                                        isLayoutSwapped = !isLayoutSwapped
+                                                    }
+                                                )
+                                            }
+                                            if (showVideoFeed && state.hasRemoteVideo) {
+                                                DropdownMenuItem(
+                                                    text = { Text("Rotate peer video (+90°)") },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            imageVector = Icons.Rounded.RotateRight,
+                                                            contentDescription = null
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        showMoreMenu = false
+                                                        manualRemoteRotationOffset = (manualRemoteRotationOffset + 90) % 360
+                                                    }
+                                                )
+                                            }
+                                            if (showVideoFeed) {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            if (pipTapAction == CallPipTapAction.SWAP_LAYOUT)
+                                                                "Mini-view tap: Swap"
+                                                            else
+                                                                "Mini-view tap: Flip camera"
+                                                        )
+                                                    },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            imageVector = Icons.Rounded.Cameraswitch,
+                                                            contentDescription = null
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        showMoreMenu = false
+                                                        onTogglePipTapAction()
+                                                    }
+                                                )
+                                            }
                                             DropdownMenuItem(
                                                 text = { Text("Minimize call") },
                                                 leadingIcon = {
@@ -1012,7 +1165,13 @@ private fun CallCircleControl(
     }
 }
 
-private fun applyLocalPreviewTransform(view: TextureView, width: Int, height: Int) {
+private fun applyLocalPreviewTransform(
+    view: TextureView,
+    width: Int,
+    height: Int,
+    localPortraitW: Int = 480,
+    localPortraitH: Int = 640
+) {
     // Camera2 supplies the sensor transform to TextureView. Compensate for screen rotation.
     val degrees = when (view.display?.rotation) {
         Surface.ROTATION_90 -> 270
@@ -1020,7 +1179,15 @@ private fun applyLocalPreviewTransform(view: TextureView, width: Int, height: In
         Surface.ROTATION_270 -> 90
         else -> 0
     }
-    applyVideoTextureTransform(view, width, height, 480, 640, degrees, fillCrop = true)
+    applyVideoTextureTransform(
+        textureView = view,
+        viewWidth = width,
+        viewHeight = height,
+        videoWidth = localPortraitW.coerceAtLeast(1),
+        videoHeight = localPortraitH.coerceAtLeast(1),
+        cwRotationDeg = degrees,
+        fillCrop = true
+    )
 }
 
 private fun applyVideoTextureTransform(

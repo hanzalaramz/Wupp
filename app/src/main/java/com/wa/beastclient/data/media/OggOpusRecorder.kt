@@ -8,6 +8,7 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaRecorder
 import android.os.Build
+import com.wa.beastclient.core.logging.AppLogManager
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -348,7 +349,8 @@ internal class OpusOggVoiceRecorder(
             }, "wupp-opus-rec").apply { start() }
 
             true
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            AppLogManager.log("ERROR", "VoiceRecorder", "Opus AudioRecord start failed: ${t.message}", t)
             running = false
             runCatching { rec?.stop() }
             runCatching { rec?.release() }
@@ -499,7 +501,8 @@ internal class OpusOggVoiceRecorder(
             }
 
             muxer.finish()
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            AppLogManager.log("ERROR", "VoiceRecorder", "Opus encodeLoop failed: ${t.message}", t)
             failed = true
         } finally {
             runCatching { fos?.close() }

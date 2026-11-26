@@ -41,8 +41,12 @@ data class CallUiState(
     val isCameraOff: Boolean = false,
     val hasRemoteVideo: Boolean = false,
     val remoteOrientationDegrees: Int = 0,
+    val remoteCodecRotationDegrees: Int = 0,
     val remoteVideoWidth: Int = 640,
     val remoteVideoHeight: Int = 480,
+    val localVideoWidth: Int = 480,
+    val localVideoHeight: Int = 640,
+    val isRtpOrientationActive: Boolean = false,
     val pendingVideoUpgrade: Boolean = false,
     val audioRoute: CallAudioRoute = CallAudioRoute.EARPIECE,
     val availableRoutes: Set<CallAudioRoute> = setOf(CallAudioRoute.EARPIECE, CallAudioRoute.SPEAKER),
@@ -75,6 +79,26 @@ internal fun whatsappOrientationToClockwiseDegrees(orientationQuarterTurns: Int)
 
 internal fun resolveRemoteOrientation(currentDegrees: Int, reportedQuarterTurns: Int): Int =
     if (reportedQuarterTurns in 0..3) whatsappOrientationToClockwiseDegrees(reportedQuarterTurns) else currentDegrees
+
+/**
+ * Computes the final clockwise display rotation for remote video, preventing stale wire
+ * device-orientation turns from rotating an already-upright portrait frame sideways.
+ */
+internal fun resolveEffectiveRemoteDisplayRotation(
+    videoWidth: Int,
+    videoHeight: Int,
+    wireOrientationDegrees: Int,
+    codecRotationDegrees: Int = 0,
+    manualOffsetDegrees: Int = 0
+): Int {
+    val combinedWireAndCodec = ((wireOrientationDegrees + codecRotationDegrees) % 360 + 360) % 360
+    val normalized = if (videoWidth in 1 until videoHeight && (combinedWireAndCodec == 90 || combinedWireAndCodec == 270)) {
+        0
+    } else {
+        combinedWireAndCodec
+    }
+    return ((normalized + manualOffsetDegrees) % 360 + 360) % 360
+}
 
 /**
  * Extracts dialable phone digits from PN JIDs (`@s.whatsapp.net`) or resolved phone strings while

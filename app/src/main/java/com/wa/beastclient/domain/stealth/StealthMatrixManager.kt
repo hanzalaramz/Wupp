@@ -81,6 +81,28 @@ enum class AntiCallMode(
     }
 }
 
+enum class CallPipTapAction(
+    val storageKey: String,
+    val title: String,
+    val subtitle: String
+) {
+    SWAP_LAYOUT(
+        "SWAP_LAYOUT",
+        "Swap Video Layout",
+        "Switch main screen and self-preview window like WhatsApp"
+    ),
+    FLIP_CAMERA(
+        "FLIP_CAMERA",
+        "Flip Camera",
+        "Switch between front and rear cameras when tapping preview"
+    );
+
+    companion object {
+        fun fromStorageKey(raw: String?): CallPipTapAction =
+            entries.firstOrNull { it.storageKey.equals(raw, ignoreCase = true) } ?: SWAP_LAYOUT
+    }
+}
+
 data class ChatWallpaperOverride(
     val uri: String = "",
     val dim: Float = 0.28f,
@@ -139,6 +161,7 @@ data class GlobalStealthConfig(
     val visibleGalleryJids: Set<String> = emptySet(),
     val primaryLastSeenEpochMs: Long = System.currentTimeMillis(),
     val callBackendMode: CallBackendMode = CallBackendMode.ALWAYS_READY,
+    val callPipTapAction: CallPipTapAction = CallPipTapAction.SWAP_LAYOUT,
     val suppressIncomingRingWhenOfficialInstalled: Boolean = false,
     val officialCallMuteConfirmed: Boolean = false,
     val antiCallMode: AntiCallMode = AntiCallMode.OFF,
@@ -236,6 +259,7 @@ object StealthMatrixManager {
     private const val KEY_VISIBLE_GALLERY_JIDS = "visible_gallery_jids"
     private const val KEY_PRIMARY_HEARTBEAT_MS = "primary_last_seen_ms"
     private const val KEY_CALL_BACKEND_MODE = "call_backend_mode"
+    private const val KEY_CALL_PIP_TAP_ACTION = "call_pip_tap_action"
     private const val KEY_SUPPRESS_RING_WITH_OFFICIAL = "suppress_ring_with_official"
     private const val KEY_OFFICIAL_CALL_MUTE_CONFIRMED = "official_call_mute_confirmed"
     private const val KEY_ANTI_CALL_MODE = "anti_call_mode"
@@ -361,6 +385,7 @@ object StealthMatrixManager {
             visibleGalleryJids = prefs.getStringSet(KEY_VISIBLE_GALLERY_JIDS, emptySet())?.toSet() ?: emptySet(),
             primaryLastSeenEpochMs = prefs.getLong(KEY_PRIMARY_HEARTBEAT_MS, now),
             callBackendMode = CallBackendMode.fromStorageKey(prefs.getString(KEY_CALL_BACKEND_MODE, null)),
+            callPipTapAction = CallPipTapAction.fromStorageKey(prefs.getString(KEY_CALL_PIP_TAP_ACTION, null)),
             suppressIncomingRingWhenOfficialInstalled = prefs.getBoolean(KEY_SUPPRESS_RING_WITH_OFFICIAL, false),
             officialCallMuteConfirmed = prefs.getBoolean(KEY_OFFICIAL_CALL_MUTE_CONFIRMED, false),
             antiCallMode = AntiCallMode.fromStorageKey(prefs.getString(KEY_ANTI_CALL_MODE, null)),
@@ -438,6 +463,7 @@ object StealthMatrixManager {
                 .putStringSet(KEY_VISIBLE_GALLERY_JIDS, updated.visibleGalleryJids.toSet())
                 .putLong(KEY_PRIMARY_HEARTBEAT_MS, updated.primaryLastSeenEpochMs)
                 .putString(KEY_CALL_BACKEND_MODE, updated.callBackendMode.storageKey)
+                .putString(KEY_CALL_PIP_TAP_ACTION, updated.callPipTapAction.storageKey)
                 .putBoolean(KEY_SUPPRESS_RING_WITH_OFFICIAL, updated.suppressIncomingRingWhenOfficialInstalled)
                 .putBoolean(KEY_OFFICIAL_CALL_MUTE_CONFIRMED, updated.officialCallMuteConfirmed)
                 .putString(KEY_ANTI_CALL_MODE, updated.antiCallMode.storageKey)

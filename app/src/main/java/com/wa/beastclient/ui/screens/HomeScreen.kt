@@ -229,6 +229,7 @@ import com.wa.beastclient.BuildConfig
 import com.wa.beastclient.R
 import com.wa.beastclient.core.calling.CallStateManager
 import com.wa.beastclient.core.calling.extractDialablePhoneDigits
+import com.wa.beastclient.core.logging.AppLogManager
 import com.wa.beastclient.core.service.OwnProfileUi
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.core.update.UpdateUiState
@@ -242,6 +243,7 @@ import com.wa.beastclient.domain.security.AppLockMode
 import com.wa.beastclient.domain.stealth.AntiCallMode
 import com.wa.beastclient.domain.stealth.AutoDownloadNetwork
 import com.wa.beastclient.domain.stealth.CallBackendMode
+import com.wa.beastclient.domain.stealth.CallPipTapAction
 import com.wa.beastclient.domain.stealth.GlobalStealthConfig
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.HomeFilterChip
@@ -255,6 +257,7 @@ import com.wa.beastclient.ui.components.BlockedContactsDialog
 import com.wa.beastclient.ui.components.ChatFontSizeDialog
 import com.wa.beastclient.ui.components.CompanionScopeInfoDialog
 import com.wa.beastclient.ui.components.ContactQrCodeSheet
+import com.wa.beastclient.ui.components.DiagnosticsLogsDialog
 import com.wa.beastclient.ui.components.ExpressiveIconBadge
 import com.wa.beastclient.ui.components.ExpressiveSegmentPosition
 import com.wa.beastclient.ui.components.ExpressiveSegmentedActionRow
@@ -457,6 +460,8 @@ fun HomeScreen(
     var showQuickContactPicker by remember { mutableStateOf(false) }
     var showContactQrSheet by remember { mutableStateOf(false) }
     var contactQrInitialTab by remember { mutableIntStateOf(0) }
+    var showHomeCrashDialog by remember { mutableStateOf(AppLogManager.hasPendingCrashNotice(context)) }
+    var showHomeLogsViewer by remember { mutableStateOf(false) }
     var quickContactTarget by remember { mutableStateOf<ChatEntity?>(null) }
     val quickContactChat = remember(quickContactTarget, allChats) {
         quickContactTarget?.let { t -> allChats.firstOrNull { it.jid == t.jid } ?: t }
@@ -1626,6 +1631,64 @@ fun HomeScreen(
                 showQuickContactPicker = false
                 contactQrInitialTab = 1
                 showContactQrSheet = true
+            }
+        )
+    }
+
+    if (showHomeLogsViewer) {
+        DiagnosticsLogsDialog(
+            onDismiss = {
+                AppLogManager.dismissCrashNotice(context)
+                showHomeLogsViewer = false
+            }
+        )
+    }
+
+    if (showHomeCrashDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                AppLogManager.dismissCrashNotice(context)
+                showHomeCrashDialog = false
+            },
+            containerColor = colors.elevatedBar,
+            title = {
+                Text(
+                    text = "Crash log captured",
+                    color = colors.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "Wupp saved a crash report from your previous session so you can save or share it with developers.",
+                    color = colors.textSecondary,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        AppLogManager.dismissCrashNotice(context)
+                        showHomeCrashDialog = false
+                        showHomeLogsViewer = true
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.brightGreen,
+                        contentColor = colors.brightGreen.contrastingContentColor()
+                    )
+                ) {
+                    Text("View / Share Logs")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        AppLogManager.dismissCrashNotice(context)
+                        showHomeCrashDialog = false
+                    }
+                ) {
+                    Text("Dismiss")
+                }
             }
         )
     }
@@ -4952,6 +5015,7 @@ private fun ToolsVaultTab(
     var infoDialogContent by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showAccountSwitcherSheet by remember { mutableStateOf(false) }
     var showProfileEditorDialog by remember { mutableStateOf(false) }
+    var showDiagnosticsLogsDialog by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(editProfileRequestNonce) {
         if (editProfileRequestNonce > 0) {
             showProfileEditorDialog = true
@@ -5187,7 +5251,7 @@ private fun ToolsVaultTab(
                 matchesSearch(stringResource(R.string.settings_allow_screenshots_title), "screenshots", "screen")
             )
         val showCallingSection = showCategory(SettingsCategory.CALLS) && (
-            matchesSearch("calling", "voip", "voice", "video", "always ready", "smart warm", "official", "ring", "anti-call", "record")
+            matchesSearch("calling", "voip", "voice", "video", "always ready", "smart warm", "official", "ring", "anti-call", "record", "pip", "swap", "flip", "preview", "layout")
             )
         val showVaultsSection = showCategory(SettingsCategory.MEDIA) && (
             matchesSearch("deleted", "edited", "history", "vault", "call recordings", "view once", "sticker studio")
@@ -5205,7 +5269,7 @@ private fun ToolsVaultTab(
             matchesSearch("notifications", "dm", "group", "preview", "vibrate", "conversation sounds", "chat sounds", "sound", "sync banner", "battery", "unrestricted", "24/7")
             )
         val showUpdatesSection = showCategory(SettingsCategory.UPDATES) && (
-            matchesSearch("update", "pre-release", "bug", "feature", "feedback", "github", "version", "about")
+            matchesSearch("update", "pre-release", "bug", "feature", "feedback", "github", "version", "about", "log", "logs", "crash", "diagnostic", "share", "save")
             )
         val hasAnyVisibleSection = showAccountSection || showPrivacySection || showCallingSection ||
             showVaultsSection || showMediaSection || showAppearanceSection ||
@@ -5598,6 +5662,21 @@ private fun ToolsVaultTab(
                             badgeText = stealth.antiCallMode.badgeLabel.ifBlank { null },
                             position = ExpressiveSegmentPosition.MIDDLE,
                             onClick = { showAntiCallDialog = true }
+                        )
+                        ExpressiveSegmentedActionRow(
+                            icon = Icons.Rounded.Videocam,
+                            title = "Video Preview Tap Action",
+                            subtitle = stealth.callPipTapAction.title,
+                            badgeText = if (stealth.callPipTapAction == CallPipTapAction.SWAP_LAYOUT) "Swap" else "Flip",
+                            position = ExpressiveSegmentPosition.MIDDLE,
+                            onClick = {
+                                val next = if (stealth.callPipTapAction == CallPipTapAction.SWAP_LAYOUT) {
+                                    CallPipTapAction.FLIP_CAMERA
+                                } else {
+                                    CallPipTapAction.SWAP_LAYOUT
+                                }
+                                viewModel.updateGlobalStealth { c -> c.copy(callPipTapAction = next) }
+                            }
                         )
                         ExpressiveSegmentedSwitchRow(
                             icon = Icons.Rounded.FiberManualRecord,
@@ -6243,6 +6322,15 @@ private fun ToolsVaultTab(
                             position = ExpressiveSegmentPosition.MIDDLE,
                             onClick = { onOpenFeedback(GitHubFeedbackType.FEEDBACK) }
                         )
+                        val hasPendingCrash = AppLogManager.hasCrashLog(context)
+                        ExpressiveSegmentedActionRow(
+                            icon = Icons.Rounded.BugReport,
+                            title = "Diagnostics & Crash Logs",
+                            subtitle = if (hasPendingCrash) "Crash report available — save or share with developers" else "Save or share app and runtime log files",
+                            badgeText = if (hasPendingCrash) "Crash Log" else null,
+                            position = ExpressiveSegmentPosition.MIDDLE,
+                            onClick = { showDiagnosticsLogsDialog = true }
+                        )
                         ExpressiveSegmentedActionRow(
                             icon = Icons.Rounded.Code,
                             title = "GitHub Repository",
@@ -6446,6 +6534,12 @@ private fun ToolsVaultTab(
 
     if (showCompanionScopeDialog) {
         CompanionScopeInfoDialog(onDismiss = { showCompanionScopeDialog = false })
+    }
+
+    if (showDiagnosticsLogsDialog) {
+        DiagnosticsLogsDialog(
+            onDismiss = { showDiagnosticsLogsDialog = false }
+        )
     }
 
     if (showAccountSwitcherSheet) {

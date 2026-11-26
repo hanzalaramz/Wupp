@@ -9,6 +9,7 @@ import android.util.Log
 import android.view.Surface
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import com.wa.beastclient.core.logging.AppLogManager
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.data.media.EagerMediaVault
 import com.wa.beastclient.domain.stealth.CallBackendMode
@@ -452,7 +453,9 @@ object CallStateManager {
                             isVideo = true,
                             hasRemoteVideo = true,
                             pendingVideoUpgrade = false,
-                            remoteOrientationDegrees = resolveRemoteOrientation(it.remoteOrientationDegrees, orientationQuarterTurns)
+                            remoteOrientationDegrees = if (!it.isRtpOrientationActive) {
+                                resolveRemoteOrientation(it.remoteOrientationDegrees, orientationQuarterTurns)
+                            } else it.remoteOrientationDegrees
                         )
                     }
                     audioController?.updateVideoState(true)
@@ -463,7 +466,9 @@ object CallStateManager {
                     _uiState.update {
                         it.copy(
                             pendingVideoUpgrade = upgradePending,
-                            remoteOrientationDegrees = resolveRemoteOrientation(it.remoteOrientationDegrees, orientationQuarterTurns)
+                            remoteOrientationDegrees = if (!it.isRtpOrientationActive) {
+                                resolveRemoteOrientation(it.remoteOrientationDegrees, orientationQuarterTurns)
+                            } else it.remoteOrientationDegrees
                         )
                     }
                 }
@@ -474,6 +479,7 @@ object CallStateManager {
                     _uiState.update {
                         it.copy(
                             hasRemoteVideo = false,
+                            isRtpOrientationActive = false,
                             isVideo = isVideo || !it.isCameraOff,
                             pendingVideoUpgrade = false,
                             remoteOrientationDegrees = resolveRemoteOrientation(it.remoteOrientationDegrees, orientationQuarterTurns)
@@ -481,7 +487,11 @@ object CallStateManager {
                     }
                 }
                 else -> {
-                    _uiState.update { it.copy(remoteOrientationDegrees = resolveRemoteOrientation(it.remoteOrientationDegrees, orientationQuarterTurns)) }
+                    _uiState.update {
+                        if (!it.isRtpOrientationActive) {
+                            it.copy(remoteOrientationDegrees = resolveRemoteOrientation(it.remoteOrientationDegrees, orientationQuarterTurns))
+                        } else it
+                    }
                 }
             }
         }
@@ -766,7 +776,17 @@ object CallStateManager {
                     callId = callId,
                     onRemoteOrientationDegrees = { deg ->
                         mainScope.launch {
-                            _uiState.update { it.copy(remoteOrientationDegrees = deg) }
+                            _uiState.update {
+                                it.copy(
+                                    remoteOrientationDegrees = deg,
+                                    isRtpOrientationActive = true
+                                )
+                            }
+                        }
+                    },
+                    onRemoteCodecRotationDegrees = { rotDeg ->
+                        mainScope.launch {
+                            _uiState.update { it.copy(remoteCodecRotationDegrees = rotDeg) }
                         }
                     },
                     onRemoteVideoSizeChanged = { w, h ->
@@ -776,6 +796,16 @@ object CallStateManager {
                                     remoteVideoWidth = w,
                                     remoteVideoHeight = h,
                                     hasRemoteVideo = true
+                                )
+                            }
+                        }
+                    },
+                    onLocalVideoSizeChanged = { w, h ->
+                        mainScope.launch {
+                            _uiState.update {
+                                it.copy(
+                                    localVideoWidth = w,
+                                    localVideoHeight = h
                                 )
                             }
                         }
@@ -807,6 +837,7 @@ object CallStateManager {
     }
 
     private fun failCall(reason: String) {
+        AppLogManager.log("WARN", "VoIP", "Call ended/failed: $reason")
         callTimerJob?.cancel()
         callTimerJob = null
         stopPipelines()

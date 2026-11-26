@@ -7,25 +7,44 @@ import org.junit.Test
 
 class NativeVoipVideoPolicyTest {
     @Test
-    fun buildAvcEncoderCandidatesStartsWithVbrThenCbrAndDefaultFallbacks() {
+    fun buildAvcEncoderCandidatesStartsWithPortraitFullScreenAndFallsBackCleanly() {
         val candidates = buildAvcEncoderCandidates()
-        assertEquals(4, candidates.size)
+        assertEquals(5, candidates.size)
         assertEquals(
-            VideoEncoderCandidate(480, 640, AvcBitrateMode.VBR, 800_000),
+            VideoEncoderCandidate(544, 960, AvcBitrateMode.VBR, 1_000_000),
             candidates[0]
         )
         assertEquals(
-            VideoEncoderCandidate(480, 640, AvcBitrateMode.CBR, 800_000),
+            VideoEncoderCandidate(544, 960, AvcBitrateMode.CBR, 1_000_000),
             candidates[1]
         )
         assertEquals(
-            VideoEncoderCandidate(480, 640, AvcBitrateMode.DEFAULT, 800_000),
+            VideoEncoderCandidate(480, 848, AvcBitrateMode.DEFAULT, 850_000),
             candidates[2]
         )
         assertEquals(
-            VideoEncoderCandidate(368, 480, AvcBitrateMode.DEFAULT, 500_000),
+            VideoEncoderCandidate(480, 640, AvcBitrateMode.DEFAULT, 800_000),
             candidates[3]
         )
+        assertEquals(
+            VideoEncoderCandidate(368, 480, AvcBitrateMode.DEFAULT, 500_000),
+            candidates[4]
+        )
+    }
+
+    @Test
+    fun relayCenterCropScalesNeverShrinkBelowViewportBounds() {
+        val (sxWide, syWide) = computeRelayCenterCropScales(srcAspect = 0.75f, encAspect = 0.5625f)
+        assertTrue(sxWide > 1f)
+        assertEquals(1f, syWide, 0.0001f)
+
+        val (sxTall, syTall) = computeRelayCenterCropScales(srcAspect = 0.50f, encAspect = 0.75f)
+        assertEquals(1f, sxTall, 0.0001f)
+        assertTrue(syTall > 1f)
+
+        val (sxMatch, syMatch) = computeRelayCenterCropScales(srcAspect = 0.5625f, encAspect = 0.5666f)
+        assertEquals(1f, sxMatch, 0.0001f)
+        assertEquals(1f, syMatch, 0.0001f)
     }
 
     @Test
