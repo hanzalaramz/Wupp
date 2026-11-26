@@ -490,6 +490,8 @@ fun WuppGlassNavBar(
     trailingActionDescription: String = "",
     trailingActionAccentFill: Boolean = false,
     onTrailingActionClick: (() -> Unit)? = null,
+    showLabels: Boolean = true,
+    compactIcons: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val colors = LocalWaColors.current
@@ -547,7 +549,7 @@ fun WuppGlassNavBar(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(64.dp)
+                        .height(if (compactIcons) 54.dp else 64.dp)
                         .padding(horizontal = if (sevenTabs) 0.dp else if (sixTabs) 1.dp else if (fiveTabs) 2.dp else 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -602,16 +604,18 @@ fun WuppGlassNavBar(
                                     }
                                 }
                             }
-                            Spacer(modifier = Modifier.height(3.dp))
-                            Text(
-                                text = tab.label,
-                                color = if (selected) colors.textPrimary else colors.textSecondary,
-                                fontSize = classicLabelFontSize,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                maxLines = 1,
-                                softWrap = false,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            if (showLabels) {
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = tab.label,
+                                    color = if (selected) colors.textPrimary else colors.textSecondary,
+                                    fontSize = classicLabelFontSize,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                 }
@@ -748,7 +752,7 @@ fun WuppGlassNavBar(
         BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
-                .height(62.dp)
+                .height(if (compactIcons) 52.dp else 62.dp)
                 .graphicsLayer { translationX = panelOffsetPx }
                 .drawBackdrop(
                     backdrop = outerBackdrop,
@@ -918,18 +922,20 @@ fun WuppGlassNavBar(
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(2.dp))
+                        if (showLabels) {
+                            Spacer(modifier = Modifier.height(2.dp))
 
-                        Text(
-                            text = tab.label,
-                            color = tintColor,
-                            fontSize = labelFontSize,
-                            lineHeight = 12.sp,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                            Text(
+                                text = tab.label,
+                                color = tintColor,
+                                fontSize = labelFontSize,
+                                lineHeight = 12.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
             }

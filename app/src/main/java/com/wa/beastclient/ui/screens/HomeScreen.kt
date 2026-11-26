@@ -143,9 +143,13 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButtonMenu
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButtonMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -202,6 +206,16 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import com.wa.beastclient.domain.drafts.ChatDraftManager
+import com.wa.beastclient.domain.appearance.HomeAppearanceConfig
+import com.wa.beastclient.domain.appearance.HomeAppearanceManager
+import com.wa.beastclient.domain.appearance.HomeBadgeStyle
+import com.wa.beastclient.domain.appearance.HomeLayoutPreset
+import com.wa.beastclient.domain.appearance.HomeNavStyle
+import com.wa.beastclient.domain.appearance.HomeNewChatStyle
+import com.wa.beastclient.domain.appearance.HomeSectionKind
+import com.wa.beastclient.domain.appearance.HomeSurfaceTone
+import com.wa.beastclient.ui.components.HomeAppearanceSheet
+import com.wa.beastclient.ui.components.WuppBrandMark
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -634,20 +648,32 @@ fun HomeScreen(
     }
 
     val backdropState = rememberWuppBackdropState()
+    val homeAppearance by HomeAppearanceManager.config.collectAsState()
+    val isReducedMotion = remember(homeAppearance.reducedMotion, context) {
+        HomeAppearanceManager.isReducedMotionEffective(context, homeAppearance)
+    }
+    val homeAccent = homeAppearance.accentStyle.resolve(colors.isDark)
+    val effectiveAppSurface = when (homeAppearance.surfaceTone) {
+        HomeSurfaceTone.OLED_PURE -> if (colors.isDark) Color(0xFF000000) else colors.appSurface
+        HomeSurfaceTone.ELEVATED_CARDS -> if (colors.isDark) Color(0xFF101318) else Color(0xFFF6F7FA)
+        HomeSurfaceTone.ADAPTIVE -> colors.appSurface
+    }
+    var showHomeAppearanceSheet by remember { mutableStateOf(false) }
+
     val peekBackgroundBlur by animateDpAsState(
-        targetValue = if (peekChat != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !stealth.classicWhatsAppLook) {
+        targetValue = if (peekChat != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !stealth.classicWhatsAppLook && !isReducedMotion) {
             14.dp
         } else {
             0.dp
         },
-        animationSpec = tween(durationMillis = 180),
+        animationSpec = tween(durationMillis = if (isReducedMotion) 0 else 180),
         label = "home_peek_blur"
     )
 
     Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
         modifier = if (peekBackgroundBlur > 0.dp) Modifier.blur(peekBackgroundBlur) else Modifier,
-        containerColor = colors.appSurface,
+        containerColor = effectiveAppSurface,
         topBar = {
             val motionScheme = MaterialTheme.motionScheme
             Column(modifier = Modifier.background(colors.appSurface)) {
@@ -790,12 +816,17 @@ fun HomeScreen(
                 val iosCircleBg = if (colors.isDark) Color(0xFF1F2024) else Color(0xFFEBEBF0)
                 val showCollapsedSettingsTitle = currentTab == 3 &&
                     (toolsListState.firstVisibleItemIndex > 0 || toolsListState.firstVisibleItemScrollOffset > 120)
+                val showTopBarNewChat = homeAppearance.newChatButtonStyle == HomeNewChatStyle.TOP_BAR_ONLY ||
+                    homeAppearance.newChatButtonStyle == HomeNewChatStyle.BOTH
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(colors.appSurface)
+                        .background(effectiveAppSurface)
                         .statusBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .padding(
+                            horizontal = 16.dp,
+                            vertical = if (homeAppearance.layoutPreset == HomeLayoutPreset.COMPACT) 4.dp else 6.dp
+                        )
                 ) {
                     // Row 1: iOS circular utility bar
                     Box(
@@ -912,6 +943,14 @@ fun HomeScreen(
                                         }
                                     )
                                     DropdownMenuItem(
+                                        text = { Text("Home appearance · ${homeAppearance.layoutPreset.label}") },
+                                        leadingIcon = { Icon(Icons.Rounded.Tune, null) },
+                                        onClick = {
+                                            overflowExpanded = false
+                                            showHomeAppearanceSheet = true
+                                        }
+                                    )
+                                    DropdownMenuItem(
                                         text = { Text("Theme · ${stealth.themeMode.label}") },
                                         leadingIcon = { Icon(Icons.Rounded.Palette, null) },
                                         onClick = {
@@ -992,20 +1031,22 @@ fun HomeScreen(
                                             )
                                         }
                                     }
-                                    Box(
-                                        modifier = Modifier
-                                            .size(34.dp)
-                                            .clip(CircleShape)
-                                            .background(colors.brightGreen)
-                                            .clickable { showQuickContactPicker = true },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Add,
-                                            contentDescription = "New Chat",
-                                            tint = colors.brightGreen.contrastingContentColor(),
-                                            modifier = Modifier.size(22.dp)
-                                        )
+                                    if (showTopBarNewChat) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(34.dp)
+                                                .clip(CircleShape)
+                                                .background(homeAccent)
+                                                .clickable { showQuickContactPicker = true },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Add,
+                                                contentDescription = "New Chat",
+                                                tint = homeAccent.contrastingContentColor(),
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
                                     }
                                 }
                                 5 -> {
@@ -1061,28 +1102,35 @@ fun HomeScreen(
                         }
                     }
 
-                    // Row 2: Large bold iOS section title (omitted on You tab which uses centered Profile Hero)
+                    // Row 2: Section title — large editorial for iOS-inspired, sleek branded bar for Classic, slim for Compact
                     if (currentTab != 3) {
-                        Spacer(modifier = Modifier.height(6.dp))
+                        val titleText = when (currentTab) {
+                            0 -> if (homeAppearance.layoutPreset == HomeLayoutPreset.CLASSIC) "Wupp" else stringResource(R.string.nav_chats)
+                            4 -> stringResource(R.string.nav_groups)
+                            1 -> stringResource(R.string.nav_updates)
+                            6 -> stringResource(R.string.nav_channels)
+                            2 -> stringResource(R.string.nav_communities)
+                            else -> stringResource(R.string.nav_calls)
+                        }
+                        Spacer(modifier = Modifier.height(if (homeAppearance.layoutPreset == HomeLayoutPreset.COMPACT) 2.dp else 6.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            val titleText = when (currentTab) {
-                                0 -> stringResource(R.string.nav_chats)
-                                4 -> stringResource(R.string.nav_groups)
-                                1 -> stringResource(R.string.nav_updates)
-                                6 -> stringResource(R.string.nav_channels)
-                                2 -> stringResource(R.string.nav_communities)
-                                else -> stringResource(R.string.nav_calls)
+                            if (homeAppearance.layoutPreset == HomeLayoutPreset.CLASSIC) {
+                                WuppBrandMark(accent = homeAccent, size = 26.dp)
                             }
                             Text(
                                 text = titleText,
                                 color = colors.textPrimary,
-                                fontSize = 32.sp,
+                                fontSize = when (homeAppearance.layoutPreset) {
+                                    HomeLayoutPreset.IOS_INSPIRED -> 32.sp
+                                    HomeLayoutPreset.CLASSIC -> 24.sp
+                                    HomeLayoutPreset.COMPACT -> 21.sp
+                                },
                                 fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = (-0.7).sp
+                                letterSpacing = (-0.5).sp
                             )
                             if (currentTab == 0) {
                                 val badge = resolveTopBarConnectionBadge(
@@ -1149,13 +1197,43 @@ fun HomeScreen(
                 }
             }
         },
+        floatingActionButton = {
+            val showFab = (currentTab == 0 || currentTab == 4) &&
+                selectedChatJids.isEmpty() &&
+                (homeAppearance.newChatButtonStyle == HomeNewChatStyle.FLOATING_CIRCLE ||
+                    homeAppearance.newChatButtonStyle == HomeNewChatStyle.EXTENDED_PILL ||
+                    homeAppearance.newChatButtonStyle == HomeNewChatStyle.BOTH)
+            if (showFab) {
+                if (homeAppearance.newChatButtonStyle == HomeNewChatStyle.EXTENDED_PILL) {
+                    ExtendedFloatingActionButton(
+                        onClick = { showQuickContactPicker = true },
+                        containerColor = homeAccent,
+                        contentColor = homeAccent.contrastingContentColor(),
+                        shape = RoundedCornerShape(18.dp),
+                        icon = { Icon(Icons.Rounded.Edit, contentDescription = "New chat") },
+                        text = { Text("New chat", fontWeight = FontWeight.SemiBold) }
+                    )
+                } else {
+                    FloatingActionButton(
+                        onClick = { showQuickContactPicker = true },
+                        containerColor = homeAccent,
+                        contentColor = homeAccent.contrastingContentColor(),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Icon(Icons.Rounded.Edit, contentDescription = "New chat")
+                    }
+                }
+            }
+        },
         bottomBar = {
             WuppGlassNavBar(
                 currentTab = currentTab,
                 unreadChatsCount = unreadChatsCount,
                 onSelectTab = onSelectTab,
                 backdropState = backdropState,
-                classicMode = stealth.classicWhatsAppLook,
+                classicMode = stealth.classicWhatsAppLook || homeAppearance.navBarStyle == HomeNavStyle.DOCKED_BAR,
+                showLabels = homeAppearance.showNavLabels && homeAppearance.navBarStyle != HomeNavStyle.COMPACT_ICONS,
+                compactIcons = homeAppearance.navBarStyle == HomeNavStyle.COMPACT_ICONS,
                 separateGroupsAndChats = stealth.separateGroupsAndChats,
                 unreadGroupsCount = unreadGroupsCount,
                 separateChannelsTab = showChannelsTab,
@@ -1175,7 +1253,7 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding())
                 .then(if (!stealth.classicWhatsAppLook) Modifier.wuppBackdropSource(backdropState) else Modifier)
-                .background(colors.appSurface)
+                .background(effectiveAppSurface)
         ) {
             val tabOrder = remember(stealth.separateGroupsAndChats, showChannelsTab) {
                 resolveHomeTabOrder(
@@ -1268,6 +1346,8 @@ fun HomeScreen(
                             hasSecretCode = appLockConfig.hasSecretCode,
                             lockedChatsRevealed = lockedChatsRevealed,
                             compactRows = stealth.compactChatRows,
+                            homeAppearance = homeAppearance,
+                            reducedMotion = isReducedMotion,
                             showSeconds = showSeconds,
                             hideStealthBadges = stealth.hideStealthStatusBadges,
                             groupFilterMode = tabGroupFilterMode,
@@ -1441,6 +1521,10 @@ fun HomeScreen(
                 viewModel.exportMediaToGallery(target.avatarPath, "${safeName}_avatar.jpg", "image/jpeg")
             }
         )
+    }
+
+    if (showHomeAppearanceSheet) {
+        HomeAppearanceSheet(onDismiss = { showHomeAppearanceSheet = false })
     }
 
     if (showLockedChatsPinPrompt) {
@@ -2622,6 +2706,8 @@ private fun ChatsTabContent(
     hasSecretCode: Boolean = false,
     lockedChatsRevealed: Boolean = false,
     compactRows: Boolean = false,
+    homeAppearance: HomeAppearanceConfig = HomeAppearanceConfig(),
+    reducedMotion: Boolean = false,
     showSeconds: Boolean = false,
     hideStealthBadges: Boolean = false,
     groupFilterMode: Boolean? = null,
@@ -2693,15 +2779,6 @@ private fun ChatsTabContent(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = bottomPadding)
     ) {
-        // Inline iOS-style rounded search bar
-        item(key = "inline_search_bar") {
-            IosInlineSearchBar(
-                query = searchQuery,
-                onQueryChange = onSearchChange,
-                placeholder = stringResource(R.string.home_search_placeholder)
-            )
-        }
-
         // 14-Day Primary Heartbeat countdown warning banner (>= 10 days elapsed)
         if (heartbeat.isWarningActive) {
             item(key = "heartbeat_warning") {
@@ -2738,162 +2815,184 @@ private fun ChatsTabContent(
             }
         }
 
-        // Filter Chips Row (All / Unread N / Favorites / Groups N / +)
-        item(key = "filter_chips") {
-            val hasLockedChats = remember(nonCommunityChats, hideLockedCurrently) {
-                !hideLockedCurrently && nonCommunityChats.any { it.isLocked }
-            }
-            val visibleChips = remember(showExtraFilters, hasLockedChats, groupFilterMode) {
-                buildList {
-                    add(HomeFilterChip.ALL)
-                    add(HomeFilterChip.UNREAD)
-                    add(HomeFilterChip.FAVORITES)
-                    if (groupFilterMode == null) add(HomeFilterChip.GROUPS)
-                    if (hasLockedChats) add(HomeFilterChip.LOCKED)
-                    if (showExtraFilters) {
-                        add(HomeFilterChip.DELETED)
-                        add(HomeFilterChip.EDITED)
-                    }
-                }
-            }
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(visibleChips) { chip ->
-                    val count = when (chip) {
-                        HomeFilterChip.ALL -> visibleChatsForCounts.size
-                        HomeFilterChip.UNREAD -> visibleChatsForCounts.count { it.unreadCount > 0 }
-                        HomeFilterChip.FAVORITES -> visibleChatsForCounts.count { it.isFavorite }
-                        HomeFilterChip.GROUPS -> visibleChatsForCounts.count { it.isGroup }
-                        HomeFilterChip.LOCKED -> nonCommunityChats.count { it.isLocked }
-                        HomeFilterChip.DELETED -> visibleChatsForCounts.count { it.hasDeletedMessages || it.lastMessageIsDeleted }
-                        HomeFilterChip.EDITED -> visibleChatsForCounts.count { it.hasEditedMessages }
-                    }
-                    val active = chip == selectedChip
-                    val isClassicUi = com.wa.beastclient.ui.theme.LocalWuppClassicUi.current
-                    val chipRadius by animateDpAsState(
-                        targetValue = if (isClassicUi) 20.dp else if (active) 12.dp else 20.dp,
-                        animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
-                        label = "filter_chip_radius_${chip.name}"
-                    )
-                    val chipBg by animateColorAsState(
-                        targetValue = if (active) colors.pillActiveBg else Color.Transparent,
-                        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
-                        label = "filter_chip_bg_${chip.name}"
-                    )
-                    val borderColor by animateColorAsState(
-                        targetValue = if (active) {
-                            colors.pillActiveText.copy(alpha = 0.42f)
-                        } else {
-                            colors.textSecondary.copy(alpha = 0.28f)
-                        },
-                        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
-                        label = "filter_chip_border_${chip.name}"
-                    )
-                    val chipShape = RoundedCornerShape(chipRadius)
-                    Box(
-                        modifier = Modifier
-                            .clip(chipShape)
-                            .background(chipBg)
-                            .border(1.dp, borderColor, chipShape)
-                            .clickable { onSelectChip(chip) }
-                            .padding(horizontal = 14.dp, vertical = 7.dp)
-                    ) {
-                        val baseLabel = when (chip) {
-                            HomeFilterChip.ALL -> stringResource(R.string.home_filter_all)
-                            HomeFilterChip.UNREAD -> stringResource(R.string.home_filter_unread)
-                            HomeFilterChip.FAVORITES -> stringResource(R.string.home_filter_pinned)
-                            HomeFilterChip.GROUPS -> stringResource(R.string.home_filter_groups)
-                            HomeFilterChip.LOCKED -> stringResource(R.string.home_filter_locked)
-                            HomeFilterChip.DELETED -> chip.label
-                            HomeFilterChip.EDITED -> chip.label
-                        }
-                        val chipLabel = when (chip) {
-                            HomeFilterChip.UNREAD -> if (count > 0) "$baseLabel $count" else baseLabel
-                            HomeFilterChip.GROUPS -> if (count > 0) "$baseLabel $count" else baseLabel
-                            HomeFilterChip.LOCKED -> if (count > 0) "$baseLabel $count" else baseLabel
-                            else -> baseLabel
-                        }
-                        Text(
-                            text = chipLabel,
-                            fontSize = 13.sp,
-                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
-                            color = if (active) colors.pillActiveText else colors.textSecondary
-                        )
-                    }
-                }
-                item(key = "filter_plus_chip") {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(if (showExtraFilters) colors.pillActiveBg else Color.Transparent)
-                            .border(
-                                1.dp,
-                                if (showExtraFilters) colors.pillActiveText.copy(alpha = 0.35f) else colors.textSecondary.copy(alpha = 0.28f),
-                                RoundedCornerShape(20.dp)
+        // Customizable Section Order: Search bar, Filter chips, Archived row
+        homeAppearance.sectionOrder.forEach { sectionKind ->
+            when (sectionKind) {
+                HomeSectionKind.SEARCH_BAR -> {
+                    if (homeAppearance.showSearchBar) {
+                        item(key = "inline_search_bar") {
+                            IosInlineSearchBar(
+                                query = searchQuery,
+                                onQueryChange = onSearchChange,
+                                placeholder = stringResource(R.string.home_search_placeholder)
                             )
-                            .clickable { showExtraFilters = !showExtraFilters }
-                            .padding(horizontal = 13.dp, vertical = 6.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = if (showExtraFilters) Icons.Rounded.Close else Icons.Rounded.Add,
-                            contentDescription = "More filters",
-                            tint = if (showExtraFilters) colors.pillActiveText else colors.textSecondary,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        }
                     }
                 }
-            }
-        }
-
-        if (archivedCount > 0 || includeArchived) {
-            item(key = "archived_banner_row") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onToggleIncludeArchived(!includeArchived) }
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (includeArchived) colors.accentGreen.copy(alpha = 0.18f)
-                                else colors.elevatedBar
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = if (includeArchived) Icons.Rounded.Unarchive else Icons.Rounded.Archive,
-                            contentDescription = null,
-                            tint = colors.accentGreen,
-                            modifier = Modifier.size(20.dp)
-                        )
+                HomeSectionKind.FILTER_CHIPS -> {
+                    if (homeAppearance.showFilterChips) {
+                        item(key = "filter_chips") {
+                            val hasLockedChats = remember(nonCommunityChats, hideLockedCurrently) {
+                                !hideLockedCurrently && nonCommunityChats.any { it.isLocked }
+                            }
+                            val visibleChips = remember(showExtraFilters, hasLockedChats, groupFilterMode) {
+                                buildList {
+                                    add(HomeFilterChip.ALL)
+                                    add(HomeFilterChip.UNREAD)
+                                    add(HomeFilterChip.FAVORITES)
+                                    if (groupFilterMode == null) add(HomeFilterChip.GROUPS)
+                                    if (hasLockedChats) add(HomeFilterChip.LOCKED)
+                                    if (showExtraFilters) {
+                                        add(HomeFilterChip.DELETED)
+                                        add(HomeFilterChip.EDITED)
+                                    }
+                                }
+                            }
+                            val chipAccent = homeAppearance.accentStyle.resolve(colors.isDark)
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(visibleChips) { chip ->
+                                    val count = when (chip) {
+                                        HomeFilterChip.ALL -> visibleChatsForCounts.size
+                                        HomeFilterChip.UNREAD -> visibleChatsForCounts.count { it.unreadCount > 0 }
+                                        HomeFilterChip.FAVORITES -> visibleChatsForCounts.count { it.isFavorite }
+                                        HomeFilterChip.GROUPS -> visibleChatsForCounts.count { it.isGroup }
+                                        HomeFilterChip.LOCKED -> nonCommunityChats.count { it.isLocked }
+                                        HomeFilterChip.DELETED -> visibleChatsForCounts.count { it.hasDeletedMessages || it.lastMessageIsDeleted }
+                                        HomeFilterChip.EDITED -> visibleChatsForCounts.count { it.hasEditedMessages }
+                                    }
+                                    val active = chip == selectedChip
+                                    val isClassicUi = com.wa.beastclient.ui.theme.LocalWuppClassicUi.current
+                                    val chipRadius by animateDpAsState(
+                                        targetValue = if (isClassicUi) 20.dp else if (active) 12.dp else 20.dp,
+                                        animationSpec = if (reducedMotion) tween(0) else MaterialTheme.motionScheme.fastSpatialSpec(),
+                                        label = "filter_chip_radius_${chip.name}"
+                                    )
+                                    val chipBg by animateColorAsState(
+                                        targetValue = if (active) chipAccent.copy(alpha = 0.18f) else Color.Transparent,
+                                        animationSpec = if (reducedMotion) tween(0) else MaterialTheme.motionScheme.fastEffectsSpec(),
+                                        label = "filter_chip_bg_${chip.name}"
+                                    )
+                                    val borderColor by animateColorAsState(
+                                        targetValue = if (active) {
+                                            chipAccent.copy(alpha = 0.55f)
+                                        } else {
+                                            colors.textSecondary.copy(alpha = 0.28f)
+                                        },
+                                        animationSpec = if (reducedMotion) tween(0) else MaterialTheme.motionScheme.fastEffectsSpec(),
+                                        label = "filter_chip_border_${chip.name}"
+                                    )
+                                    val chipShape = RoundedCornerShape(chipRadius)
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(chipShape)
+                                            .background(chipBg)
+                                            .border(1.dp, borderColor, chipShape)
+                                            .clickable { onSelectChip(chip) }
+                                            .padding(horizontal = 14.dp, vertical = 7.dp)
+                                    ) {
+                                        val baseLabel = when (chip) {
+                                            HomeFilterChip.ALL -> stringResource(R.string.home_filter_all)
+                                            HomeFilterChip.UNREAD -> stringResource(R.string.home_filter_unread)
+                                            HomeFilterChip.FAVORITES -> stringResource(R.string.home_filter_pinned)
+                                            HomeFilterChip.GROUPS -> stringResource(R.string.home_filter_groups)
+                                            HomeFilterChip.LOCKED -> stringResource(R.string.home_filter_locked)
+                                            HomeFilterChip.DELETED -> chip.label
+                                            HomeFilterChip.EDITED -> chip.label
+                                        }
+                                        val chipLabel = when (chip) {
+                                            HomeFilterChip.UNREAD -> if (count > 0) "$baseLabel $count" else baseLabel
+                                            HomeFilterChip.GROUPS -> if (count > 0) "$baseLabel $count" else baseLabel
+                                            HomeFilterChip.LOCKED -> if (count > 0) "$baseLabel $count" else baseLabel
+                                            else -> baseLabel
+                                        }
+                                        Text(
+                                            text = chipLabel,
+                                            fontSize = 13.sp,
+                                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                                            color = if (active) chipAccent else colors.textSecondary
+                                        )
+                                    }
+                                }
+                                item(key = "filter_plus_chip") {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(20.dp))
+                                            .background(if (showExtraFilters) chipAccent.copy(alpha = 0.18f) else Color.Transparent)
+                                            .border(
+                                                1.dp,
+                                                if (showExtraFilters) chipAccent.copy(alpha = 0.45f) else colors.textSecondary.copy(alpha = 0.28f),
+                                                RoundedCornerShape(20.dp)
+                                            )
+                                            .clickable { showExtraFilters = !showExtraFilters }
+                                            .padding(horizontal = 13.dp, vertical = 6.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = if (showExtraFilters) Icons.Rounded.Close else Icons.Rounded.Add,
+                                            contentDescription = "More filters",
+                                            tint = if (showExtraFilters) chipAccent else colors.textSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Text(
-                        text = if (includeArchived) {
-                            stringResource(R.string.home_back_to_active_chats)
-                        } else {
-                            stringResource(R.string.home_archived_chats)
-                        },
-                        color = colors.textPrimary,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (archivedCount > 0) {
-                        Text(
-                            text = archivedCount.toString(),
-                            color = colors.accentGreen,
-                            fontSize = 12.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = mono
-                        )
+                }
+                HomeSectionKind.ARCHIVED_BANNER -> {
+                    if (archivedCount > 0 || includeArchived) {
+                        item(key = "archived_banner_row") {
+                            val archAccent = homeAppearance.accentStyle.resolve(colors.isDark)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onToggleIncludeArchived(!includeArchived) }
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (includeArchived) archAccent.copy(alpha = 0.18f)
+                                            else colors.elevatedBar
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (includeArchived) Icons.Rounded.Unarchive else Icons.Rounded.Archive,
+                                        contentDescription = null,
+                                        tint = archAccent,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(14.dp))
+                                Text(
+                                    text = if (includeArchived) {
+                                        stringResource(R.string.home_back_to_active_chats)
+                                    } else {
+                                        stringResource(R.string.home_archived_chats)
+                                    },
+                                    color = colors.textPrimary,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (archivedCount > 0) {
+                                    Text(
+                                        text = archivedCount.toString(),
+                                        color = archAccent,
+                                        fontSize = 12.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = mono
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3070,12 +3169,21 @@ private fun ChatsTabContent(
                     chat = chat,
                     selected = chat.jid in selectedChatJids,
                     compactRows = compactRows,
+                    homeAppearance = homeAppearance,
+                    reducedMotion = reducedMotion,
                     showSeconds = showSeconds,
                     hideStealthBadges = hideStealthBadges,
                     onAvatarClick = { onAvatarClick(chat) },
                     onRowClick = { onChatClick(chat) },
                     onRowLongClick = { onChatLongClick(chat) }
                 )
+                if (homeAppearance.showRowDividers) {
+                    HorizontalDivider(
+                        color = colors.divider.copy(alpha = 0.65f),
+                        thickness = 0.5.dp,
+                        modifier = Modifier.padding(start = (homeAppearance.avatarSizeDp + 26).dp, end = 16.dp)
+                    )
+                }
             }
         }
     }
@@ -3138,6 +3246,8 @@ private fun ChatListRow(
     chat: ChatEntity,
     selected: Boolean = false,
     compactRows: Boolean = false,
+    homeAppearance: HomeAppearanceConfig = HomeAppearanceConfig(),
+    reducedMotion: Boolean = false,
     showSeconds: Boolean = false,
     hideStealthBadges: Boolean = false,
     onAvatarClick: () -> Unit,
@@ -3148,26 +3258,35 @@ private fun ChatListRow(
     val draftText = chatDrafts[chat.jid].orEmpty()
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
+    val homeAccent = homeAppearance.accentStyle.resolve(colors.isDark)
     val rowInteraction = remember { MutableInteractionSource() }
+    val cardBaseBg = if (homeAppearance.surfaceTone == HomeSurfaceTone.ELEVATED_CARDS) {
+        if (colors.isDark) Color(0xFF191E26) else Color.White
+    } else {
+        Color.Transparent
+    }
     val rowBg by animateColorAsState(
-        targetValue = if (selected) colors.brightGreen.copy(alpha = 0.16f) else Color.Transparent,
-        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        targetValue = if (selected) homeAccent.copy(alpha = 0.16f) else cardBaseBg,
+        animationSpec = if (reducedMotion) tween(0) else MaterialTheme.motionScheme.fastEffectsSpec(),
         label = "chat_row_selection_bg"
     )
     val rowRadius by animateDpAsState(
-        targetValue = if (selected) 20.dp else 14.dp,
-        animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
+        targetValue = if (selected) 20.dp else if (homeAppearance.surfaceTone == HomeSurfaceTone.ELEVATED_CARDS) 16.dp else 14.dp,
+        animationSpec = if (reducedMotion) tween(0) else MaterialTheme.motionScheme.fastSpatialSpec(),
         label = "chat_row_radius"
     )
-    val avatarSize = if (compactRows) 46.dp else 52.dp
-    val rowHeight = if (compactRows) 64.dp else 76.dp
-    val rowVerticalPad = if (compactRows) 6.dp else 10.dp
+    val avatarSize = if (compactRows) minOf(46, homeAppearance.avatarSizeDp).dp else homeAppearance.avatarSizeDp.dp
+    val rowVerticalPad = if (compactRows) minOf(6f, homeAppearance.rowDensity.verticalPadDp).dp else homeAppearance.rowDensity.verticalPadDp.dp
+    val rowHeight = (avatarSize.value + rowVerticalPad.value * 2f + if (homeAppearance.previewMaxLines > 1) 14f else 4f).dp
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .expressivePressScale(rowInteraction, pressedScale = 0.985f)
-            .padding(horizontal = if (selected) 8.dp else 0.dp, vertical = 1.dp)
+            .then(if (reducedMotion) Modifier else Modifier.expressivePressScale(rowInteraction, pressedScale = 0.985f))
+            .padding(
+                horizontal = if (selected || homeAppearance.surfaceTone == HomeSurfaceTone.ELEVATED_CARDS) 8.dp else 0.dp,
+                vertical = if (homeAppearance.surfaceTone == HomeSurfaceTone.ELEVATED_CARDS) 3.dp else 1.dp
+            )
             .clip(RoundedCornerShape(rowRadius))
             .height(rowHeight)
             .background(rowBg)
@@ -3175,7 +3294,7 @@ private fun ChatListRow(
                 if (selected) {
                     Modifier.border(
                         1.dp,
-                        colors.brightGreen.copy(alpha = 0.35f),
+                        homeAccent.copy(alpha = 0.35f),
                         RoundedCornerShape(rowRadius)
                     )
                 } else {
@@ -3248,8 +3367,8 @@ private fun ChatListRow(
                 Text(
                     text = chat.name.ifBlank { chat.jid.substringBefore("@") },
                     color = colors.textPrimary,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = if (compactRows) 15.sp else 16.sp,
+                    fontWeight = if (chat.unreadCount > 0 && homeAppearance.boldUnreadTitles) FontWeight.Bold else FontWeight.SemiBold,
+                    fontSize = ((if (compactRows) 15f else 16f) * homeAppearance.titleScale).sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
@@ -3259,7 +3378,7 @@ private fun ChatListRow(
                     text = formatMessageClock(chat.lastMessageTimestamp, includeSeconds = showSeconds, use24Hour = LocalWuppUse24Hour.current),
                     fontFamily = mono,
                     fontSize = 11.5.sp,
-                    color = if (chat.unreadCount > 0) colors.brightGreen else colors.textSecondary
+                    color = if (chat.unreadCount > 0) homeAccent else colors.textSecondary
                 )
             }
 
@@ -3303,14 +3422,14 @@ private fun ChatListRow(
                 if (showDraft) {
                     Text(
                         text = buildAnnotatedString {
-                            withStyle(SpanStyle(color = colors.brightGreen, fontWeight = FontWeight.Medium)) {
+                            withStyle(SpanStyle(color = homeAccent, fontWeight = FontWeight.Medium)) {
                                 append("Draft: ")
                             }
                             append(draftText.replace('\n', ' ').trim())
                         },
                         color = colors.textSecondary,
-                        fontSize = 13.5.sp,
-                        maxLines = 1,
+                        fontSize = (13.5f * homeAppearance.subtitleScale).sp,
+                        maxLines = homeAppearance.previewMaxLines,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
@@ -3319,12 +3438,12 @@ private fun ChatListRow(
                     Text(
                         text = subtitle,
                         color = when {
-                            chat.chatPresence.isNotBlank() -> colors.brightGreen
+                            chat.chatPresence.isNotBlank() -> homeAccent
                             chat.lastMessageIsDeleted -> colors.antiDeleteRed
                             else -> colors.textSecondary
                         },
-                        fontSize = 13.5.sp,
-                        maxLines = 1,
+                        fontSize = (13.5f * homeAppearance.subtitleScale).sp,
+                        maxLines = homeAppearance.previewMaxLines,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
@@ -3367,21 +3486,51 @@ private fun ChatListRow(
                         )
                     }
                     if (chat.unreadCount > 0) {
-                        Box(
-                            modifier = Modifier
-                                .animateContentSize()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(colors.brightGreen)
-                                .padding(horizontal = 7.dp, vertical = 2.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = if (chat.unreadCount > 999) "999+" else chat.unreadCount.toString(),
-                                color = colors.brightGreen.contrastingContentColor(),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = mono
-                            )
+                        when (homeAppearance.unreadBadgeStyle) {
+                            HomeBadgeStyle.SOLID_PILL -> {
+                                Box(
+                                    modifier = Modifier
+                                        .animateContentSize()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(homeAccent)
+                                        .padding(horizontal = 7.dp, vertical = 2.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = if (chat.unreadCount > 999) "999+" else chat.unreadCount.toString(),
+                                        color = homeAccent.contrastingContentColor(),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = mono
+                                    )
+                                }
+                            }
+                            HomeBadgeStyle.SOFT_TINT -> {
+                                Box(
+                                    modifier = Modifier
+                                        .animateContentSize()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(homeAccent.copy(alpha = 0.18f))
+                                        .padding(horizontal = 7.dp, vertical = 2.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = if (chat.unreadCount > 999) "999+" else chat.unreadCount.toString(),
+                                        color = homeAccent,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = mono
+                                    )
+                                }
+                            }
+                            HomeBadgeStyle.MINIMAL_DOT -> {
+                                Box(
+                                    modifier = Modifier
+                                        .size(9.dp)
+                                        .clip(CircleShape)
+                                        .background(homeAccent)
+                                )
+                            }
                         }
                     }
                 }

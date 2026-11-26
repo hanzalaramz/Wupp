@@ -39,6 +39,7 @@ import com.wa.beastclient.data.media.hasExtractableAudioTrack
 import com.wa.beastclient.data.media.SoundPoolManager
 import com.wa.beastclient.data.media.StickerFavoritesStore
 import com.wa.beastclient.domain.accounts.AccountManager
+import com.wa.beastclient.domain.appearance.HomeAppearanceManager
 import com.wa.beastclient.domain.drafts.ChatDraftManager
 import com.wa.beastclient.domain.scheduling.ScheduledMessage
 import com.wa.beastclient.domain.scheduling.ScheduledMessageManager
@@ -243,6 +244,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         AccountManager.init(appContext)
         ChatDraftManager.init(appContext)
+        HomeAppearanceManager.init(appContext)
         StealthMatrixManager.init(appContext)
         AppLockManager.init(appContext)
         WuppUpdater.init(appContext)

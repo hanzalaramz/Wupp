@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.10-pre.2] - 2026-11-26
+
+### ✨ Features
+- Added Classic, iOS-inspired, and Compact Home layouts with an original rounded Wupp emblem and per-layout presets.
+- Added a live-preview Home appearance menu to customize accent colors, unread badges, typography, chat row density, section order, navigation bar, New Chat button, and reduced motion.
+
 ## [0.3.10-pre.1] - 2026-11-26
 
 ### ✨ Features
