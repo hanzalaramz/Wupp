@@ -19,6 +19,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: wupp-release
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Build & Publish Wupp Release
