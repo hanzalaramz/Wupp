@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.10-pre.8] - 2026-11-26
+
+### Improved
+- Updated Home, Groups, Channels, and Communities to use the same translucent selection menu and top bar as chat messages.
+- Enabled direct multi-select by tapping additional messages, chats, or channels instead of tapping a separate select-multiple button.
+
 ## [0.3.10-pre.7] - 2026-11-26
 
 ### Fixed
