@@ -33,16 +33,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore cached arm64-v8a Rust library
+        id: so-cache
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/jniLibs/arm64-v8a/libwhatsbridge_rs.so
+          key: so-arm64-${{ runner.os }}-ndk27-${{ hashFiles('rustbridge/**') }}
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - if: steps.so-cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
 
-      - uses: Swatinem/rust-cache@v2
+      - if: steps.so-cache.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: rustbridge
           prefix-key: ci-arm64-v1
@@ -51,10 +60,16 @@ jobs:
         with:
           packages: platform-tools
 
-      - name: Install Android NDK
-        run: sdkmanager "ndk;27.0.12077973" "platforms;android-37.2" "build-tools;36.0.0"
+      - name: Install Android SDK & Build Tools
+        run: |
+          if [ "${{ steps.so-cache.outputs.cache-hit }}" != "true" ]; then
+            sdkmanager "ndk;27.0.12077973" "platforms;android-37.2" "build-tools;36.0.0"
+          else
+            sdkmanager "platforms;android-37.2" "build-tools;36.0.0"
+          fi
 
       - name: Build libwhatsbridge_rs.so (arm64-v8a)
+        if: steps.so-cache.outputs.cache-hit != 'true'
         env:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
