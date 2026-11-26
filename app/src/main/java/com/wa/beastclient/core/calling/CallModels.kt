@@ -141,6 +141,28 @@ fun isColdCallBlocked(
     isGroup: Boolean
 ): Boolean = !isGroup && !isSavedContact && messageCount <= 0
 
+/**
+ * Returns true for non-callable system/AI endpoints (Meta AI bot, newsletters, status).
+ */
+fun isMetaAiCallBlocked(peerJid: String): Boolean {
+    val clean = peerJid.trim().lowercase(Locale.US)
+    if (clean.isEmpty()) return false
+    if (clean.endsWith("@bot") || clean.endsWith("@newsletter") || clean == "status@broadcast") {
+        return true
+    }
+    val bareDigits = clean.substringBefore("@").substringBefore(":").filter { it.isDigit() }
+    return bareDigits == "13135550002"
+}
+
+/**
+ * Shows the local camera feed as a floating mini PiP only when remote peer video is active and
+ * views are not swapped; otherwise shows local camera full-screen like WhatsApp/MBWhatsApp.
+ */
+internal fun shouldShowLocalPreviewAsPip(
+    hasRemoteVideo: Boolean,
+    effectiveSwapped: Boolean
+): Boolean = hasRemoteVideo && !effectiveSwapped
+
 /** Formats active call duration as `MM:SS` or `HH:MM:SS`. */
 fun formatCallTimer(durationSec: Int): String {
     val safe = durationSec.coerceAtLeast(0)

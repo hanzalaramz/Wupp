@@ -28,7 +28,8 @@ class CallForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        val action = intent?.action
+        when (action) {
             ACTION_ANSWER_CALL -> CallStateManager.answerIncomingCall(audioOnly = false)
             ACTION_DECLINE_CALL, ACTION_END_CALL -> {
                 CallStateManager.declineOrEndCall()
@@ -41,24 +42,83 @@ class CallForegroundService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_STOP -> {
-                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
                 stopSelf()
                 return START_NOT_STICKY
             }
         }
 
+        ensureCallNotificationChannel()
         val state = CallStateManager.uiState.value
         if (state.phase == CallPhase.IDLE || state.phase == CallPhase.FAILED) {
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            // If launched via startForegroundService(ACTION_SYNC) right before the call ended/failed,
+            // Android requires startForeground() before stopSelf() or it throws ForegroundServiceDidNotStartInTimeException.
+            if (action == ACTION_SYNC) {
+                val minimalNotification = NotificationCompat.Builder(this, CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_stat_wupp)
+                    .setContentTitle("Call ended")
+                    .setPriority(NotificationCompat.PRIORITY_LOW)
+                    .setSilent(true)
+                    .build()
+                startForegroundSafely(minimalNotification, desiredMask = 0)
+            }
+            runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
             stopSelf()
             return START_NOT_STICKY
         }
 
-        ensureCallNotificationChannel()
         val notification = buildCallNotification(state)
         val fgsType = computeForegroundServiceType(state)
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, fgsType)
+        if (!startForegroundSafely(notification, desiredMask = fgsType)) {
+            stopSelf()
+        }
         return START_NOT_STICKY
+    }
+
+    private fun startForegroundSafely(notification: Notification, desiredMask: Int): Boolean {
+        val phoneCallBit = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+        } else {
+            0
+        }
+        val micBit = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        } else {
+            0
+        }
+        val cameraBit = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+        } else {
+            0
+        }
+        val candidates = buildForegroundServiceTypeFallbackLadder(
+            desiredMask = desiredMask,
+            phoneCallBit = phoneCallBit,
+            micBit = micBit,
+            cameraBit = cameraBit
+        )
+        for (mask in candidates) {
+            val result = runCatching {
+                ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, mask)
+            }
+            if (result.isSuccess) {
+                if (mask != desiredMask) {
+                    com.wa.beastclient.core.logging.AppLogManager.log(
+                        "WARN",
+                        "CallForegroundService",
+                        "startForeground fell back from mask=$desiredMask to mask=$mask"
+                    )
+                }
+                return true
+            }
+            val err = result.exceptionOrNull()
+            com.wa.beastclient.core.logging.AppLogManager.log(
+                "WARN",
+                "CallForegroundService",
+                "startForeground failed for mask=$mask: ${err?.javaClass?.simpleName}: ${err?.message}"
+            )
+        }
+        return false
     }
 
     private fun computeForegroundServiceType(state: CallUiState): Int {
@@ -75,7 +135,7 @@ class CallForegroundService : Service() {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                 mask = mask or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             }
-            if (state.isVideo && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            if (state.isVideo && !state.isCameraOff && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                 mask = mask or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
             }
         }
@@ -217,6 +277,12 @@ class CallForegroundService : Service() {
             }
             runCatching {
                 ContextCompat.startForegroundService(context.applicationContext, intent)
+            }.onFailure { err ->
+                com.wa.beastclient.core.logging.AppLogManager.log(
+                    "WARN",
+                    "CallForegroundService",
+                    "startForegroundService(ACTION_SYNC) failed: ${err.javaClass.simpleName}: ${err.message}"
+                )
             }
         }
 
@@ -227,4 +293,23 @@ class CallForegroundService : Service() {
             runCatching { context.applicationContext.stopService(intent) }
         }
     }
+}
+
+/**
+ * Builds a descending fallback ladder of Android foreground-service type masks so camera/microphone
+ * FGS restrictions on Android 14+ gracefully downgrade instead of crashing the call process.
+ */
+internal fun buildForegroundServiceTypeFallbackLadder(
+    desiredMask: Int,
+    phoneCallBit: Int,
+    micBit: Int,
+    cameraBit: Int
+): List<Int> {
+    val safeDesired = desiredMask.coerceAtLeast(0)
+    val withoutCamera = safeDesired and cameraBit.inv()
+    val withoutCameraAndMic = withoutCamera and micBit.inv()
+    val phoneOnly = phoneCallBit.coerceAtLeast(0)
+    return listOf(safeDesired, withoutCamera, withoutCameraAndMic, phoneOnly, 0)
+        .filter { it >= 0 }
+        .distinct()
 }

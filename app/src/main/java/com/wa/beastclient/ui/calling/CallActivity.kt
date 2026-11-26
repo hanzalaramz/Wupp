@@ -52,6 +52,7 @@ import androidx.compose.material.icons.rounded.CallEnd
 import androidx.compose.material.icons.rounded.Cameraswitch
 import androidx.compose.material.icons.rounded.CloseFullscreen
 import androidx.compose.material.icons.rounded.FiberManualRecord
+import androidx.compose.material.icons.rounded.FitScreen
 import androidx.compose.material.icons.rounded.HeadsetMic
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Mic
@@ -102,8 +103,10 @@ import com.wa.beastclient.core.calling.CallAudioRoute
 import com.wa.beastclient.core.calling.CallPhase
 import com.wa.beastclient.core.calling.CallStateManager
 import com.wa.beastclient.core.calling.CallUiState
+import com.wa.beastclient.core.calling.computeSmartVideoDisplayScale
 import com.wa.beastclient.core.calling.formatCallTimer
 import com.wa.beastclient.core.calling.resolveEffectiveRemoteDisplayRotation
+import com.wa.beastclient.core.calling.shouldShowLocalPreviewAsPip
 import com.wa.beastclient.domain.stealth.CallPipTapAction
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.screens.WhatsAppAvatar
@@ -145,6 +148,7 @@ class CallActivity : ComponentActivity() {
             val callState by CallStateManager.uiState.collectAsState()
             var pendingAnswerAudioOnly by rememberSaveable(callState.callId) { mutableStateOf<Boolean?>(null) }
             var pendingUpgradeToVideo by rememberSaveable(callState.callId) { mutableStateOf(false) }
+            var pendingEnableCamera by rememberSaveable(callState.callId) { mutableStateOf(false) }
 
             val callPermissionLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.RequestMultiplePermissions()
@@ -155,15 +159,23 @@ class CallActivity : ComponentActivity() {
                     ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
                 val audioOnly = pendingAnswerAudioOnly
                 val wantUpgrade = pendingUpgradeToVideo
+                val wantEnableCam = pendingEnableCamera
                 pendingAnswerAudioOnly = null
                 pendingUpgradeToVideo = false
-                if (micGranted && audioOnly != null) {
-                    CallStateManager.answerIncomingCall(audioOnly = audioOnly || !camGranted)
-                } else if (camGranted && wantUpgrade) {
-                    CallStateManager.upgradeToVideo()
-                }
-                if (micGranted || camGranted) {
-                    CallStateManager.onMediaPermissionsGranted()
+                pendingEnableCamera = false
+                when {
+                    micGranted && audioOnly != null -> {
+                        CallStateManager.answerIncomingCall(audioOnly = audioOnly || !camGranted)
+                    }
+                    camGranted && wantUpgrade -> {
+                        CallStateManager.upgradeToVideo()
+                    }
+                    camGranted && wantEnableCam -> {
+                        CallStateManager.toggleCamera()
+                    }
+                    micGranted || camGranted -> {
+                        CallStateManager.onMediaPermissionsGranted()
+                    }
                 }
             }
 
@@ -180,6 +192,7 @@ class CallActivity : ComponentActivity() {
                 } else {
                     pendingAnswerAudioOnly = audioOnly
                     pendingUpgradeToVideo = false
+                    pendingEnableCamera = false
                     callPermissionLauncher.launch(needed.toTypedArray())
                 }
             }
@@ -190,6 +203,18 @@ class CallActivity : ComponentActivity() {
                 } else {
                     pendingAnswerAudioOnly = null
                     pendingUpgradeToVideo = true
+                    pendingEnableCamera = false
+                    callPermissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
+                }
+            }
+
+            fun requestCameraThenEnable() {
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                    CallStateManager.toggleCamera()
+                } else {
+                    pendingAnswerAudioOnly = null
+                    pendingUpgradeToVideo = false
+                    pendingEnableCamera = true
                     callPermissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
                 }
             }
@@ -215,6 +240,7 @@ class CallActivity : ComponentActivity() {
                     if (needed.isNotEmpty()) {
                         pendingAnswerAudioOnly = null
                         pendingUpgradeToVideo = false
+                        pendingEnableCamera = false
                         callPermissionLauncher.launch(needed.toTypedArray())
                     }
                 }
@@ -263,10 +289,10 @@ class CallActivity : ComponentActivity() {
                     onToggleMute = { CallStateManager.toggleMute() },
                     onToggleRecording = { CallStateManager.toggleCallRecording() },
                     onToggleCamera = {
-                        if (!callState.isVideo || callState.isCameraOff) {
-                            requestCameraThenUpgrade()
-                        } else {
-                            CallStateManager.toggleCamera()
+                        when {
+                            !callState.isVideo -> requestCameraThenUpgrade()
+                            callState.isCameraOff -> requestCameraThenEnable()
+                            else -> CallStateManager.toggleCamera()
                         }
                     },
                     onFlipCamera = { CallStateManager.flipCamera() },
@@ -334,9 +360,14 @@ private fun CallScreenContent(
     var showMoreMenu by remember { mutableStateOf(false) }
     var isLayoutSwapped by rememberSaveable(state.callId) { mutableStateOf(false) }
     var manualRemoteRotationOffset by rememberSaveable(state.callId) { mutableIntStateOf(0) }
+    var isRemoteVideoFitMode by rememberSaveable(state.callId) { mutableStateOf(false) }
 
     val canSwapViews = showVideoFeed && !state.isCameraOff && state.hasRemoteVideo
     val effectiveSwapped = isLayoutSwapped && canSwapViews
+    val showLocalAsPip = shouldShowLocalPreviewAsPip(
+        hasRemoteVideo = state.hasRemoteVideo,
+        effectiveSwapped = effectiveSwapped
+    )
 
     DisposableEffect(Unit) {
         onDispose {
@@ -377,8 +408,11 @@ private fun CallScreenContent(
             val remoteCwDegState by rememberUpdatedState(effectiveRemoteDeg)
             val remoteWState by rememberUpdatedState(state.remoteVideoWidth)
             val remoteHState by rememberUpdatedState(state.remoteVideoHeight)
+            val remoteFillCropState by rememberUpdatedState(if (effectiveSwapped) true else !isRemoteVideoFitMode)
+            val remoteMaxCropState by rememberUpdatedState(if (effectiveSwapped) 0.99f else 0.28f)
             val localWState by rememberUpdatedState(state.localVideoWidth)
             val localHState by rememberUpdatedState(state.localVideoHeight)
+            val localMaxCropState by rememberUpdatedState(if (showLocalAsPip) 0.99f else 0.35f)
 
             val pipCardModifier = Modifier
                 .align(Alignment.TopEnd)
@@ -411,13 +445,14 @@ private fun CallScreenContent(
                                 surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                                     override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
                                         applyVideoTextureTransform(
-                                            this@apply,
-                                            w,
-                                            h,
-                                            remoteWState,
-                                            remoteHState,
-                                            remoteCwDegState,
-                                            fillCrop = true
+                                            textureView = this@apply,
+                                            viewWidth = w,
+                                            viewHeight = h,
+                                            videoWidth = remoteWState,
+                                            videoHeight = remoteHState,
+                                            cwRotationDeg = remoteCwDegState,
+                                            fillCrop = remoteFillCropState,
+                                            maxCropFraction = remoteMaxCropState
                                         )
                                         val s = Surface(st)
                                         boundSurface = s
@@ -425,21 +460,25 @@ private fun CallScreenContent(
                                     }
                                     override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
                                         applyVideoTextureTransform(
-                                            this@apply,
-                                            w,
-                                            h,
-                                            remoteWState,
-                                            remoteHState,
-                                            remoteCwDegState,
-                                            fillCrop = true
+                                            textureView = this@apply,
+                                            viewWidth = w,
+                                            viewHeight = h,
+                                            videoWidth = remoteWState,
+                                            videoHeight = remoteHState,
+                                            cwRotationDeg = remoteCwDegState,
+                                            fillCrop = remoteFillCropState,
+                                            maxCropFraction = remoteMaxCropState
                                         )
                                     }
                                     override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
                                     override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-                                        CallStateManager.attachRemoteVideoSurface(null)
-                                        boundSurface?.release()
+                                        val staleSurface = boundSurface
                                         boundSurface = null
-                                        return true
+                                        CallStateManager.attachRemoteVideoSurface(null) {
+                                            runCatching { staleSurface?.release() }
+                                            runCatching { st.release() }
+                                        }
+                                        return false
                                     }
                                 }
                             }
@@ -448,8 +487,19 @@ private fun CallScreenContent(
                             val curW = state.remoteVideoWidth
                             val curH = state.remoteVideoHeight
                             val curDeg = effectiveRemoteDeg
+                            val curFill = if (effectiveSwapped) true else !isRemoteVideoFitMode
+                            val curMaxCrop = if (effectiveSwapped) 0.99f else 0.28f
                             if (tv.width > 0 && tv.height > 0) {
-                                applyVideoTextureTransform(tv, tv.width, tv.height, curW, curH, curDeg, fillCrop = true)
+                                applyVideoTextureTransform(
+                                    textureView = tv,
+                                    viewWidth = tv.width,
+                                    viewHeight = tv.height,
+                                    videoWidth = curW,
+                                    videoHeight = curH,
+                                    cwRotationDeg = curDeg,
+                                    fillCrop = curFill,
+                                    maxCropFraction = curMaxCrop
+                                )
                             }
                         },
                         modifier = Modifier.fillMaxSize()
@@ -476,13 +526,8 @@ private fun CallScreenContent(
                 }
             }
 
-            if (!state.hasRemoteVideo && !effectiveSwapped) {
-                VoiceCallBackdropContent(state = state, isInPip = isInPip, accentColor = accentGreen)
-            }
-
-            // Local camera feed (either Mini PiP or Full-Screen main view when swapped)
-            if (!state.isCameraOff && (effectiveSwapped || !isInPip)) {
-                val showLocalAsPip = !effectiveSwapped
+            // Local camera feed (Full-Screen while dialing / peer camera off / swapped, or Mini PiP)
+            if (!state.isCameraOff && (!showLocalAsPip || !isInPip)) {
                 Box(
                     modifier = if (showLocalAsPip) {
                         pipCardModifier.clickable(onClick = handlePipTap)
@@ -496,21 +541,41 @@ private fun CallScreenContent(
                                 var boundSurface: Surface? = null
                                 surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                                     override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                                        st.setDefaultBufferSize(localHState, localWState)
-                                        applyLocalPreviewTransform(this@apply, w, h, localWState, localHState)
+                                        val bufW = localHState.coerceAtLeast(1)
+                                        val bufH = localWState.coerceAtLeast(1)
+                                        st.setDefaultBufferSize(bufW, bufH)
+                                        tag = bufW to bufH
+                                        applyLocalPreviewTransform(
+                                            view = this@apply,
+                                            width = w,
+                                            height = h,
+                                            localPortraitW = localWState,
+                                            localPortraitH = localHState,
+                                            maxCropFraction = localMaxCropState
+                                        )
                                         val s = Surface(st)
                                         boundSurface = s
                                         CallStateManager.attachLocalVideoSurface(s)
                                     }
                                     override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
-                                        applyLocalPreviewTransform(this@apply, w, h, localWState, localHState)
+                                        applyLocalPreviewTransform(
+                                            view = this@apply,
+                                            width = w,
+                                            height = h,
+                                            localPortraitW = localWState,
+                                            localPortraitH = localHState,
+                                            maxCropFraction = localMaxCropState
+                                        )
                                     }
                                     override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
                                     override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-                                        CallStateManager.attachLocalVideoSurface(null)
-                                        boundSurface?.release()
+                                        val staleSurface = boundSurface
                                         boundSurface = null
-                                        return true
+                                        CallStateManager.attachLocalVideoSurface(null) {
+                                            runCatching { staleSurface?.release() }
+                                            runCatching { st.release() }
+                                        }
+                                        return false
                                     }
                                 }
                             }
@@ -518,8 +583,20 @@ private fun CallScreenContent(
                         update = { tv ->
                             val curLW = state.localVideoWidth
                             val curLH = state.localVideoHeight
+                            val targetBuf = curLH.coerceAtLeast(1) to curLW.coerceAtLeast(1)
+                            if (tv.tag != targetBuf) {
+                                tv.surfaceTexture?.setDefaultBufferSize(targetBuf.first, targetBuf.second)
+                                tv.tag = targetBuf
+                            }
                             if (tv.width > 0 && tv.height > 0) {
-                                applyLocalPreviewTransform(tv, tv.width, tv.height, curLW, curLH)
+                                applyLocalPreviewTransform(
+                                    view = tv,
+                                    width = tv.width,
+                                    height = tv.height,
+                                    localPortraitW = curLW,
+                                    localPortraitH = curLH,
+                                    maxCropFraction = if (showLocalAsPip) 0.99f else 0.35f
+                                )
                             }
                         },
                         modifier = Modifier.fillMaxSize()
@@ -900,6 +977,26 @@ private fun CallScreenContent(
                                             }
                                             if (showVideoFeed && state.hasRemoteVideo) {
                                                 DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            if (isRemoteVideoFitMode)
+                                                                "Video framing: Fit full frame"
+                                                            else
+                                                                "Video framing: Smart fill"
+                                                        )
+                                                    },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            imageVector = Icons.Rounded.FitScreen,
+                                                            contentDescription = null
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        showMoreMenu = false
+                                                        isRemoteVideoFitMode = !isRemoteVideoFitMode
+                                                    }
+                                                )
+                                                DropdownMenuItem(
                                                     text = { Text("Rotate peer video (+90°)") },
                                                     leadingIcon = {
                                                         Icon(
@@ -1170,7 +1267,8 @@ private fun applyLocalPreviewTransform(
     width: Int,
     height: Int,
     localPortraitW: Int = 480,
-    localPortraitH: Int = 640
+    localPortraitH: Int = 640,
+    maxCropFraction: Float = 0.35f
 ) {
     // Camera2 supplies the sensor transform to TextureView. Compensate for screen rotation.
     val degrees = when (view.display?.rotation) {
@@ -1186,7 +1284,8 @@ private fun applyLocalPreviewTransform(
         videoWidth = localPortraitW.coerceAtLeast(1),
         videoHeight = localPortraitH.coerceAtLeast(1),
         cwRotationDeg = degrees,
-        fillCrop = true
+        fillCrop = true,
+        maxCropFraction = maxCropFraction
     )
 }
 
@@ -1197,7 +1296,8 @@ private fun applyVideoTextureTransform(
     videoWidth: Int,
     videoHeight: Int,
     cwRotationDeg: Int,
-    fillCrop: Boolean
+    fillCrop: Boolean,
+    maxCropFraction: Float = 0.28f
 ) {
     if (viewWidth <= 0 || viewHeight <= 0 || videoWidth <= 0 || videoHeight <= 0) return
     val vw = viewWidth.toFloat()
@@ -1214,11 +1314,14 @@ private fun applyVideoTextureTransform(
     if (rot != 0) {
         matrix.postRotate(rot.toFloat(), cx, cy)
     }
-    val uniformScale = if (fillCrop) {
-        maxOf(vw / rotatedW, vh / rotatedH)
-    } else {
-        minOf(vw / rotatedW, vh / rotatedH)
-    }
+    val uniformScale = computeSmartVideoDisplayScale(
+        viewWidth = vw,
+        viewHeight = vh,
+        rotatedVideoWidth = rotatedW,
+        rotatedVideoHeight = rotatedH,
+        fillCrop = fillCrop,
+        maxCropFraction = maxCropFraction
+    )
     matrix.postScale(uniformScale, uniformScale, cx, cy)
     textureView.setTransform(matrix)
 }

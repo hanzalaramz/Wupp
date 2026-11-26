@@ -125,4 +125,78 @@ class NativeVoipVideoPolicyTest {
             )
         )
     }
+
+    @Test
+    fun shouldContinueEncoderDrainStopsImmediatelyOnStaleGenerationOrCameraOff() {
+        assertTrue(
+            shouldContinueEncoderDrain(
+                running = true,
+                sendEnabled = true,
+                callbackEncGen = 4L,
+                activeEncGen = 4L
+            )
+        )
+        assertFalse(
+            shouldContinueEncoderDrain(
+                running = true,
+                sendEnabled = true,
+                callbackEncGen = 3L,
+                activeEncGen = 4L
+            )
+        )
+        assertFalse(
+            shouldContinueEncoderDrain(
+                running = true,
+                sendEnabled = false,
+                callbackEncGen = 4L,
+                activeEncGen = 4L
+            )
+        )
+        assertFalse(
+            shouldContinueEncoderDrain(
+                running = false,
+                sendEnabled = true,
+                callbackEncGen = 4L,
+                activeEncGen = 4L
+            )
+        )
+    }
+
+    @Test
+    fun computeSmartVideoDisplayScaleFillsMatchedPortraitAndCapsExtremeCrop() {
+        // 9:16 portrait video (544x960) on a 20:9 phone (1080x2400): ~20.6% crop -> full edge-to-edge fill (2.5x)
+        val matchedFill = computeSmartVideoDisplayScale(
+            viewWidth = 1080f,
+            viewHeight = 2400f,
+            rotatedVideoWidth = 544f,
+            rotatedVideoHeight = 960f,
+            fillCrop = true,
+            maxCropFraction = 0.28f
+        )
+        assertEquals(2.5f, matchedFill, 0.001f)
+
+        // Fit mode always preserves 100% of frame without cropping
+        val exactFit = computeSmartVideoDisplayScale(
+            viewWidth = 1080f,
+            viewHeight = 2400f,
+            rotatedVideoWidth = 640f,
+            rotatedVideoHeight = 480f,
+            fillCrop = false
+        )
+        assertEquals(1080f / 640f, exactFit, 0.001f)
+
+        // Landscape 4:3 video (640x480) on tall 20:9 portrait (1080x2400): smart fill caps extreme zoom
+        val cappedLandscape = computeSmartVideoDisplayScale(
+            viewWidth = 1080f,
+            viewHeight = 2400f,
+            rotatedVideoWidth = 640f,
+            rotatedVideoHeight = 480f,
+            fillCrop = true,
+            maxCropFraction = 0.28f
+        )
+        val fullCropScale = 2400f / 480f
+        assertTrue(cappedLandscape > exactFit)
+        assertTrue(cappedLandscape < fullCropScale)
+        assertEquals(exactFit / (1f - 0.28f), cappedLandscape, 0.001f)
+    }
 }

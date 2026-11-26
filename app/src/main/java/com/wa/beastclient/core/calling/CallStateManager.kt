@@ -61,6 +61,7 @@ object CallStateManager {
     private var remoteVideoSurface: Surface? = null
     private var callTimerJob: Job? = null
     private var failedDismissJob: Job? = null
+    private var outgoingDialJob: Job? = null
 
     @Synchronized
     fun init(context: Context) {
@@ -112,6 +113,11 @@ object CallStateManager {
         val ctx = context.applicationContext
         val cfg = StealthMatrixManager.config.value
 
+        if (isMetaAiCallBlocked(peerJid)) {
+            Toast.makeText(ctx, "This chat doesn't support WhatsApp calls", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         if (!isCallStartAllowed(_uiState.value.phase)) {
             launchCallActivity(ctx)
             return
@@ -122,7 +128,21 @@ object CallStateManager {
             return
         }
 
+        val initiallyConnected = runCatching { Whatsbridge.isConnected() }.getOrDefault(false)
+        val connState = WaRealtimeService.bridgeStatus.value.connectionState
+        if (!initiallyConnected && (
+                connState == "QR_READY" ||
+                    connState == "PAIR_CODE_READY" ||
+                    connState == "OFFLINE_PAUSED" ||
+                    connState == "LOGGED_OUT"
+                )
+        ) {
+            Toast.makeText(ctx, "Connect to WhatsApp before placing calls", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         failedDismissJob?.cancel()
+        outgoingDialJob?.cancel()
         val displayTitle = peerName.ifBlank { peerJid.substringBefore("@").ifBlank { "WhatsApp Call" } }
 
         _uiState.value = CallUiState(
@@ -142,14 +162,46 @@ object CallStateManager {
             remoteOrientationDegrees = 0,
             pendingVideoUpgrade = false,
             canAnswerInApp = false,
-            statusText = if (isVideo) "Video calling…" else "Calling…"
+            statusText = when {
+                !initiallyConnected -> "Connecting to WhatsApp…"
+                isVideo -> "Video calling…"
+                else -> "Calling…"
+            }
         )
 
         audioController?.startInCallAudio(isVideo = isVideo)
         CallForegroundService.sync(ctx, _uiState.value)
         launchCallActivity(ctx)
 
-        ioScope.launch {
+        outgoingDialJob = ioScope.launch {
+            if (!runCatching { Whatsbridge.isConnected() }.getOrDefault(false)) {
+                var ready = false
+                repeat(24) {
+                    val cur = _uiState.value
+                    if (cur.phase != CallPhase.DIALING || cur.peerJid != peerJid) return@launch
+                    if (runCatching { Whatsbridge.isConnected() }.getOrDefault(false)) {
+                        ready = true
+                        return@repeat
+                    }
+                    delay(250L)
+                }
+                if (!ready) {
+                    mainScope.launch {
+                        if (_uiState.value.phase == CallPhase.DIALING && _uiState.value.peerJid == peerJid) {
+                            failCall("Still connecting to WhatsApp — please try again")
+                        }
+                    }
+                    return@launch
+                }
+                mainScope.launch {
+                    _uiState.update { cur ->
+                        if (cur.phase == CallPhase.DIALING && cur.peerJid == peerJid) {
+                            cur.copy(statusText = if (isVideo) "Video calling…" else "Calling…")
+                        } else cur
+                    }
+                }
+            }
+
             runCatching {
                 Whatsbridge.startOutgoingCall(peerJid, isVideo, isGroup)
             }.onSuccess { callId ->
@@ -170,6 +222,7 @@ object CallStateManager {
                 }
             }.onFailure { err ->
                 Log.w(TAG, "startOutgoingCall failed: ${err.message}", err)
+                AppLogManager.log("WARN", TAG, "startOutgoingCall failed: ${err.message}", err)
                 mainScope.launch {
                     failCall(err.message?.ifBlank { null } ?: "Couldn't place call")
                 }
@@ -578,18 +631,28 @@ object CallStateManager {
                 pendingVideoUpgrade = false
             )
         }
-        if (enable && cur.callId.isNotBlank()) {
+        val canSendCam = enable && hasCameraPermission()
+        if (enable) {
             audioController?.updateVideoState(true)
-            ensureMediaPipelinesStarted(cur.callId, startVideo = true)
         }
-        videoPipeline?.setCameraEnabled(enable && hasCameraPermission())
+        appContext?.let { CallForegroundService.sync(it, _uiState.value) }
         if (cur.callId.isNotBlank()) {
+            if (enable && videoPipeline == null) {
+                ensureMediaPipelinesStarted(cur.callId, startVideo = true)
+            } else {
+                videoPipeline?.setCameraEnabled(canSendCam)
+            }
             ioScope.launch {
-                runCatching { Whatsbridge.setCallVideoEnabled(cur.callId, enable) }
+                val res = runCatching { Whatsbridge.setCallVideoEnabled(cur.callId, enable) }
+                res.onFailure { err ->
+                    Log.w(TAG, "setCallVideoEnabled($enable) failed: ${err.message}")
+                    AppLogManager.log("WARN", TAG, "setCallVideoEnabled($enable) failed: ${err.message}")
+                }
                 if (enable) {
                     mainScope.launch {
-                        ensureMediaPipelinesStarted(cur.callId, startVideo = true)
-                        videoPipeline?.requestSyncKeyframe()
+                        if (_uiState.value.isInProgress && !_uiState.value.isCameraOff) {
+                            videoPipeline?.requestSyncKeyframe()
+                        }
                     }
                     runCatching { Whatsbridge.requestPeerKeyframe(cur.callId) }
                 }
@@ -608,19 +671,27 @@ object CallStateManager {
             )
         }
         audioController?.updateVideoState(true)
+        appContext?.let { CallForegroundService.sync(it, _uiState.value) }
         if (cur.callId.isNotBlank()) {
-            ensureMediaPipelinesStarted(cur.callId, startVideo = true)
-            videoPipeline?.setCameraEnabled(hasCameraPermission())
+            if (videoPipeline == null) {
+                ensureMediaPipelinesStarted(cur.callId, startVideo = true)
+            } else {
+                videoPipeline?.setCameraEnabled(hasCameraPermission())
+            }
             ioScope.launch {
-                runCatching { Whatsbridge.setCallVideoEnabled(cur.callId, true) }
+                val res = runCatching { Whatsbridge.setCallVideoEnabled(cur.callId, true) }
+                res.onFailure { err ->
+                    Log.w(TAG, "upgradeToVideo setCallVideoEnabled(true) failed: ${err.message}")
+                    AppLogManager.log("WARN", TAG, "upgradeToVideo setCallVideoEnabled(true) failed: ${err.message}")
+                }
                 mainScope.launch {
-                    ensureMediaPipelinesStarted(cur.callId, startVideo = true)
-                    videoPipeline?.requestSyncKeyframe()
+                    if (_uiState.value.isInProgress && !_uiState.value.isCameraOff) {
+                        videoPipeline?.requestSyncKeyframe()
+                    }
                 }
                 runCatching { Whatsbridge.requestPeerKeyframe(cur.callId) }
             }
         }
-        appContext?.let { CallForegroundService.sync(it, _uiState.value) }
     }
 
     fun declineVideoUpgrade() {
@@ -640,14 +711,24 @@ object CallStateManager {
         audioController?.setAudioRoute(route)
     }
 
-    fun attachLocalVideoSurface(surface: Surface?) {
+    fun attachLocalVideoSurface(surface: Surface?, onPreviousDetached: (() -> Unit)? = null) {
         localPreviewSurface = surface
-        videoPipeline?.setLocalPreviewSurface(surface)
+        val pipeline = videoPipeline
+        if (pipeline != null) {
+            pipeline.setLocalPreviewSurface(surface, onPreviousDetached)
+        } else {
+            onPreviousDetached?.invoke()
+        }
     }
 
-    fun attachRemoteVideoSurface(surface: Surface?) {
+    fun attachRemoteVideoSurface(surface: Surface?, onPreviousDetached: (() -> Unit)? = null) {
         remoteVideoSurface = surface
-        videoPipeline?.setRemoteSurface(surface)
+        val pipeline = videoPipeline
+        if (pipeline != null) {
+            pipeline.setRemoteSurface(surface, onPreviousDetached)
+        } else {
+            onPreviousDetached?.invoke()
+        }
     }
 
     fun dismissFailedScreen() {
@@ -838,6 +919,8 @@ object CallStateManager {
 
     private fun failCall(reason: String) {
         AppLogManager.log("WARN", "VoIP", "Call ended/failed: $reason")
+        outgoingDialJob?.cancel()
+        outgoingDialJob = null
         callTimerJob?.cancel()
         callTimerJob = null
         stopPipelines()
@@ -862,6 +945,8 @@ object CallStateManager {
     }
 
     private fun resetToIdle() {
+        outgoingDialJob?.cancel()
+        outgoingDialJob = null
         callTimerJob?.cancel()
         callTimerJob = null
         failedDismissJob?.cancel()

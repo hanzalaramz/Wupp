@@ -87,6 +87,7 @@ struct ActiveCall {
     audio_playout_rx: Receiver<Vec<i16>>,
     video_capture_tx: RwLock<Option<Sender<TimedVideoFrame>>>,
     video_playout_rx: RwLock<Option<Receiver<VideoFrame>>>,
+    video_op_lock: tokio::sync::Mutex<()>,
     upgrade_token: Mutex<Option<VideoUpgradeToken>>,
 }
 
@@ -370,6 +371,7 @@ impl VoipRegistry {
             audio_playout_rx: play_rx,
             video_capture_tx: RwLock::new(vtx_opt),
             video_playout_rx: RwLock::new(vrx_opt),
+            video_op_lock: tokio::sync::Mutex::new(()),
             upgrade_token: Mutex::new(None),
         });
 
@@ -435,6 +437,7 @@ impl VoipRegistry {
             audio_playout_rx: play_rx,
             video_capture_tx: RwLock::new(vtx_opt),
             video_playout_rx: RwLock::new(vrx_opt),
+            video_op_lock: tokio::sync::Mutex::new(()),
             upgrade_token: Mutex::new(None),
         });
 
@@ -494,10 +497,20 @@ impl VoipRegistry {
             call.ended.store(true, Ordering::SeqCst);
             call.audio_capture_tx.close();
             call.audio_playout_rx.close();
-            if let Some(tx) = call.video_capture_tx.write().unwrap().take() {
+            if let Some(tx) = call
+                .video_capture_tx
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+            {
                 tx.close();
             }
-            if let Some(rx) = call.video_playout_rx.write().unwrap().take() {
+            if let Some(rx) = call
+                .video_playout_rx
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+            {
                 rx.close();
             }
             let _ = call.handle.terminate().await;
@@ -518,9 +531,21 @@ impl VoipRegistry {
         let call = self
             .get_active_call(call_id)
             .ok_or_else(|| format!("unknown call {call_id}"))?;
+        if call.ended.load(Ordering::Relaxed) {
+            return Err("call already ended".to_string());
+        }
+        let _video_op_guard = call.video_op_lock.lock().await;
+        if call.ended.load(Ordering::Relaxed) {
+            return Err("call already ended".to_string());
+        }
 
         if !enabled {
-            if let Some(tx) = call.video_capture_tx.write().unwrap().take() {
+            if let Some(tx) = call
+                .video_capture_tx
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+            {
                 tx.close();
             }
             call.handle
@@ -532,10 +557,22 @@ impl VoipRegistry {
         }
 
         let (vtx, vrx, vsrc, vsink) = new_video_channels();
-        *call.video_capture_tx.write().unwrap() = Some(vtx);
-        *call.video_playout_rx.write().unwrap() = Some(vrx);
+        let prev_tx = call
+            .video_capture_tx
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(vtx);
+        let prev_rx = call
+            .video_playout_rx
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(vrx);
 
-        let token = call.upgrade_token.lock().unwrap().take();
+        let token = call
+            .upgrade_token
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         let res = if let Some(tok) = token {
             call.handle.accept_video(tok, vsrc, vsink).await
         } else if call.handle.video_states().is_some() {
@@ -544,7 +581,22 @@ impl VoipRegistry {
             call.handle.start_video(vsrc, vsink).await
         };
 
-        res.map_err(|e| format!("enable_video failed: {e}"))?;
+        if let Err(e) = res {
+            // Restore previous video channels so a failed upgrade/resume does not break active playout.
+            *call
+                .video_capture_tx
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) = prev_tx;
+            *call
+                .video_playout_rx
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) = prev_rx;
+            return Err(format!("enable_video failed: {e}"));
+        }
+
+        if let Some(old_tx) = prev_tx {
+            old_tx.close();
+        }
         call.is_video.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -615,7 +667,14 @@ impl VoipRegistry {
         let Some(call) = self.get_active_call(call_id) else {
             return -1;
         };
-        let tx_opt = call.video_capture_tx.read().unwrap().clone();
+        if call.ended.load(Ordering::Relaxed) {
+            return -1;
+        }
+        let tx_opt = call
+            .video_capture_tx
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let Some(tx) = tx_opt else {
             return 0;
         };
@@ -632,8 +691,21 @@ impl VoipRegistry {
     /// Returns encoded header (8B) + Annex-B H.264 payload or `None` when timed out/unavailable.
     pub fn pull_video_frame(&self, runtime: &BridgeRuntime, call_id: &str) -> Option<Vec<u8>> {
         let call = self.get_active_call(call_id)?;
-        let rx_opt = call.video_playout_rx.read().unwrap().clone();
-        let rx = rx_opt?;
+        if call.ended.load(Ordering::Relaxed) {
+            return None;
+        }
+        let rx_opt = call
+            .video_playout_rx
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(rx) = rx_opt else {
+            // Sleep briefly when video playout isn't attached yet so JVM decoder threads don't busy-spin.
+            runtime
+                .rt
+                .block_on(tokio::time::sleep(Duration::from_millis(25)));
+            return None;
+        };
 
         let frame = if let Ok(f) = rx.try_recv() {
             f
@@ -713,7 +785,10 @@ fn spawn_call_monitor(runtime: Arc<BridgeRuntime>, call: Arc<ActiveCall>) {
                     } => {
                         let has_token = upgrade_token.is_some();
                         if let Some(tok) = upgrade_token {
-                            *call_clone.upgrade_token.lock().unwrap() = Some(tok);
+                            *call_clone
+                                .upgrade_token
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner()) = Some(tok);
                         }
                         if matches!(
                             state,

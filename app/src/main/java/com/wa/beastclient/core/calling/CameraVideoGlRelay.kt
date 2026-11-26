@@ -187,12 +187,17 @@ internal class CameraVideoGlRelay(
 
     fun stop() {
         if (!released.compareAndSet(false, true)) return
-        val latch = CountDownLatch(1)
-        glHandler.post {
-            releaseGlLocked()
-            latch.countDown()
+        glHandler.removeCallbacksAndMessages(null)
+        if (glThread.isAlive) {
+            val latch = CountDownLatch(1)
+            val posted = glHandler.post {
+                releaseGlLocked()
+                latch.countDown()
+            }
+            if (posted) {
+                runCatching { latch.await(1500, TimeUnit.MILLISECONDS) }
+            }
         }
-        latch.await(1500, TimeUnit.MILLISECONDS)
         runCatching { glThread.quitSafely() }
     }
 
@@ -257,7 +262,12 @@ internal class CameraVideoGlRelay(
     }
 
     private fun drawFrame(st: SurfaceTexture) {
-        if (released.get() || eglDisplay == EGL14.EGL_NO_DISPLAY) return
+        if (released.get() ||
+            eglDisplay == EGL14.EGL_NO_DISPLAY ||
+            eglSurface == EGL14.EGL_NO_SURFACE ||
+            eglContext == EGL14.EGL_NO_CONTEXT ||
+            !encoderInputSurface.isValid
+        ) return
         runCatching {
             st.updateTexImage()
             st.getTransformMatrix(stMatrix)
@@ -352,7 +362,9 @@ internal class CameraVideoGlRelay(
                 runCatching { EGL14.eglDestroyContext(eglDisplay, eglContext) }
                 eglContext = EGL14.EGL_NO_CONTEXT
             }
-            runCatching { EGL14.eglTerminate(eglDisplay) }
+            // Never call eglTerminate(EGL_DEFAULT_DISPLAY): Android RenderThread/Compose/TextureView
+            // share the process-wide default EGL display, and terminating it crashes the UI process.
+            runCatching { EGL14.eglReleaseThread() }
             eglDisplay = EGL14.EGL_NO_DISPLAY
         }
     }

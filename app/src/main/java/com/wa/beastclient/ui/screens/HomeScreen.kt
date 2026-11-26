@@ -568,7 +568,9 @@ fun HomeScreen(
     }
 
     val launchHomeCall: (String, String, String?, Boolean) -> Unit = { peerJid, peerName, avatarPath, isVideo ->
-        if (stealth.offlineMode) {
+        if (com.wa.beastclient.core.calling.isMetaAiCallBlocked(peerJid)) {
+            Toast.makeText(context, "This chat doesn't support WhatsApp calls", Toast.LENGTH_SHORT).show()
+        } else if (stealth.offlineMode) {
             Toast.makeText(context, "Disable Offline Mode to place calls", Toast.LENGTH_SHORT).show()
         } else if (stealth.callBackendMode == CallBackendMode.OFF) {
             showHomeCallingSetupDialog = true

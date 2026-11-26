@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.10-pre.10] - 2026-11-26
+
+### Fixed
+- Fixed crashes when turning your camera off and back on, switching from a voice call to a video call, or flipping cameras during a call (#196).
+- Fixed double crashes when starting a video call right after opening the app by waiting for WhatsApp to finish connecting and preventing Android foreground-service startup crashes.
+- Fixed video call crashes caused by destroying the shared graphics display when stopping the camera or releasing video surfaces too early.
+- Blocked accidental call attempts on Meta AI and channel/bot chats that do not support calls (#197).
+
+### Improved
+- Made your camera preview fill the full screen while dialing or when the other person's camera is off, then move neatly to the corner window once their video connects.
+- Fixed stretched local camera previews and improved remote video scaling with smart framing plus a Fit/Fill option in the call menu.
+
 ## [0.3.10-pre.9] - 2026-11-26
 
 ### Improved

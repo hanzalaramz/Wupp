@@ -24,6 +24,7 @@ import com.wa.beastclient.core.logging.AppLogManager
 import com.wa.bridge.whatsbridge.Whatsbridge
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -87,6 +88,45 @@ internal fun isCaptureSessionCallbackStale(
     activeSessionGen: Long
 ): Boolean = !running || !sendEnabled || !sameCameraInstance || callbackSessionGen != activeSessionGen
 
+internal fun shouldContinueEncoderDrain(
+    running: Boolean,
+    sendEnabled: Boolean,
+    callbackEncGen: Long,
+    activeEncGen: Long
+): Boolean = running && sendEnabled && callbackEncGen == activeEncGen
+
+/**
+ * Computes uniform display scale for video TextureView rendering.
+ *
+ * - When [fillCrop] is false ("Fit"), returns exact aspect-fit scale (zero cropping).
+ * - When [fillCrop] is true ("Smart fill"), fills the viewport edge-to-edge whenever cropping
+ *   stays within [maxCropFraction] (e.g., 9:16 portrait video on a 20:9 screen), and smoothly
+ *   caps aggressive zoom when aspect ratios diverge sharply (e.g., landscape/4:3 on a tall phone).
+ */
+internal fun computeSmartVideoDisplayScale(
+    viewWidth: Float,
+    viewHeight: Float,
+    rotatedVideoWidth: Float,
+    rotatedVideoHeight: Float,
+    fillCrop: Boolean,
+    maxCropFraction: Float = 0.28f
+): Float {
+    if (viewWidth <= 0f || viewHeight <= 0f || rotatedVideoWidth <= 0f || rotatedVideoHeight <= 0f) {
+        return 1f
+    }
+    val fitScale = minOf(viewWidth / rotatedVideoWidth, viewHeight / rotatedVideoHeight)
+    if (!fillCrop) return fitScale
+    val fillScale = maxOf(viewWidth / rotatedVideoWidth, viewHeight / rotatedVideoHeight)
+    val clampedMaxCrop = maxCropFraction.coerceIn(0f, 0.99f)
+    if (clampedMaxCrop >= 0.99f || fillScale <= 0f) return fillScale
+    val cropFraction = 1f - (fitScale / fillScale)
+    return if (cropFraction <= clampedMaxCrop) {
+        fillScale
+    } else {
+        fitScale / (1f - clampedMaxCrop)
+    }
+}
+
 /**
  * Hardware MediaCodec H.264 Annex-B video encoder (Camera2 -> GL upright portrait relay ->
  * Rust VoIP) and decoder (Rust VoIP -> remote Surface) supporting front/back switching and PLI.
@@ -115,9 +155,14 @@ class NativeVoipVideoPipeline(
     private val running = AtomicBoolean(false)
     private val sendEnabled = AtomicBoolean(false)
     private val useFrontCamera = AtomicBoolean(true)
+    private val cameraOpening = AtomicBoolean(false)
 
     private val localSurfaceRef = AtomicReference<Surface?>(null)
     private val remoteSurfaceRef = AtomicReference<Surface?>(null)
+
+    private val controlExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "wupp-voip-vctrl").apply { isDaemon = true }
+    }
 
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
@@ -131,10 +176,30 @@ class NativeVoipVideoPipeline(
     private var encoderDrainThread: Thread? = null
     private var decoderThread: Thread? = null
 
+    @Volatile
     private var codecConfigAnnexB: ByteArray? = null
     private val cameraLock = Any()
+    private val decoderSurfaceLock = Any()
+    private var activeDecoder: MediaCodec? = null
+    private var configuredRemoteSurface: Surface? = null
+
     private val cameraGeneration = AtomicLong(0L)
     private val sessionGeneration = AtomicLong(0L)
+    private val encoderGeneration = AtomicLong(0L)
+    private var startedEncoderGen: Long = 0L
+
+    private fun submitControl(onRejected: (() -> Unit)? = null, block: () -> Unit) {
+        val submitted = runCatching {
+            controlExecutor.execute {
+                runCatching(block).onFailure { err ->
+                    Log.w(TAG, "VoIP video control task error: ${err.message}", err)
+                }
+            }
+        }
+        if (submitted.isFailure) {
+            onRejected?.invoke()
+        }
+    }
 
     fun start(enableSendCamera: Boolean) {
         if (!running.compareAndSet(false, true)) return
@@ -146,61 +211,128 @@ class NativeVoipVideoPipeline(
         }
 
         if (enableSendCamera) {
-            startCameraAndEncoder()
+            submitControl { reconcileCameraState() }
         }
     }
 
     fun stop() {
         if (!running.compareAndSet(true, false)) return
         sendEnabled.set(false)
-        stopCameraAndEncoder()
+        cameraGeneration.incrementAndGet()
+        sessionGeneration.incrementAndGet()
+        encoderGeneration.incrementAndGet()
+        submitControl {
+            stopCameraAndEncoder()
+            synchronized(decoderSurfaceLock) {
+                releaseActiveDecoderLocked()
+            }
+        }
+        runCatching { controlExecutor.shutdown() }
         decoderThread = null
     }
 
-    fun setLocalPreviewSurface(surface: Surface?) {
+    fun setLocalPreviewSurface(surface: Surface?, onPreviousDetached: (() -> Unit)? = null) {
         val prev = localSurfaceRef.getAndSet(surface)
-        if (prev !== surface && running.get() && sendEnabled.get()) {
-            restartCaptureSessionOnly()
-        }
-    }
-
-    fun setRemoteSurface(surface: Surface?) {
-        remoteSurfaceRef.set(surface)
-        if (surface != null && running.get()) {
-            Whatsbridge.requestPeerKeyframe(callId)
-        }
-    }
-
-    fun setCameraEnabled(enabled: Boolean) {
-        synchronized(cameraLock) {
-            val was = sendEnabled.getAndSet(enabled)
-            if (!running.get() || was == enabled) return
-            if (enabled) {
-                startCameraAndEncoder()
-            } else {
-                stopCameraAndEncoder()
+        if (prev === surface && onPreviousDetached == null) return
+        if (running.get() || onPreviousDetached != null) {
+            submitControl(onRejected = onPreviousDetached) {
+                if (prev !== surface && running.get() && sendEnabled.get()) {
+                    restartCaptureSessionOnly()
+                } else if (surface == null && localSurfaceRef.get() == null && !sendEnabled.get()) {
+                    synchronized(cameraLock) {
+                        val prevSession = captureSession
+                        captureSession = null
+                        if (prevSession != null) {
+                            runCatching { prevSession.stopRepeating() }
+                            runCatching { prevSession.close() }
+                        }
+                    }
+                }
+                onPreviousDetached?.invoke()
             }
         }
     }
 
+    fun setRemoteSurface(surface: Surface?, onPreviousDetached: (() -> Unit)? = null) {
+        val prev = remoteSurfaceRef.getAndSet(surface)
+        if (surface != null && running.get()) {
+            submitControl { runCatching { Whatsbridge.requestPeerKeyframe(callId) } }
+        }
+        if (prev !== surface || onPreviousDetached != null) {
+            submitControl(onRejected = onPreviousDetached) {
+                synchronized(decoderSurfaceLock) {
+                    val detachPrev = prev != null && configuredRemoteSurface === prev
+                    val detachCleared = surface == null && remoteSurfaceRef.get() == null
+                    if (detachPrev || detachCleared) {
+                        releaseActiveDecoderLocked()
+                    }
+                }
+                onPreviousDetached?.invoke()
+            }
+        }
+    }
+
+    fun setCameraEnabled(enabled: Boolean) {
+        sendEnabled.set(enabled)
+        if (!enabled) {
+            encoderGeneration.incrementAndGet()
+            sessionGeneration.incrementAndGet()
+        }
+        if (!running.get()) return
+        submitControl { reconcileCameraState() }
+    }
+
     fun switchCamera() {
-        synchronized(cameraLock) {
-            useFrontCamera.set(!useFrontCamera.get())
-            if (running.get() && sendEnabled.get()) {
+        useFrontCamera.set(!useFrontCamera.get())
+        if (!running.get() || !sendEnabled.get()) return
+        submitControl {
+            synchronized(cameraLock) {
                 stopCameraAndEncoder()
-                startCameraAndEncoder()
+                if (running.get() && sendEnabled.get()) {
+                    startCameraAndEncoder()
+                }
             }
         }
     }
 
     fun requestSyncKeyframe() {
-        val enc = encoder ?: return
-        runCatching {
-            val params = Bundle().apply {
-                putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+        synchronized(cameraLock) {
+            if (!running.get() || !sendEnabled.get()) return
+            val enc = encoder ?: return
+            runCatching {
+                val params = Bundle().apply {
+                    putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+                }
+                enc.setParameters(params)
             }
-            enc.setParameters(params)
         }
+    }
+
+    private fun reconcileCameraState() {
+        synchronized(cameraLock) {
+            if (!running.get() || !sendEnabled.get()) {
+                stopCameraAndEncoder()
+                return
+            }
+            val needsFreshStart = (cameraDevice == null && !cameraOpening.get()) ||
+                encoder == null ||
+                startedEncoderGen != encoderGeneration.get()
+            if (needsFreshStart) {
+                stopCameraAndEncoder()
+                if (running.get() && sendEnabled.get()) {
+                    startCameraAndEncoder()
+                }
+            }
+        }
+    }
+
+    private fun releaseActiveDecoderLocked() {
+        activeDecoder?.let { dec ->
+            runCatching { dec.stop() }
+            runCatching { dec.release() }
+        }
+        activeDecoder = null
+        configuredRemoteSurface = null
     }
 
     private fun openConfiguredAvcEncoder(): Triple<MediaCodec, Surface, VideoEncoderCandidate>? {
@@ -270,7 +402,7 @@ class NativeVoipVideoPipeline(
     @SuppressLint("MissingPermission")
     private fun startCameraAndEncoder() {
         synchronized(cameraLock) {
-            if (cameraDevice != null) return
+            if (!running.get() || !sendEnabled.get() || cameraDevice != null || cameraOpening.get()) return
             try {
                 val (enc, inputSurf, encPreset) = openConfiguredAvcEncoder()
                     ?: throw IllegalStateException("No compatible H.264 encoder found")
@@ -288,7 +420,11 @@ class NativeVoipVideoPipeline(
                 val camId = cm.cameraIdList.firstOrNull { id ->
                     cm.getCameraCharacteristics(id)
                         .get(CameraCharacteristics.LENS_FACING) == targetFacing
-                } ?: cm.cameraIdList.firstOrNull() ?: return
+                } ?: cm.cameraIdList.firstOrNull()
+                if (camId == null) {
+                    stopCameraAndEncoder()
+                    return
+                }
 
                 val characteristics = cm.getCameraCharacteristics(camId)
                 val sensorDeg = characteristics
@@ -325,7 +461,9 @@ class NativeVoipVideoPipeline(
                     Whatsbridge.setCallVideoOrientation(callId, 0)
                 }
 
-                encoderDrainThread = Thread({ runEncoderDrainLoop(enc) }, "wupp-voip-venc").apply {
+                val myEncGen = encoderGeneration.incrementAndGet()
+                startedEncoderGen = myEncGen
+                encoderDrainThread = Thread({ runEncoderDrainLoop(enc, myEncGen) }, "wupp-voip-venc").apply {
                     isDaemon = true
                     start()
                 }
@@ -335,10 +473,14 @@ class NativeVoipVideoPipeline(
                 cameraThread = thread
                 cameraHandler = handler
                 val myCamGen = cameraGeneration.incrementAndGet()
+                cameraOpening.set(true)
 
                 cm.openCamera(camId, object : CameraDevice.StateCallback() {
                     override fun onOpened(camera: CameraDevice) {
                         synchronized(cameraLock) {
+                            if (myCamGen == cameraGeneration.get()) {
+                                cameraOpening.set(false)
+                            }
                             if (!running.get() || !sendEnabled.get() || myCamGen != cameraGeneration.get()) {
                                 runCatching { camera.close() }
                                 return
@@ -350,6 +492,9 @@ class NativeVoipVideoPipeline(
 
                     override fun onDisconnected(camera: CameraDevice) {
                         synchronized(cameraLock) {
+                            if (myCamGen == cameraGeneration.get()) {
+                                cameraOpening.set(false)
+                            }
                             if (cameraDevice === camera) {
                                 sessionGeneration.incrementAndGet()
                                 runCatching { captureSession?.close() }
@@ -364,6 +509,9 @@ class NativeVoipVideoPipeline(
                         Log.w(TAG, "CameraDevice error=$error")
                         AppLogManager.log("WARN", TAG, "CameraDevice error=$error")
                         synchronized(cameraLock) {
+                            if (myCamGen == cameraGeneration.get()) {
+                                cameraOpening.set(false)
+                            }
                             if (cameraDevice === camera) {
                                 sessionGeneration.incrementAndGet()
                                 runCatching { captureSession?.close() }
@@ -376,6 +524,9 @@ class NativeVoipVideoPipeline(
 
                     override fun onClosed(camera: CameraDevice) {
                         synchronized(cameraLock) {
+                            if (myCamGen == cameraGeneration.get()) {
+                                cameraOpening.set(false)
+                            }
                             if (cameraDevice === camera) {
                                 sessionGeneration.incrementAndGet()
                                 captureSession = null
@@ -385,7 +536,9 @@ class NativeVoipVideoPipeline(
                     }
                 }, handler)
             } catch (t: Throwable) {
+                cameraOpening.set(false)
                 Log.e(TAG, "Failed starting Camera2/H264 encoder: ${t.message}", t)
+                AppLogManager.log("ERROR", TAG, "Failed starting Camera2/H264 encoder: ${t.message}", t)
                 stopCameraAndEncoder()
             }
         }
@@ -562,6 +715,10 @@ class NativeVoipVideoPipeline(
         synchronized(cameraLock) {
             cameraGeneration.incrementAndGet()
             sessionGeneration.incrementAndGet()
+            encoderGeneration.incrementAndGet()
+            startedEncoderGen = 0L
+            cameraOpening.set(false)
+
             val prevSession = captureSession
             captureSession = null
             if (prevSession != null) {
@@ -576,26 +733,41 @@ class NativeVoipVideoPipeline(
             runCatching { glRelay?.stop() }
             glRelay = null
             glCameraSurface = null
-            runCatching { encoder?.signalEndOfInputStream() }
-            runCatching { encoder?.stop() }
-            runCatching { encoder?.release() }
+
+            val prevEnc = encoder
             encoder = null
-            runCatching { encoderInputSurface?.release() }
+            val prevDrain = encoderDrainThread
+            encoderDrainThread = null
+            val prevInputSurf = encoderInputSurface
             encoderInputSurface = null
             codecConfigAnnexB = null
-            encoderDrainThread = null
+
+            // Signal EOS and let the drain loop exit before stopping/releasing MediaCodec so
+            // getOutputBuffer() can never race against a torn-down native codec instance.
+            runCatching { prevEnc?.signalEndOfInputStream() }
+            if (prevDrain != null && prevDrain !== Thread.currentThread()) {
+                runCatching { prevDrain.join(350) }
+            }
+            runCatching { prevEnc?.stop() }
+            runCatching { prevEnc?.release() }
+            runCatching { prevInputSurf?.release() }
         }
     }
 
-    private fun runEncoderDrainLoop(enc: MediaCodec) {
+    private fun runEncoderDrainLoop(enc: MediaCodec, myEncGen: Long) {
         val info = MediaCodec.BufferInfo()
         val startNs = System.nanoTime()
-        while (running.get() && sendEnabled.get()) {
+        while (shouldContinueEncoderDrain(running.get(), sendEnabled.get(), myEncGen, encoderGeneration.get())) {
             val outIdx = runCatching { enc.dequeueOutputBuffer(info, 25_000) }.getOrElse { break }
             if (outIdx < 0) continue
+            if (!shouldContinueEncoderDrain(running.get(), sendEnabled.get(), myEncGen, encoderGeneration.get())) {
+                runCatching { enc.releaseOutputBuffer(outIdx, false) }
+                break
+            }
+            var fatalCodecError = false
             try {
-                val buf = enc.getOutputBuffer(outIdx) ?: continue
-                if (info.size > 0) {
+                val buf = enc.getOutputBuffer(outIdx)
+                if (buf != null && info.size > 0) {
                     val data = ByteArray(info.size)
                     buf.position(info.offset)
                     buf.limit(info.offset + info.size)
@@ -603,21 +775,26 @@ class NativeVoipVideoPipeline(
 
                     if ((info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
                         codecConfigAnnexB = data
-                    } else {
+                    } else if (shouldContinueEncoderDrain(running.get(), sendEnabled.get(), myEncGen, encoderGeneration.get())) {
                         val isKey = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
-                        val au = if (isKey && codecConfigAnnexB != null) {
-                            codecConfigAnnexB!! + data
+                        val cfg = codecConfigAnnexB
+                        val au = if (isKey && cfg != null) {
+                            cfg + data
                         } else {
                             data
                         }
                         val elapsedNs = (System.nanoTime() - startNs).coerceAtLeast(0L)
                         val ts90k = ((elapsedNs * 90L) / 1_000_000L) and 0xFFFF_FFFFL
-                        Whatsbridge.pushVoipVideoAu(callId, au, ts90k)
+                        runCatching { Whatsbridge.pushVoipVideoAu(callId, au, ts90k) }
                     }
                 }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Encoder drain loop exiting cleanly on codec teardown: ${t.message}")
+                fatalCodecError = true
             } finally {
                 runCatching { enc.releaseOutputBuffer(outIdx, false) }
             }
+            if (fatalCodecError) break
         }
     }
 
@@ -660,28 +837,24 @@ class NativeVoipVideoPipeline(
     }
 
     private fun runDecoderLoop() {
-        var decoder: MediaCodec? = null
-        var configuredSurface: Surface? = null
         var cachedSpsPps: ByteArray? = null
         var lastOrientation = -1
         var lastKeyframeOrientation = -1
-        var lastCodecRotation = -1
         var firstFrameReported = false
         val info = MediaCodec.BufferInfo()
 
-        fun resetDecoderAndRequestKeyframe() {
-            if (decoder != null) {
-                runCatching { decoder?.stop() }
-                runCatching { decoder?.release() }
-                decoder = null
-            }
-            configuredSurface = null
-            runCatching { Whatsbridge.requestPeerKeyframe(callId) }
-        }
-
         try {
             while (running.get()) {
-                val packet = Whatsbridge.pullVoipVideoFrame(callId) ?: continue
+                val pullStartNs = System.nanoTime()
+                val packet = runCatching { Whatsbridge.pullVoipVideoFrame(callId) }.getOrNull()
+                if (packet == null) {
+                    // Guard against tight busy-spin when the Rust video playout channel is absent
+                    // (e.g., audio call upgrading to video or call terminating).
+                    if (System.nanoTime() - pullStartNs < 5_000_000L) {
+                        runCatching { Thread.sleep(20) }
+                    }
+                    continue
+                }
                 if (packet.size <= 8) continue
 
                 val flags = packet[0].toInt() and 0xFF
@@ -709,115 +882,107 @@ class NativeVoipVideoPipeline(
 
                 extractParameterSetsAnnexB(payload)?.let { cachedSpsPps = it }
 
-                val targetSurface = remoteSurfaceRef.get()
-                if (targetSurface == null || !targetSurface.isValid) {
-                    if (decoder != null) {
-                        runCatching { decoder?.stop() }
-                        runCatching { decoder?.release() }
-                        decoder = null
-                        configuredSurface = null
+                var requestPeerKeyframe = false
+                synchronized(decoderSurfaceLock) {
+                    val targetSurface = remoteSurfaceRef.get()
+                    if (targetSurface == null || !targetSurface.isValid) {
+                        if (activeDecoder != null) {
+                            releaseActiveDecoderLocked()
+                        }
+                        return@synchronized
                     }
-                    continue
-                }
 
-                if (decoder == null || configuredSurface !== targetSurface) {
-                    if (decoder != null) {
-                        runCatching { decoder?.stop() }
-                        runCatching { decoder?.release() }
-                        decoder = null
-                    }
-                    val initCfg = cachedSpsPps
-                    if (initCfg == null && !isKey) {
-                        Whatsbridge.requestPeerKeyframe(callId)
-                        continue
-                    }
-                    val fmt = MediaFormat.createVideoFormat(MIME_AVC, CAM_WIDTH, CAM_HEIGHT)
-                    if (initCfg != null) {
-                        fmt.setByteBuffer("csd-0", ByteBuffer.wrap(initCfg))
-                    }
-                    decoder = openConfiguredAvcDecoder(fmt, targetSurface)
-                    if (decoder != null) {
-                        configuredSurface = targetSurface
-                    } else {
-                        continue
-                    }
-                }
-
-                val dec = decoder ?: continue
-                var codecFailed = false
-                try {
-                    val inIdx = dec.dequeueInputBuffer(15_000)
-                    if (inIdx >= 0) {
-                        val inBuf = dec.getInputBuffer(inIdx)
-                        inBuf?.clear()
-                        val ptsUs = (ts90k * 1_000L) / 90L
-                        if (inBuf != null && payload.size <= inBuf.remaining()) {
-                            inBuf.put(payload)
-                            val decFlags = if (isKey) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
-                            dec.queueInputBuffer(inIdx, 0, payload.size, ptsUs, decFlags)
+                    if (activeDecoder == null || configuredRemoteSurface !== targetSurface) {
+                        releaseActiveDecoderLocked()
+                        val initCfg = cachedSpsPps
+                        if (initCfg == null && !isKey) {
+                            requestPeerKeyframe = true
+                            return@synchronized
+                        }
+                        val fmt = MediaFormat.createVideoFormat(MIME_AVC, CAM_WIDTH, CAM_HEIGHT)
+                        if (initCfg != null) {
+                            fmt.setByteBuffer("csd-0", ByteBuffer.wrap(initCfg))
+                        }
+                        val opened = openConfiguredAvcDecoder(fmt, targetSurface)
+                        if (opened != null) {
+                            activeDecoder = opened
+                            configuredRemoteSurface = targetSurface
                         } else {
-                            // Return the slot without feeding a truncated frame to the decoder.
-                            dec.queueInputBuffer(inIdx, 0, 0, ptsUs, 0)
+                            return@synchronized
                         }
                     }
 
-                    while (true) {
-                        val outIdx = dec.dequeueOutputBuffer(info, 0)
-                        if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                            runCatching {
-                                val outFmt = dec.outputFormat
-                                val w = if (outFmt.containsKey("crop-right") && outFmt.containsKey("crop-left")) {
-                                    outFmt.getInteger("crop-right") - outFmt.getInteger("crop-left") + 1
-                                } else if (outFmt.containsKey(MediaFormat.KEY_WIDTH)) {
-                                    outFmt.getInteger(MediaFormat.KEY_WIDTH)
-                                } else {
-                                    0
-                                }
-                                val h = if (outFmt.containsKey("crop-bottom") && outFmt.containsKey("crop-top")) {
-                                    outFmt.getInteger("crop-bottom") - outFmt.getInteger("crop-top") + 1
-                                } else if (outFmt.containsKey(MediaFormat.KEY_HEIGHT)) {
-                                    outFmt.getInteger(MediaFormat.KEY_HEIGHT)
-                                } else {
-                                    0
-                                }
-                                val codecRot = if (outFmt.containsKey(MediaFormat.KEY_ROTATION)) {
-                                    ((outFmt.getInteger(MediaFormat.KEY_ROTATION) % 360) + 360) % 360
-                                } else {
-                                    0
-                                }
-                                if (codecRot != lastCodecRotation) {
-                                    lastCodecRotation = codecRot
-                                    onRemoteCodecRotationDegrees(codecRot)
-                                }
-                                if (w > 0 && h > 0) {
-                                    onRemoteVideoSizeChanged(w, h)
-                                }
+                    val dec = activeDecoder ?: return@synchronized
+                    try {
+                        val inIdx = dec.dequeueInputBuffer(5_000)
+                        if (inIdx >= 0) {
+                            val inBuf = dec.getInputBuffer(inIdx)
+                            inBuf?.clear()
+                            val ptsUs = (ts90k * 1_000L) / 90L
+                            if (inBuf != null && payload.size <= inBuf.remaining()) {
+                                inBuf.put(payload)
+                                val decFlags = if (isKey) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
+                                dec.queueInputBuffer(inIdx, 0, payload.size, ptsUs, decFlags)
+                            } else {
+                                // Return the slot without feeding a truncated frame to the decoder.
+                                dec.queueInputBuffer(inIdx, 0, 0, ptsUs, 0)
                             }
-                        } else if (outIdx >= 0) {
-                            dec.releaseOutputBuffer(outIdx, true)
-                            if (!firstFrameReported) {
-                                firstFrameReported = true
-                                onRemoteFirstFrameDecoded()
-                            }
-                        } else {
-                            break
                         }
+
+                        while (true) {
+                            val outIdx = dec.dequeueOutputBuffer(info, 0)
+                            if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                                runCatching {
+                                    val outFmt = dec.outputFormat
+                                    val w = if (outFmt.containsKey("crop-right") && outFmt.containsKey("crop-left")) {
+                                        outFmt.getInteger("crop-right") - outFmt.getInteger("crop-left") + 1
+                                    } else if (outFmt.containsKey(MediaFormat.KEY_WIDTH)) {
+                                        outFmt.getInteger(MediaFormat.KEY_WIDTH)
+                                    } else {
+                                        0
+                                    }
+                                    val h = if (outFmt.containsKey("crop-bottom") && outFmt.containsKey("crop-top")) {
+                                        outFmt.getInteger("crop-bottom") - outFmt.getInteger("crop-top") + 1
+                                    } else if (outFmt.containsKey(MediaFormat.KEY_HEIGHT)) {
+                                        outFmt.getInteger(MediaFormat.KEY_HEIGHT)
+                                    } else {
+                                        0
+                                    }
+                                    // MediaCodec rendering directly to a SurfaceTexture/TextureView
+                                    // already applies MediaFormat.KEY_ROTATION automatically on API 21+;
+                                    // avoid double-rotating on top of TextureView's implicit transform.
+                                    onRemoteCodecRotationDegrees(0)
+                                    if (w > 0 && h > 0) {
+                                        onRemoteVideoSizeChanged(w, h)
+                                    }
+                                }
+                            } else if (outIdx >= 0) {
+                                dec.releaseOutputBuffer(outIdx, true)
+                                if (!firstFrameReported) {
+                                    firstFrameReported = true
+                                    onRemoteFirstFrameDecoded()
+                                }
+                            } else {
+                                break
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "Recoverable decoder frame failure, resetting decoder: ${t.message}")
+                        releaseActiveDecoderLocked()
+                        requestPeerKeyframe = true
                     }
-                } catch (t: Throwable) {
-                    Log.w(TAG, "Recoverable decoder frame failure, resetting decoder: ${t.message}")
-                    codecFailed = true
                 }
-                if (codecFailed) {
-                    resetDecoderAndRequestKeyframe()
-                    continue
+                if (requestPeerKeyframe) {
+                    runCatching { Whatsbridge.requestPeerKeyframe(callId) }
                 }
             }
         } catch (t: Throwable) {
             Log.e(TAG, "Video decoder loop error: ${t.message}", t)
             AppLogManager.log("ERROR", TAG, "Video decoder loop error: ${t.message}", t)
         } finally {
-            runCatching { decoder?.stop() }
-            runCatching { decoder?.release() }
+            synchronized(decoderSurfaceLock) {
+                releaseActiveDecoderLocked()
+            }
         }
     }
 

@@ -63,7 +63,8 @@ class CallAudioController(
         runOnMain {
             if (ringingActive) return@runOnMain
             ringingActive = true
-            val ringerMode = audioManager.ringerMode
+            val ringerMode = runCatching { audioManager.ringerMode }
+                .getOrDefault(AudioManager.RINGER_MODE_NORMAL)
             if (ringerMode == AudioManager.RINGER_MODE_NORMAL) {
                 runCatching {
                     val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
@@ -105,7 +106,7 @@ class CallAudioController(
             inCallAudioActive = true
             requestVoiceAudioFocus()
             runCatching { audioManager.isMicrophoneMute = false }
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            runCatching { audioManager.mode = AudioManager.MODE_IN_COMMUNICATION }
             registerPlaybackWatcher()
             registerCommDeviceWatcher()
 
@@ -224,7 +225,7 @@ class CallAudioController(
             @Suppress("DEPRECATION")
             when (route) {
                 CallAudioRoute.BLUETOOTH -> {
-                    audioManager.isSpeakerphoneOn = false
+                    runCatching { audioManager.isSpeakerphoneOn = false }
                     runCatching {
                         audioManager.startBluetoothSco()
                         audioManager.isBluetoothScoOn = true
@@ -235,14 +236,14 @@ class CallAudioController(
                         audioManager.stopBluetoothSco()
                         audioManager.isBluetoothScoOn = false
                     }
-                    audioManager.isSpeakerphoneOn = false
+                    runCatching { audioManager.isSpeakerphoneOn = false }
                 }
                 CallAudioRoute.SPEAKER -> {
                     runCatching {
                         audioManager.stopBluetoothSco()
                         audioManager.isBluetoothScoOn = false
                     }
-                    audioManager.isSpeakerphoneOn = true
+                    runCatching { audioManager.isSpeakerphoneOn = true }
                 }
             }
         }

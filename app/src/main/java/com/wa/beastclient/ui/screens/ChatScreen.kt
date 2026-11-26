@@ -535,11 +535,13 @@ fun ChatScreen(
     }
 
     val initiateCallFor: (ParticipantPopupTarget?, Boolean) -> Unit = { participantTarget, isVideo ->
-        if (stealthConfig.offlineMode) {
+        val targetJid = participantTarget?.jid ?: chatJid
+        if (com.wa.beastclient.core.calling.isMetaAiCallBlocked(targetJid)) {
+            Toast.makeText(context, "This chat doesn't support WhatsApp calls", Toast.LENGTH_SHORT).show()
+        } else if (stealthConfig.offlineMode) {
             Toast.makeText(context, "Disable Offline Mode to place calls", Toast.LENGTH_SHORT).show()
         } else if (stealthConfig.callBackendMode == CallBackendMode.OFF) {
             scope.launch {
-                val targetJid = participantTarget?.jid ?: chatJid
                 pendingSetupOfficialFallbackDigits = if (targetJid.endsWith("@g.us")) "" else resolvePhoneDigitsForJid(targetJid)
                 showCallingSetupDialog = true
             }

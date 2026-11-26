@@ -440,4 +440,39 @@ class CallingEnginePolicyTest {
         assertFalse(isCallStartAllowed(CallPhase.ACTIVE))
         assertFalse(isCallStartAllowed(CallPhase.ENDING))
     }
+
+    @Test
+    fun foregroundServiceTypeFallbackLadderDowngradesCameraThenMicThenPhoneCallToZero() {
+        val phoneBit = 4
+        val micBit = 128
+        val camBit = 64
+        val allBits = phoneBit or micBit or camBit
+        val ladder = buildForegroundServiceTypeFallbackLadder(
+            desiredMask = allBits,
+            phoneCallBit = phoneBit,
+            micBit = micBit,
+            cameraBit = camBit
+        )
+        assertEquals(listOf(allBits, phoneBit or micBit, phoneBit, 0), ladder)
+        assertEquals(listOf(0), buildForegroundServiceTypeFallbackLadder(0, 0, 0, 0))
+    }
+
+    @Test
+    fun metaAiAndSystemEndpointsAreBlockedFromCalling() {
+        assertTrue(isMetaAiCallBlocked("13135550002@s.whatsapp.net"))
+        assertTrue(isMetaAiCallBlocked("13135550002@lid"))
+        assertTrue(isMetaAiCallBlocked("123456@bot"))
+        assertTrue(isMetaAiCallBlocked("1203630123456@newsletter"))
+        assertTrue(isMetaAiCallBlocked("status@broadcast"))
+        assertFalse(isMetaAiCallBlocked("923001112233@s.whatsapp.net"))
+        assertFalse(isMetaAiCallBlocked("120363012345678901@g.us"))
+    }
+
+    @Test
+    fun localPreviewIsFullScreenUntilRemoteVideoArrivesOrWhenSwapped() {
+        assertFalse(shouldShowLocalPreviewAsPip(hasRemoteVideo = false, effectiveSwapped = false))
+        assertFalse(shouldShowLocalPreviewAsPip(hasRemoteVideo = false, effectiveSwapped = true))
+        assertTrue(shouldShowLocalPreviewAsPip(hasRemoteVideo = true, effectiveSwapped = false))
+        assertFalse(shouldShowLocalPreviewAsPip(hasRemoteVideo = true, effectiveSwapped = true))
+    }
 }
