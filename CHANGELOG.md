@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.10-pre.12] - 2026-11-26
+
+### Fixed
+- Fixed outgoing video freezing or disappearing for the other person when toggling your camera off/on or flipping between front and back cameras by keeping video RTP timestamps strictly monotonic across restarts.
+- Fixed front/back camera switching getting stuck by waiting for the active camera lens to finish closing before opening the other lens, with automatic retry if the camera hardware is busy.
+- Fixed voice-to-video call upgrades and incoming video upgrade requests (`UpgradeRequestV2`) by routing audio upgrades to `start_video` and camera re-enable to `resume_video` cleanly.
+- Fixed black or delayed video after connecting or resuming by forcing SPS/PPS+IDR keyframes until accepted and waiting for a fresh keyframe when reopening the remote video decoder.
+
 ## [0.3.10-pre.11] - 2026-11-26
 
 ### ✨ Features

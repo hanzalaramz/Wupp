@@ -513,9 +513,15 @@ object CallStateManager {
                     }
                     audioController?.updateVideoState(true)
                     ensureMediaPipelinesStarted(activeId, startVideo = true)
+                    if (!_uiState.value.isCameraOff) {
+                        videoPipeline?.requestSyncKeyframeBurst()
+                    }
+                    if (activeId.isNotBlank()) {
+                        ioScope.launch { runCatching { Whatsbridge.requestPeerKeyframe(activeId) } }
+                    }
                     appContext?.let { CallForegroundService.sync(it, _uiState.value) }
                 }
-                "UpgradeRequest" -> {
+                "UpgradeRequest", "UpgradeRequestV2" -> {
                     _uiState.update {
                         it.copy(
                             pendingVideoUpgrade = upgradePending,
@@ -525,7 +531,7 @@ object CallStateManager {
                         )
                     }
                 }
-                "UpgradeReject" -> {
+                "UpgradeReject", "UpgradeRejectByTimeout", "UpgradeCancel", "UpgradeCancelByTimeout" -> {
                     _uiState.update { it.copy(pendingVideoUpgrade = false) }
                 }
                 "Paused", "Held", "Disabled", "Stopped" -> {
@@ -651,7 +657,7 @@ object CallStateManager {
                 if (enable) {
                     mainScope.launch {
                         if (_uiState.value.isInProgress && !_uiState.value.isCameraOff) {
-                            videoPipeline?.requestSyncKeyframe()
+                            videoPipeline?.requestSyncKeyframeBurst()
                         }
                     }
                     runCatching { Whatsbridge.requestPeerKeyframe(cur.callId) }
@@ -686,7 +692,7 @@ object CallStateManager {
                 }
                 mainScope.launch {
                     if (_uiState.value.isInProgress && !_uiState.value.isCameraOff) {
-                        videoPipeline?.requestSyncKeyframe()
+                        videoPipeline?.requestSyncKeyframeBurst()
                     }
                 }
                 runCatching { Whatsbridge.requestPeerKeyframe(cur.callId) }
@@ -806,6 +812,9 @@ object CallStateManager {
         audioController?.startInCallAudio(isVideo = videoMode)
         if (effectiveId.isNotBlank()) {
             ensureMediaPipelinesStarted(effectiveId, startVideo = videoMode)
+            if (videoMode && !_uiState.value.isCameraOff) {
+                videoPipeline?.requestSyncKeyframeBurst()
+            }
             if (!wasActive && StealthMatrixManager.config.value.autoRecordCalls && !_uiState.value.isRecording) {
                 toggleCallRecording()
             }

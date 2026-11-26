@@ -199,4 +199,43 @@ class NativeVoipVideoPolicyTest {
         assertTrue(cappedLandscape < fullCropScale)
         assertEquals(exactFit / (1f - 0.28f), cappedLandscape, 0.001f)
     }
+
+    @Test
+    fun computeMonotonicRtpTimestamp90kNeverMovesBackwardsAcrossRestarts() {
+        val t0 = computeMonotonicRtpTimestamp90k(lastTs90k = -1L, elapsedNs = 0L)
+        assertEquals(0L, t0)
+        val t1 = computeMonotonicRtpTimestamp90k(lastTs90k = t0, elapsedNs = 10_000_000_000L)
+        assertEquals(900_000L, t1)
+        // Simulated encoder restart resetting elapsed to 0 must still advance forward
+        val t2 = computeMonotonicRtpTimestamp90k(lastTs90k = t1, elapsedNs = 0L)
+        assertEquals(900_090L, t2)
+        // Normal progression resumes seamlessly once elapsed moves ahead
+        val t3 = computeMonotonicRtpTimestamp90k(lastTs90k = t2, elapsedNs = 11_000_000_000L)
+        assertEquals(990_000L, t3)
+    }
+
+    @Test
+    fun buildOutboundAccessUnitDetectsIdrByNalTypeAndPrependsConfigWithoutDuplicatingSps() {
+        val spsPps = byteArrayOf(0, 0, 0, 1, 0x67, 0x42, 0, 0, 0, 1, 0x68, 0x1E)
+        val idrOnly = byteArrayOf(0, 0, 0, 1, 0x65, 0x88.toByte(), 0x84.toByte())
+        val deltaFrame = byteArrayOf(0, 0, 0, 1, 0x41, 0x9A.toByte())
+
+        // Detects IDR from NAL type 5 even if MediaCodec flag was false, and prepends SPS/PPS
+        val (au1, isIdr1) = buildOutboundAccessUnit(idrOnly, isKeyFlag = false, codecConfigAnnexB = spsPps)
+        assertTrue(isIdr1)
+        assertTrue(annexBContainsNalType(au1, 7))
+        assertTrue(annexBContainsNalType(au1, 5))
+        assertEquals(spsPps.size + idrOnly.size, au1.size)
+
+        // Does not duplicate SPS/PPS when encoder already included SPS inside the frame
+        val alreadyPrefixed = spsPps + idrOnly
+        val (au2, isIdr2) = buildOutboundAccessUnit(alreadyPrefixed, isKeyFlag = true, codecConfigAnnexB = spsPps)
+        assertTrue(isIdr2)
+        assertEquals(alreadyPrefixed.size, au2.size)
+
+        // Delta frame stays untouched
+        val (au3, isIdr3) = buildOutboundAccessUnit(deltaFrame, isKeyFlag = false, codecConfigAnnexB = spsPps)
+        assertFalse(isIdr3)
+        assertEquals(deltaFrame.size, au3.size)
+    }
 }

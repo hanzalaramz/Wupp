@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, Sender};
 use whatsapp_rust::voip::{
@@ -18,6 +18,58 @@ use crate::runtime::{now_secs, BridgeRuntime};
 pub const VOIP_SAMPLE_RATE: usize = 16_000;
 #[allow(dead_code)]
 pub const VOIP_FRAME_SAMPLES: usize = 960; // 60 ms @ 16 kHz mono
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnableVideoAction {
+    AcceptPeerUpgrade,
+    AlreadySending,
+    ReRequestUpgrade,
+    Resume,
+    StartUpgrade,
+}
+
+/// Maps `(has_upgrade_token, handle.video_states())` onto the exact `whatsapp-rust` video
+/// transition method required by `CallRegistry`. Note `video_states()` returns `Some((Disabled, Disabled))`
+/// on active audio-only calls (it is only `None` after the call ends), so inspecting the tuple is essential.
+fn resolve_enable_video_action(
+    has_upgrade_token: bool,
+    states: Option<(VideoState, VideoState)>,
+) -> EnableVideoAction {
+    if has_upgrade_token {
+        return EnableVideoAction::AcceptPeerUpgrade;
+    }
+    match states {
+        Some((VideoState::Enabled, _)) => EnableVideoAction::AlreadySending,
+        Some((self_state, _)) if self_state.is_upgrade_request() => {
+            EnableVideoAction::ReRequestUpgrade
+        }
+        Some((self_state, peer_state))
+            if self_state == VideoState::Stopped
+                || (self_state.is_inactive_for_call_mode()
+                    && !peer_state.is_inactive_for_call_mode()) =>
+        {
+            EnableVideoAction::Resume
+        }
+        _ => EnableVideoAction::StartUpgrade,
+    }
+}
+
+/// Computes a strictly monotonic 90 kHz RTP video timestamp for a call so camera flips or
+/// camera off/on cycles can never send a backwards timestamp that `VideoRtpSequencer::set_timestamp`
+/// would silently drop.
+fn next_monotonic_video_ts_90k(last_ts: Option<u32>, elapsed_90k: u32) -> u32 {
+    match last_ts {
+        None => elapsed_90k,
+        Some(prev) => {
+            let delta = elapsed_90k.wrapping_sub(prev);
+            if delta > 0 && delta < 0x8000_0000 {
+                elapsed_90k
+            } else {
+                prev.wrapping_add(90) // +1 ms strictly forward fallback
+            }
+        }
+    }
+}
 
 struct NativeAudioSource {
     rx: Receiver<Vec<i16>>,
@@ -88,6 +140,8 @@ struct ActiveCall {
     video_capture_tx: RwLock<Option<Sender<TimedVideoFrame>>>,
     video_playout_rx: RwLock<Option<Receiver<VideoFrame>>>,
     video_op_lock: tokio::sync::Mutex<()>,
+    video_clock_start: Instant,
+    last_video_ts_90k: Mutex<Option<u32>>,
     upgrade_token: Mutex<Option<VideoUpgradeToken>>,
 }
 
@@ -372,6 +426,8 @@ impl VoipRegistry {
             video_capture_tx: RwLock::new(vtx_opt),
             video_playout_rx: RwLock::new(vrx_opt),
             video_op_lock: tokio::sync::Mutex::new(()),
+            video_clock_start: Instant::now(),
+            last_video_ts_90k: Mutex::new(None),
             upgrade_token: Mutex::new(None),
         });
 
@@ -438,6 +494,8 @@ impl VoipRegistry {
             video_capture_tx: RwLock::new(vtx_opt),
             video_playout_rx: RwLock::new(vrx_opt),
             video_op_lock: tokio::sync::Mutex::new(()),
+            video_clock_start: Instant::now(),
+            last_video_ts_90k: Mutex::new(None),
             upgrade_token: Mutex::new(None),
         });
 
@@ -552,8 +610,38 @@ impl VoipRegistry {
                 .stop_video()
                 .await
                 .map_err(|e| format!("stop_video failed: {e}"))?;
-            call.is_video.store(false, Ordering::SeqCst);
+            let still_video = call
+                .handle
+                .video_states()
+                .is_some_and(|(s, p)| !s.is_inactive_for_call_mode() || !p.is_inactive_for_call_mode());
+            call.is_video.store(still_video, Ordering::SeqCst);
             return Ok(());
+        }
+
+        let mut token = call
+            .upgrade_token
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let action = resolve_enable_video_action(token.is_some(), call.handle.video_states());
+
+        match action {
+            EnableVideoAction::AlreadySending => {
+                // Local video is already enabled and streaming; preserve existing channels cleanly.
+                call.is_video.store(true, Ordering::SeqCst);
+                return Ok(());
+            }
+            EnableVideoAction::ReRequestUpgrade => {
+                call.handle
+                    .re_request_video_upgrade()
+                    .await
+                    .map_err(|e| format!("re_request_video_upgrade failed: {e}"))?;
+                call.is_video.store(true, Ordering::SeqCst);
+                return Ok(());
+            }
+            EnableVideoAction::AcceptPeerUpgrade
+            | EnableVideoAction::Resume
+            | EnableVideoAction::StartUpgrade => {}
         }
 
         let (vtx, vrx, vsrc, vsink) = new_video_channels();
@@ -568,17 +656,41 @@ impl VoipRegistry {
             .unwrap_or_else(|e| e.into_inner())
             .replace(vrx);
 
-        let token = call
-            .upgrade_token
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
-        let res = if let Some(tok) = token {
-            call.handle.accept_video(tok, vsrc, vsink).await
-        } else if call.handle.video_states().is_some() {
-            call.handle.resume_video(vsrc, vsink).await
-        } else {
-            call.handle.start_video(vsrc, vsink).await
+        let res = match action {
+            EnableVideoAction::AcceptPeerUpgrade => {
+                let tok = token.take().expect("token checked above");
+                match call.handle.accept_video(tok, vsrc, vsink).await {
+                    Ok(()) => Ok(()),
+                    Err(first_err) => {
+                        // If the peer's upgrade token expired while the user tapped, fall back cleanly
+                        // to resuming or initiating a fresh video upgrade with fresh channels.
+                        let fallback = resolve_enable_video_action(false, call.handle.video_states());
+                        match fallback {
+                            EnableVideoAction::AlreadySending => Ok(()),
+                            EnableVideoAction::Resume | EnableVideoAction::StartUpgrade => {
+                                let (vtx2, vrx2, vsrc2, vsink2) = new_video_channels();
+                                *call
+                                    .video_capture_tx
+                                    .write()
+                                    .unwrap_or_else(|e| e.into_inner()) = Some(vtx2);
+                                *call
+                                    .video_playout_rx
+                                    .write()
+                                    .unwrap_or_else(|e| e.into_inner()) = Some(vrx2);
+                                if fallback == EnableVideoAction::Resume {
+                                    call.handle.resume_video(vsrc2, vsink2).await
+                                } else {
+                                    call.handle.start_video(vsrc2, vsink2).await
+                                }
+                            }
+                            _ => Err(first_err),
+                        }
+                    }
+                }
+            }
+            EnableVideoAction::Resume => call.handle.resume_video(vsrc, vsink).await,
+            EnableVideoAction::StartUpgrade => call.handle.start_video(vsrc, vsink).await,
+            EnableVideoAction::AlreadySending | EnableVideoAction::ReRequestUpgrade => unreachable!(),
         };
 
         if let Err(e) = res {
@@ -663,7 +775,7 @@ impl VoipRegistry {
         }
     }
 
-    pub fn push_video_au(&self, call_id: &str, data: Vec<u8>, ts_90k: u32) -> i32 {
+    pub fn push_video_au(&self, call_id: &str, data: Vec<u8>, _ts_90k: u32) -> i32 {
         let Some(call) = self.get_active_call(call_id) else {
             return -1;
         };
@@ -678,9 +790,21 @@ impl VoipRegistry {
         let Some(tx) = tx_opt else {
             return 0;
         };
+        // Drive RTP timestamps from a single per-call monotonic 90 kHz clock so flipping cameras or
+        // toggling camera off/on can never jump backwards and cause whatsapp-rust's RTP sequencer to drop frames.
+        let elapsed_90k = ((call.video_clock_start.elapsed().as_micros() * 90) / 1000) as u32;
+        let monotonic_ts = {
+            let mut guard = call
+                .last_video_ts_90k
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let next = next_monotonic_video_ts_90k(*guard, elapsed_90k);
+            *guard = Some(next);
+            next
+        };
         let frame = TimedVideoFrame::builder()
             .data(data)
-            .timestamp(ts_90k)
+            .timestamp(monotonic_ts)
             .build();
         match tx.try_send(frame) {
             Ok(()) => 1,
@@ -790,14 +914,14 @@ fn spawn_call_monitor(runtime: Arc<BridgeRuntime>, call: Arc<ActiveCall>) {
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner()) = Some(tok);
                         }
-                        if matches!(
-                            state,
-                            VideoState::Enabled | VideoState::UpgradeAccept
-                        ) {
-                            call_clone.is_video.store(true, Ordering::SeqCst);
-                        } else if state.is_inactive_for_call_mode() {
-                            call_clone.is_video.store(false, Ordering::SeqCst);
-                        }
+                        let either_video = call_clone
+                            .handle
+                            .video_states()
+                            .map(|(s, p)| !s.is_inactive_for_call_mode() || !p.is_inactive_for_call_mode())
+                            .unwrap_or_else(|| {
+                                matches!(state, VideoState::Enabled | VideoState::UpgradeAccept)
+                            });
+                        call_clone.is_video.store(either_video, Ordering::SeqCst);
                         rt_clone.emit_json(
                             "CALL_VIDEO_STATE",
                             serde_json::json!({
@@ -805,7 +929,7 @@ fn spawn_call_monitor(runtime: Arc<BridgeRuntime>, call: Arc<ActiveCall>) {
                                 "state": format!("{state:?}"),
                                 "orientation": orientation,
                                 "hasToken": has_token,
-                                "isVideo": call_clone.is_video.load(Ordering::Relaxed),
+                                "isVideo": either_video,
                             }),
                         );
                     }
@@ -844,4 +968,63 @@ fn spawn_call_monitor(runtime: Arc<BridgeRuntime>, call: Arc<ActiveCall>) {
             }),
         );
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enable_video_action_distinguishes_audio_upgrade_from_resume_and_already_sending() {
+        // Audio-only call upgrading to video must use start_video(), NOT resume_video()
+        assert_eq!(
+            resolve_enable_video_action(false, Some((VideoState::Disabled, VideoState::Disabled))),
+            EnableVideoAction::StartUpgrade
+        );
+        // Video call after turning local camera off -> on uses resume_video()
+        assert_eq!(
+            resolve_enable_video_action(false, Some((VideoState::Stopped, VideoState::Enabled))),
+            EnableVideoAction::Resume
+        );
+        assert_eq!(
+            resolve_enable_video_action(false, Some((VideoState::Stopped, VideoState::Stopped))),
+            EnableVideoAction::Resume
+        );
+        // Peer already sending video while our camera started off -> resume_video()
+        assert_eq!(
+            resolve_enable_video_action(false, Some((VideoState::Disabled, VideoState::Enabled))),
+            EnableVideoAction::Resume
+        );
+        // Already sending -> no-op so existing channels stay intact
+        assert_eq!(
+            resolve_enable_video_action(false, Some((VideoState::Enabled, VideoState::Enabled))),
+            EnableVideoAction::AlreadySending
+        );
+        // Upgrade already in flight -> re-request
+        assert_eq!(
+            resolve_enable_video_action(false, Some((VideoState::UpgradeRequestV2, VideoState::Disabled))),
+            EnableVideoAction::ReRequestUpgrade
+        );
+        // Pending peer upgrade token -> accept_video()
+        assert_eq!(
+            resolve_enable_video_action(true, Some((VideoState::Disabled, VideoState::UpgradeRequestV2))),
+            EnableVideoAction::AcceptPeerUpgrade
+        );
+    }
+
+    #[test]
+    fn monotonic_video_timestamp_never_goes_backwards_or_repeats() {
+        let first = next_monotonic_video_ts_90k(None, 0);
+        assert_eq!(first, 0);
+        let second = next_monotonic_video_ts_90k(Some(first), 3_000);
+        assert_eq!(second, 3_000);
+        // Duplicate or backwards timestamp (e.g. encoder restart) steps strictly forward
+        let dup = next_monotonic_video_ts_90k(Some(900_000), 900_000);
+        assert_eq!(dup, 900_090);
+        let backwards = next_monotonic_video_ts_90k(Some(900_000), 0);
+        assert_eq!(backwards, 900_090);
+        // Normal forward jump after pause preserves wall-clock progression
+        let resumed = next_monotonic_video_ts_90k(Some(900_000), 3_600_000);
+        assert_eq!(resumed, 3_600_000);
+    }
 }
