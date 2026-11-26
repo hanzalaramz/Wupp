@@ -706,7 +706,7 @@ interface WaDao {
             media_sha256 = :sha256,
             file_size = CASE WHEN :fileSize > 0 THEN :fileSize ELSE file_size END,
             waveform_csv = CASE WHEN :waveformCsv != '' THEN :waveformCsv ELSE waveform_csv END,
-            view_once_state = CASE WHEN is_view_once = 1 THEN 'AVAILABLE' ELSE view_once_state END
+            view_once_state = CASE WHEN is_view_once = 1 AND view_once_state != 'STRIPPED' THEN 'AVAILABLE' ELSE view_once_state END
         WHERE id = :messageId
         """
     )
@@ -1305,6 +1305,7 @@ interface WaDao {
                 java.io.File(existing.localMediaPath).let { it.exists() && it.length() > 0L }
             val resolvedVo = effectiveMessage.isViewOnce || existing.isViewOnce
             val resolvedVoState = when {
+                existing.viewOnceState == "STRIPPED" -> "STRIPPED"
                 existingHasFile && resolvedVo -> "AVAILABLE"
                 effectiveMessage.viewOnceState != "NONE" -> effectiveMessage.viewOnceState
                 else -> existing.viewOnceState
@@ -1540,6 +1541,27 @@ interface WaDao {
         }
     }
 
+    @Transaction
+    suspend fun markViewOnceOpened(messageId: String) {
+        val existing = getMessage(messageId) ?: return
+        if (!existing.isViewOnce) return
+        val updated = existing.copy(
+            viewOnceState = "STRIPPED",
+            deliveryStatus = if (existing.isFromMe) existing.deliveryStatus else "PLAYED",
+            playedAt = if (!existing.isFromMe && existing.playedAt == 0L) System.currentTimeMillis() else existing.playedAt
+        )
+        upsertMessage(updated)
+        val chat = getChat(existing.chatJid)
+        if (chat != null && chat.lastMessageId == messageId) {
+            upsertChat(
+                chat.copy(
+                    lastMessagePreview = previewTextFor(updated),
+                    lastMessageType = "VIEW_ONCE_${updated.msgType}"
+                )
+            )
+        }
+    }
+
     companion object {
         fun deliveryRank(status: String): Int = when (status.uppercase()) {
             "PLAYED" -> 4
@@ -1574,8 +1596,8 @@ interface WaDao {
         }
 
         fun previewTextFor(msg: MessageEntity): String {
-            val voStripped = (msg.viewOnceState == "STRIPPED" || msg.msgType == "VIEW_ONCE_STRIPPED") &&
-                msg.localMediaPath.isNullOrBlank()
+            val voStripped = (msg.isViewOnce && msg.viewOnceState == "STRIPPED") ||
+                msg.msgType == "VIEW_ONCE_STRIPPED"
             return when {
                 msg.isDeletedBySender -> "🚫 ${msg.body.ifBlank { "Deleted message" }}"
                 voStripped -> when (msg.msgType) {

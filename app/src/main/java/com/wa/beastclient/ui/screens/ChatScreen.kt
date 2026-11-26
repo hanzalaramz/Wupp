@@ -2200,7 +2200,12 @@ fun ChatScreen(
                                         onManualSendPlayedReceipt = { viewModel.markAudioPlayedExplicitly(msg) },
                                         onAutoRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = false) },
                                         onRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = true) },
-                                        onOpenMedia = { mediaLightboxTarget = msg },
+                                        onOpenMedia = {
+                                            mediaLightboxTarget = msg
+                                            if (msg.isViewOnce && msg.viewOnceState != "STRIPPED") {
+                                                viewModel.markViewOnceOpened(msg)
+                                            }
+                                        },
                                         onOpenSticker = { activeStickerActionMsg = msg },
                                         onOpenDocument = handleOpenDocument,
                                         onSaveDocument = handleSaveDocument,
@@ -2246,7 +2251,12 @@ fun ChatScreen(
                                             onManualSendPlayedReceipt = { viewModel.markAudioPlayedExplicitly(msg) },
                                             onAutoRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = false) },
                                             onRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = true) },
-                                            onOpenMedia = { mediaLightboxTarget = msg },
+                                            onOpenMedia = {
+                                            mediaLightboxTarget = msg
+                                            if (msg.isViewOnce && msg.viewOnceState != "STRIPPED") {
+                                                viewModel.markViewOnceOpened(msg)
+                                            }
+                                        },
                                             onOpenSticker = { activeStickerActionMsg = msg },
                                             onOpenDocument = handleOpenDocument,
                                             onSaveDocument = handleSaveDocument,
@@ -5314,6 +5324,35 @@ private fun MessageBubbleRow(
         !msg.localMediaPath.isNullOrBlank() &&
             File(msg.localMediaPath).let { it.exists() && it.length() > 0L }
     }
+    val isViewOnceOpened = msg.viewOnceState == "STRIPPED" || msg.msgType == "VIEW_ONCE_STRIPPED"
+    val isViewOnceStub = msg.msgType == "VIEW_ONCE_STRIPPED" ||
+        msg.mimeType.equals("application/x-view-once-stub", ignoreCase = true)
+    val handleViewOnceTap: () -> Unit = {
+        when {
+            !isViewOnceOpened && hasVaultFile -> onOpenMedia()
+            !isViewOnceOpened && isViewOnceStub -> Toast.makeText(
+                context,
+                "WhatsApp restricted this view-once message to your primary phone",
+                Toast.LENGTH_SHORT
+            ).show()
+            !isViewOnceOpened && isDownloadingMedia -> Toast.makeText(
+                context,
+                "Downloading view-once media...",
+                Toast.LENGTH_SHORT
+            ).show()
+            !isViewOnceOpened -> onRequestDownload()
+            hasVaultFile -> Toast.makeText(
+                context,
+                "Opened · saved in Gallery & Media Vault",
+                Toast.LENGTH_SHORT
+            ).show()
+            else -> Toast.makeText(
+                context,
+                "Already opened on phone",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
     val isDocCard = remember(msg.id, msg.msgType, msg.mimeType, msg.body, msg.isViewOnce, msg.isDeletedBySender) {
         isDocumentMessage(msg)
     }
@@ -5457,13 +5496,7 @@ private fun MessageBubbleRow(
                         }
                         when {
                             msg.isEdited -> onClickEditBadge()
-                            msg.isViewOnce || msg.msgType == "VIEW_ONCE_STRIPPED" || msg.viewOnceState == "STRIPPED" -> {
-                                Toast.makeText(
-                                    context,
-                                    "For added privacy, you can only open this view once message on your phone",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
+                            msg.isViewOnce || msg.msgType == "VIEW_ONCE_STRIPPED" || msg.viewOnceState == "STRIPPED" -> handleViewOnceTap()
                         isDocCard -> if (hasVaultFile) onOpenDocument() else onRequestDownload()
                         !msg.localMediaPath.isNullOrBlank() && msg.msgType != "PTT" && msg.msgType != "AUDIO" -> onOpenMedia()
                         msg.msgType == "IMAGE" || msg.msgType == "VIDEO" || msg.msgType == "GIF" -> onRequestDownload()
@@ -5763,16 +5796,28 @@ private fun MessageBubbleRow(
 
                 when {
                     // Already opened / stripped View-Once
-                    msg.viewOnceState == "STRIPPED" || msg.msgType == "VIEW_ONCE_STRIPPED" -> {
+                    isViewOnceOpened -> {
                         val voSubType = when (msg.msgType.uppercase()) {
                             "VIDEO" -> " · Video"
                             "PTT", "AUDIO" -> " · Voice message"
                             "IMAGE" -> " · Photo"
                             else -> ""
                         }
+                        val openedSubLabel = when {
+                            hasVaultFile && (msg.msgType == "IMAGE" || msg.msgType == "VIDEO") -> "Opened · Saved in Gallery"
+                            hasVaultFile -> "Opened · Saved"
+                            else -> "Opened on phone"
+                        }
                         Row(
                             modifier = Modifier
                                 .widthIn(min = 175.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .combinedClickable(
+                                    onClick = {
+                                        if (isSelectionMode) onToggleSelect() else handleViewOnceTap()
+                                    },
+                                    onLongClick = onLongPress
+                                )
                                 .padding(horizontal = 2.dp, vertical = 3.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -5800,7 +5845,7 @@ private fun MessageBubbleRow(
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    text = "Opened on phone",
+                                    text = openedSubLabel,
                                     color = colors.textSecondary.copy(alpha = 0.78f),
                                     fontSize = 11.5.sp
                                 )
@@ -5819,7 +5864,7 @@ private fun MessageBubbleRow(
                         }
                     }
 
-                    // Active View-Once (Photo, Video, Voice message -> concise companion notice)
+                    // Active View-Once (Photo, Video, Voice message)
                     msg.isViewOnce -> {
                         val voLabel = when (msg.msgType.uppercase()) {
                             "VIDEO" -> "Video"
@@ -5827,22 +5872,22 @@ private fun MessageBubbleRow(
                             else -> "Photo"
                         }
                         val tintColor = if (effectiveOutgoing) colors.textPrimary else colors.brightGreen
-                        val subLabel = if (msg.durationSec > 0) "${formatVideoDuration(msg.durationSec)} · Open on phone" else "Open on phone"
+                        val subLabel = when {
+                            isViewOnceStub -> "Open on phone"
+                            hasVaultFile && (msg.msgType == "PTT" || msg.msgType == "AUDIO") ->
+                                "${formatVideoDuration(msg.durationSec)} · Tap to play"
+                            hasVaultFile -> "Tap to view · Saved in Gallery"
+                            isDownloadingMedia -> "Downloading..."
+                            msg.durationSec > 0 -> "${formatVideoDuration(msg.durationSec)} · Tap to download"
+                            else -> "Tap to download"
+                        }
                         Row(
                             modifier = Modifier
                                 .widthIn(min = 185.dp)
                                 .clip(RoundedCornerShape(10.dp))
                                 .combinedClickable(
                                     onClick = {
-                                        if (isSelectionMode) {
-                                            onToggleSelect()
-                                        } else {
-                                            Toast.makeText(
-                                                context,
-                                                "For added privacy, you can only open this view once message on your phone",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        }
+                                        if (isSelectionMode) onToggleSelect() else handleViewOnceTap()
                                     },
                                     onLongClick = onLongPress
                                 )
@@ -5857,12 +5902,20 @@ private fun MessageBubbleRow(
                                     .border(0.65.dp, tintColor.copy(alpha = 0.34f), CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(
-                                    painter = painterResource(R.drawable.vec_ic_view_once),
-                                    contentDescription = "View once $voLabel",
-                                    tint = tintColor,
-                                    modifier = Modifier.size(19.dp)
-                                )
+                                if (isDownloadingMedia && !hasVaultFile && !isViewOnceStub) {
+                                    CircularProgressIndicator(
+                                        strokeWidth = 2.dp,
+                                        color = tintColor,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                } else {
+                                    Icon(
+                                        painter = painterResource(R.drawable.vec_ic_view_once),
+                                        contentDescription = "View once $voLabel",
+                                        tint = tintColor,
+                                        modifier = Modifier.size(19.dp)
+                                    )
+                                }
                             }
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {

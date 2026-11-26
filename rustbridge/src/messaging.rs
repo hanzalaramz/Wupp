@@ -266,8 +266,12 @@ pub async fn normalize_message(
 
     let mut local_media_path = String::new();
     let was_wanted = runtime.take_wanted_media(&msg_id);
+    let has_view_once_keys = meta_opt
+        .as_ref()
+        .is_some_and(|m| m.media_key.len() == 32 && !m.direct_path.is_empty());
     if let Some(meta) = meta_opt {
-        if !is_view_once {
+        let has_meta = !meta.media_key.is_empty() || !meta.direct_path.is_empty();
+        if has_meta {
             if let Some(shared) = runtime.shared_db_arc() {
                 let _ = upsert_media_meta(&shared, meta.clone()).await;
             }
@@ -299,7 +303,7 @@ pub async fn normalize_message(
                             "localPath": existing,
                             "sha256": "",
                             "fileSize": fsize,
-                            "isViewOnce": false,
+                            "isViewOnce": is_view_once,
                             "isStatus": is_status,
                             "isHistorical": from_history,
                             "isFromMe": info.source.is_from_me,
@@ -311,13 +315,27 @@ pub async fn normalize_message(
                 }
             } else if !files_dir.is_empty()
                 && (was_wanted
-                    || (!from_history && runtime.is_auto_download_enabled_for_chat(&meta.msg_type, &chat_jid))
-                    || (from_history
-                        && is_status
-                        && meta.msg_type == "IMAGE"
-                        && runtime.is_auto_download_enabled_for_chat("IMAGE", &chat_jid)))
+                    || (is_view_once
+                        && !from_history
+                        && !info.source.is_from_me
+                        && meta.media_key.len() == 32
+                        && !meta.direct_path.is_empty())
+                    || (!is_view_once
+                        && ((!from_history
+                            && runtime.is_auto_download_enabled_for_chat(&meta.msg_type, &chat_jid))
+                            || (from_history
+                                && is_status
+                                && meta.msg_type == "IMAGE"
+                                && runtime.is_auto_download_enabled_for_chat("IMAGE", &chat_jid)))))
             {
-                spawn_auto_download(Arc::clone(runtime), meta, false, is_status, from_history, None);
+                spawn_auto_download(
+                    Arc::clone(runtime),
+                    meta,
+                    is_view_once,
+                    is_status,
+                    from_history,
+                    None,
+                );
             }
         }
     }
@@ -343,7 +361,15 @@ pub async fn normalize_message(
         "waveformCsv": waveform_csv,
         "deliveryStatus": if info.source.is_from_me { "SENT" } else { "DELIVERED" },
         "isViewOnce": is_view_once,
-        "viewOnceState": if is_view_once { "PENDING" } else { "NONE" },
+        "viewOnceState": if is_view_once {
+            if !local_media_path.is_empty() || has_view_once_keys {
+                "AVAILABLE"
+            } else {
+                "PENDING"
+            }
+        } else {
+            "NONE"
+        },
         "isEphemeral": is_ephemeral,
         "ephemeralDuration": eph_sec,
         "quotedId": quoted_id,
@@ -972,13 +998,21 @@ fn spawn_auto_download(
                     }
                 }
                 if is_view_once {
-                    rt_dl.emit_json(
-                        "VIEW_ONCE_EXPIRED",
-                        json!({
-                            "messageId": meta.message_id,
-                            "mediaType": meta.msg_type,
-                        }),
-                    );
+                    let err_lower = e.to_ascii_lowercase();
+                    if err_lower.contains("404")
+                        || err_lower.contains("410")
+                        || err_lower.contains("expired")
+                        || err_lower.contains("invalid 32-byte")
+                        || err_lower.contains("not found")
+                    {
+                        rt_dl.emit_json(
+                            "VIEW_ONCE_EXPIRED",
+                            json!({
+                                "messageId": meta.message_id,
+                                "mediaType": meta.msg_type,
+                            }),
+                        );
+                    }
                 }
                 rt_dl.emit_json(
                     "MEDIA_DOWNLOAD_STATUS",

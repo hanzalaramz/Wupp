@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.10-pre.11] - 2026-11-26
+
+### ✨ Features
+- Unlocked incoming View-Once photos, videos, and voice notes directly inside Wupp whenever the sender sends media keys, automatically saving them to your Gallery and marking them Opened when viewed (with an `"Open on phone"` fallback when WhatsApp withholds keys).
+
 ## [0.3.10-pre.10] - 2026-11-26
 
 ### Fixed

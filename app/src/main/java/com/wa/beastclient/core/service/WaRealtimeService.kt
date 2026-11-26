@@ -1455,10 +1455,22 @@ class WaRealtimeService : Service() {
             msg.mimeType.startsWith("video/", ignoreCase = true) ||
             msg.mimeType.startsWith("audio/", ignoreCase = true) ||
             msg.mimeType.startsWith("application/", ignoreCase = true)
-        if (insertedNew && isMedia && msg.localMediaPath.isNullOrBlank() && !msg.isFromMe && !msg.isViewOnce && msg.viewOnceState != "STRIPPED") {
-            if (StealthMatrixManager.isAutoDownloadAllowed(applicationContext, msg.msgType, msg.mimeType, chatJid = msg.chatJid)) {
+        if (insertedNew && isMedia && msg.localMediaPath.isNullOrBlank() && !msg.isFromMe && !isViewOnceBlockedDownload(msg)) {
+            if (msg.isViewOnce ||
+                StealthMatrixManager.isAutoDownloadAllowed(applicationContext, msg.msgType, msg.mimeType, chatJid = msg.chatJid)
+            ) {
                 requestMediaDownload(applicationContext, msg, userInitiated = false)
             }
+        } else if (msg.isViewOnce && !msg.isFromMe && !msg.localMediaPath.isNullOrBlank()) {
+            exportIncomingMediaToGalleryIfEligible(
+                context = applicationContext,
+                msg = msg,
+                localPath = msg.localMediaPath,
+                mediaType = msg.msgType,
+                mimeType = msg.mimeType,
+                isHistorical = isSync,
+                isFromMe = msg.isFromMe
+            )
         }
         if (insertedNew && !isSync && !msg.isFromMe && !isActiveChat && !msg.chatJid.endsWith("@newsletter")) {
             if (!suppressHiddenAlerts) {
@@ -1865,31 +1877,16 @@ class WaRealtimeService : Service() {
                 durationSec = msg.durationSec,
                 existingWaveformCsv = waveformCsv.ifBlank { msg.waveformCsv }
             )
-        } else if (
-            msg != null &&
-            !isHistorical &&
-            !isFromMe &&
-            !msg.isViewOnce &&
-            !msg.chatJid.endsWith("@newsletter") &&
-            (mediaType == "IMAGE" || mediaType == "VIDEO" || msg.msgType == "IMAGE" || msg.msgType == "VIDEO") &&
-            StealthMatrixManager.shouldShowChatMediaInGallery(msg.chatJid, msg.senderJid)
-        ) {
-            val vaultFile = File(localPath)
-            if (vaultFile.exists() && vaultFile.length() > 0L) {
-                val galleryPrefs = AccountManager.getScopedPreferences(applicationContext, "wupp_gallery_exported")
-                val exportKey = "exp_$messageId"
-                if (!galleryPrefs.getBoolean(exportKey, false)) {
-                    val resolvedMime = mimeType.ifBlank { msg.mimeType }.ifBlank {
-                        if (msg.msgType == "VIDEO" || mediaType == "VIDEO") "video/mp4" else "image/jpeg"
-                    }
-                    val ext = if (resolvedMime.startsWith("video/", ignoreCase = true)) "mp4" else "jpg"
-                    val displayName = "Wupp_${messageId.take(12)}.$ext"
-                    EagerMediaVault.exportToGallery(applicationContext, vaultFile, displayName, resolvedMime)
-                        .onSuccess {
-                            galleryPrefs.edit().putBoolean(exportKey, true).apply()
-                        }
-                }
-            }
+        } else if (msg != null) {
+            exportIncomingMediaToGalleryIfEligible(
+                context = applicationContext,
+                msg = msg,
+                localPath = localPath,
+                mediaType = mediaType,
+                mimeType = mimeType,
+                isHistorical = isHistorical,
+                isFromMe = isFromMe
+            )
         }
     }
 
@@ -2404,6 +2401,15 @@ class WaRealtimeService : Service() {
         val ephSec = json.optInt("ephemeralDuration", 0)
         val isFromMe = json.optBoolean("isFromMe", false)
         val defaultStatus = if (isFromMe) "SENT" else "DELIVERED"
+        val existingMediaPath = json.optString("mediaPath")
+            .takeIf { it.isNotBlank() && File(it).let { f -> f.exists() && f.length() > 0L } }
+        val isViewOnce = json.optBoolean("isViewOnce", false)
+        val rawVoState = json.optString("viewOnceState", "NONE")
+        val resolvedVoState = if (isViewOnce && existingMediaPath != null && rawVoState != "STRIPPED") {
+            "AVAILABLE"
+        } else {
+            rawVoState
+        }
         return MessageEntity(
             id = json.optString("id"),
             chatJid = json.optString("chatJid"),
@@ -2414,11 +2420,12 @@ class WaRealtimeService : Service() {
             body = body,
             msgType = json.optString("msgType", "TEXT"),
             mimeType = json.optString("mimeType"),
+            localMediaPath = existingMediaPath,
             durationSec = json.optInt("durationSec", 0),
             fileSize = json.optLong("fileSize", 0L),
             deliveryStatus = json.optString("deliveryStatus").ifBlank { defaultStatus },
-            isViewOnce = json.optBoolean("isViewOnce", false),
-            viewOnceState = json.optString("viewOnceState", "NONE"),
+            isViewOnce = isViewOnce,
+            viewOnceState = resolvedVoState,
             isEphemeral = json.optBoolean("isEphemeral", false) || ephSec > 0,
             ephemeralDuration = ephSec,
             quotedId = json.optString("quotedId").ifBlank { null },
@@ -3239,15 +3246,61 @@ class WaRealtimeService : Service() {
 
         private val downloadingStartedAtMs = ConcurrentHashMap<String, Long>()
 
+        internal fun isViewOnceBlockedDownload(msg: MessageEntity): Boolean =
+            msg.msgType == "VIEW_ONCE_STRIPPED" ||
+                msg.mimeType.equals("application/x-view-once-stub", ignoreCase = true) ||
+                (msg.isViewOnce && msg.viewOnceState == "STRIPPED")
+
+        internal suspend fun exportIncomingMediaToGalleryIfEligible(
+            context: Context,
+            msg: MessageEntity,
+            localPath: String,
+            mediaType: String,
+            mimeType: String,
+            isHistorical: Boolean,
+            isFromMe: Boolean
+        ) {
+            if (isFromMe || msg.chatJid.endsWith("@newsletter")) return
+            val isImageOrVideo = mediaType == "IMAGE" || mediaType == "VIDEO" ||
+                msg.msgType == "IMAGE" || msg.msgType == "VIDEO" ||
+                mimeType.startsWith("image/", ignoreCase = true) ||
+                mimeType.startsWith("video/", ignoreCase = true)
+            if (!isImageOrVideo) return
+
+            if (!msg.isViewOnce) {
+                if (isHistorical) return
+                if (!StealthMatrixManager.shouldShowChatMediaInGallery(msg.chatJid, msg.senderJid)) return
+            }
+
+            val vaultFile = File(localPath)
+            if (!vaultFile.exists() || vaultFile.length() <= 0L) return
+            val galleryPrefs = AccountManager.getScopedPreferences(context.applicationContext, "wupp_gallery_exported")
+            val exportKey = "exp_${msg.id}"
+            if (galleryPrefs.getBoolean(exportKey, false)) return
+
+            val resolvedMime = mimeType.ifBlank { msg.mimeType }.ifBlank {
+                if (msg.msgType == "VIDEO" || mediaType == "VIDEO") "video/mp4" else "image/jpeg"
+            }
+            val ext = if (resolvedMime.startsWith("video/", ignoreCase = true)) "mp4" else "jpg"
+            val prefix = if (msg.isViewOnce) "WA_ViewOnce" else "Wupp"
+            val displayName = "${prefix}_${msg.id.take(12)}.$ext"
+            EagerMediaVault.exportToGallery(context.applicationContext, vaultFile, displayName, resolvedMime)
+                .onSuccess {
+                    galleryPrefs.edit().putBoolean(exportKey, true).apply()
+                }
+        }
+
         fun requestMediaDownload(context: Context, msg: MessageEntity, userInitiated: Boolean = true) {
             if (msg.id.isBlank()) return
-            if (msg.isViewOnce || msg.msgType == "VIEW_ONCE_STRIPPED" || msg.viewOnceState == "STRIPPED") return
+            if (isViewOnceBlockedDownload(msg)) return
             val nowMs = System.currentTimeMillis()
             val alreadyDownloading = _downloadingMediaIds.value.contains(msg.id)
             val elapsedMs = downloadingStartedAtMs[msg.id]?.let { nowMs - it } ?: Long.MAX_VALUE
             if (!shouldAllowMediaDownloadRequest(alreadyDownloading, userInitiated, elapsedMs)) return
             if (!userInitiated && _failedMediaIds.value.containsKey(msg.id)) return
-            if (!userInitiated && !StealthMatrixManager.isAutoDownloadAllowed(context, msg.msgType, msg.mimeType, chatJid = msg.chatJid)) return
+            if (!userInitiated && !msg.isViewOnce &&
+                !StealthMatrixManager.isAutoDownloadAllowed(context, msg.msgType, msg.mimeType, chatJid = msg.chatJid)
+            ) return
 
             val appCtx = context.applicationContext
             downloadingStartedAtMs[msg.id] = nowMs
@@ -4159,6 +4212,26 @@ class WaRealtimeService : Service() {
                     Unit
                 }
             }
+
+        fun markViewOnceOpened(context: Context, msg: MessageEntity) {
+            if (msg.id.isBlank() || !msg.isViewOnce) return
+            val appCtx = context.applicationContext
+            companionScope.launch {
+                val dao = WaUiDatabase.getInstance(appCtx).waDao()
+                dao.markViewOnceOpened(msg.id)
+                if (!msg.isFromMe &&
+                    !StealthMatrixManager.config.value.offlineMode &&
+                    runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)
+                ) {
+                    val senderParam = if (msg.chatJid.endsWith("@g.us")) msg.senderJid else ""
+                    runCatching {
+                        Whatsbridge.sendPlayedReceiptManual(msg.chatJid, senderParam, msg.id)
+                    }.onFailure {
+                        Log.w(TAG, "markViewOnceOpened receipt failed for ${msg.id}: ${it.message}")
+                    }
+                }
+            }
+        }
 
         suspend fun sendChatPresence(
             context: Context,
