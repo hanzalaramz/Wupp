@@ -800,6 +800,9 @@ interface WaDao {
     @Query("SELECT * FROM message_reactions WHERE message_id = :messageId ORDER BY updated_at ASC, actor ASC")
     suspend fun getReactionsFor(messageId: String): List<MessageReactionEntity>
 
+    @Query("SELECT * FROM message_reactions WHERE message_id = :messageId ORDER BY updated_at DESC, actor ASC")
+    fun observeReactionsFor(messageId: String): Flow<List<MessageReactionEntity>>
+
     @Query("SELECT emoji FROM message_reactions WHERE message_id = :messageId AND actor = 'me' LIMIT 1")
     suspend fun getMyReaction(messageId: String): String?
 

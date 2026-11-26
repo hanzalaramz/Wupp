@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.10-pre.3] - 2026-11-26
+
+### ✨ Features
+- Redesigned chat headers, composer bar, and buttons as smooth borderless frosted glass with group member names under the group title.
+- Rebuilt the `+` attachment menu as a clean dark grid with Gallery, Camera capture, Document, Contact, Audio, Stickers, Wallpaper, Privacy, Schedule message, and HD quality controls.
+- Added tap-to-view reaction details showing who reacted to a message, with quick emoji filtering and tap-to-remove for your own reaction.
+- Added bubble-anchored floating emoji reactions and frosted message options popups, an `HD` badge on high-res videos and photos, and quick-forward buttons beside media messages.
+
+### 🛠️ Fixes
+- Fixed video previews showing solid black frames by probing non-black keyframes and software bitmaps cleanly.
+- Auto-adjusted photo and video bubble widths and heights to fit their real aspect ratio, and fixed stretched quoted video thumbnails.
+- Upgraded voice note waveforms to show natural speech peaks from audio packet energy instead of flat bars, and made message timestamps and durations larger and easier to read.
+- Improved dark and AMOLED chat bubble contrast, bottom bubble tails, and quoted media/view-once icons.
+
 ## [0.3.10-pre.2] - 2026-11-26
 
 ### ✨ Features

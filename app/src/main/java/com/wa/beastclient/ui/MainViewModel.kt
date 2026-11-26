@@ -23,6 +23,7 @@ import com.wa.beastclient.data.db.ContactEntity
 import com.wa.beastclient.data.db.GroupReceiptEntity
 import com.wa.beastclient.data.db.MessageEditEntity
 import com.wa.beastclient.data.db.MessageEntity
+import com.wa.beastclient.data.db.MessageReactionEntity
 import com.wa.beastclient.data.db.PresenceLogEntity
 import com.wa.beastclient.data.db.ProfileHistoryEntity
 import com.wa.beastclient.data.db.StatusEntity
@@ -589,6 +590,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun observeMyReaction(messageId: String): Flow<String?> =
         activeDaoFlow.flatMapLatest { it.observeMyReaction(messageId) }
+
+    fun observeReactionsFor(messageId: String): Flow<List<MessageReactionEntity>> =
+        activeDaoFlow.flatMapLatest { it.observeReactionsFor(messageId) }
 
     fun observeChatGalleryMedia(chatJid: String): Flow<List<MessageEntity>> =
         activeDaoFlow.flatMapLatest { it.observeChatGalleryMedia(chatJid) }

@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.media.ThumbnailUtils
 import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
@@ -46,6 +47,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -65,6 +67,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -87,7 +90,12 @@ import androidx.compose.material.icons.automirrored.rounded.Forward
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.Reply
 import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.outlined.Call
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AddReaction
 import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Call
@@ -101,27 +109,36 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.EmojiEmotions
+import androidx.compose.material.icons.rounded.EventNote
+import androidx.compose.material.icons.rounded.Headphones
+import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.KeyboardDoubleArrowDown
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.NotificationsOff
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PushPin
-import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.Wallpaper
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -185,6 +202,10 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -202,9 +223,12 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.paging.LoadState
 import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.paging.compose.itemKey
@@ -223,6 +247,7 @@ import com.wa.beastclient.core.calling.isColdCallBlocked
 import com.wa.beastclient.core.service.WaRealtimeService
 import com.wa.beastclient.data.db.ChatEntity
 import com.wa.beastclient.data.db.MessageEntity
+import com.wa.beastclient.data.db.MessageReactionEntity
 import com.wa.beastclient.data.media.OutboundQualityMode
 import com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
 import com.wa.beastclient.domain.security.AppLockManager
@@ -257,10 +282,11 @@ import com.wa.beastclient.ui.components.SwipeToReplyBox
 import com.wa.beastclient.ui.components.VoiceNoteBubble
 import com.wa.beastclient.ui.components.WallpaperPickerDialog
 import com.wa.beastclient.ui.components.WhatsAppBubbleShape
+import com.wa.beastclient.ui.components.WuppGlassBottomBar
 import com.wa.beastclient.ui.components.WuppGlassCircleButton
 import com.wa.beastclient.ui.components.WuppGlassContainer
 import com.wa.beastclient.ui.components.WuppGlassTopBar
-import androidx.compose.material.icons.rounded.MoreHoriz
+import com.wa.beastclient.ui.components.wuppBackdropSource
 import com.wa.beastclient.ui.components.whatsAppClusterInnerShape
 import com.wa.beastclient.ui.components.buildDocumentExportFileName
 import com.wa.beastclient.ui.components.deleteBeforeSelection
@@ -792,15 +818,21 @@ fun ChatScreen(
     }
     LaunchedEffect(draftInteractionSource) {
         draftInteractionSource.interactions.collect { interaction ->
-            if (interaction is PressInteraction.Release && showEmojiPicker) {
-                holdDockForIme = true
-                showEmojiPicker = false
-                keyboardController?.show()
+            if (interaction is PressInteraction.Release) {
+                if (showAttachTray) {
+                    showAttachTray = false
+                }
+                if (showEmojiPicker) {
+                    holdDockForIme = true
+                    showEmojiPicker = false
+                    keyboardController?.show()
+                }
             }
         }
     }
     LaunchedEffect(isRecordingVoice, isGroupAnnounceLocked, canSendOutbound) {
         if (isRecordingVoice || isGroupAnnounceLocked || !canSendOutbound) {
+            showAttachTray = false
             showEmojiPicker = false
             holdDockForIme = false
         }
@@ -850,6 +882,7 @@ fun ChatScreen(
     var showStickerStudioDialog by remember { mutableStateOf(false) }
     var showChatHistorySheet by remember { mutableStateOf(false) }
     var editHistoryTarget by remember { mutableStateOf<MessageEntity?>(null) }
+    var reactionDetailsTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var groupReceiptsTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var actionMenuTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var deleteConfirmTarget by remember { mutableStateOf<MessageEntity?>(null) }
@@ -871,6 +904,10 @@ fun ChatScreen(
     // Bulk delete/forward targets (populated when the user triggers the action from multi-select bar).
     var deleteConfirmTargets by remember { mutableStateOf<List<MessageEntity>>(emptyList()) }
     var forwardTargets by remember { mutableStateOf<List<MessageEntity>>(emptyList()) }
+
+    BackHandler(enabled = showAttachTray) {
+        showAttachTray = false
+    }
 
     BackHandler(enabled = showEmojiPicker) {
         if (isDockExpanded) {
@@ -968,6 +1005,62 @@ fun ChatScreen(
         }
     }
 
+    val pickAudioLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            handlePickedAttachment(uri, "audio/mpeg")
+        }
+    }
+
+    var pendingCameraCaptureUri by remember { mutableStateOf<Uri?>(null) }
+    val takeCameraPhotoLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { saved ->
+        val capUri = pendingCameraCaptureUri
+        pendingCameraCaptureUri = null
+        if (saved && capUri != null) {
+            handlePickedAttachment(capUri, "image/jpeg")
+        }
+    }
+
+    fun launchCameraPhotoCapture() {
+        runCatching {
+            val captureDir = File(context.cacheDir, "camera_captures").apply { mkdirs() }
+            val photoFile = File(captureDir, "wupp_cam_${System.currentTimeMillis()}.jpg")
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
+            pendingCameraCaptureUri = uri
+            showAttachTray = false
+            AppLockManager.suspendNextBackgroundLock()
+            takeCameraPhotoLauncher.launch(uri)
+        }.onFailure {
+            pendingCameraCaptureUri = null
+            Toast.makeText(context, "Unable to open camera on this device", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val cameraCapturePermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            launchCameraPhotoCapture()
+        } else {
+            Toast.makeText(context, "Camera permission required to take photos", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun openCameraOrRequestPermission() {
+        val hasCam = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        if (hasCam) {
+            launchCameraPhotoCapture()
+        } else {
+            cameraCapturePermLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
     var showInAppContactPicker by remember { mutableStateOf(false) }
     var pendingShareContact by remember { mutableStateOf<SharedContactPreview?>(null) }
 
@@ -1006,6 +1099,149 @@ fun ChatScreen(
     }
 
     val wallpaperBackdropState = rememberWuppBackdropState()
+    val overlayDensity = LocalDensity.current
+    var bottomOverlayPx by remember { mutableIntStateOf(0) }
+    val bottomOverlayInsetDp = if (bottomOverlayPx > 0) with(overlayDensity) { bottomOverlayPx.toDp() } else 58.dp
+    val messageBoundsInRoot = remember(chatJid) { mutableStateMapOf<String, androidx.compose.ui.geometry.Rect>() }
+    var overlayOriginInRoot by remember { mutableStateOf(Offset.Zero) }
+    var overlaySizePx by remember { mutableStateOf(IntSize.Zero) }
+
+    val triggerSingleMessageAction: (MessageEntity, Boolean, SelectionBarAction) -> Unit = { selectedMsg, isSelectedDoc, action ->
+        showSelectionOverflow = false
+        when (action) {
+            SelectionBarAction.REPLY -> {
+                replyTarget = selectedMsg
+                actionMenuTarget = null
+                showMoreReactionEmojis = false
+            }
+            SelectionBarAction.FORWARD -> {
+                val upper = selectedMsg.msgType.uppercase()
+                val localReady = upper == "TEXT" || selectedMsg.localMediaPath
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let(::File)
+                    ?.let { it.exists() && it.length() > 0L } == true
+                if (localReady) {
+                    forwardTarget = selectedMsg
+                } else {
+                    Toast.makeText(context, "Downloading media before forwarding…", Toast.LENGTH_SHORT).show()
+                    viewModel.requestMediaDownload(selectedMsg, userInitiated = true)
+                }
+                actionMenuTarget = null
+                showMoreReactionEmojis = false
+            }
+            SelectionBarAction.PIN_UNPIN -> {
+                actionMenuTarget = null
+                showMoreReactionEmojis = false
+                if (selectedMsg.isPinned) {
+                    viewModel.unpinMessage(chatJid, selectedMsg)
+                } else {
+                    pinDurationDialogTarget = selectedMsg
+                }
+            }
+            SelectionBarAction.EDIT -> {
+                editMessageDialogTarget = selectedMsg
+                actionMenuTarget = null
+                showMoreReactionEmojis = false
+            }
+            SelectionBarAction.COPY -> {
+                clipboard.setText(AnnotatedString(selectedMsg.body))
+                Toast.makeText(context, "Message copied", Toast.LENGTH_SHORT).show()
+                actionMenuTarget = null
+                showMoreReactionEmojis = false
+            }
+            SelectionBarAction.SAVE_MEDIA -> {
+                val mediaPath = selectedMsg.localMediaPath
+                if (!mediaPath.isNullOrBlank()) {
+                    val targetFile = File(mediaPath)
+                    val exportName = if (isSelectedDoc) {
+                        buildDocumentExportFileName(selectedMsg, targetFile)
+                    } else {
+                        "WA_${selectedMsg.msgType}_${selectedMsg.id}.${targetFile.extension.ifBlank { "bin" }}"
+                    }
+                    val exportMime = if (isSelectedDoc) {
+                        resolveDocumentMimeType(selectedMsg, targetFile)
+                    } else {
+                        selectedMsg.mimeType
+                    }
+                    viewModel.exportMediaToGallery(mediaPath, exportName, exportMime)
+                }
+                actionMenuTarget = null
+                showMoreReactionEmojis = false
+            }
+            SelectionBarAction.MESSAGE_INFO -> {
+                groupReceiptsTarget = selectedMsg
+                actionMenuTarget = null
+                showMoreReactionEmojis = false
+            }
+            SelectionBarAction.EDIT_HISTORY -> {
+                editHistoryTarget = selectedMsg
+                actionMenuTarget = null
+                showMoreReactionEmojis = false
+            }
+            SelectionBarAction.OPEN_DOCUMENT -> {
+                val mediaPath = selectedMsg.localMediaPath
+                if (!mediaPath.isNullOrBlank()) {
+                    val docFile = File(mediaPath)
+                    if (docFile.exists()) {
+                        openDocumentNatively(context, selectedMsg, docFile) { pdfFile ->
+                            pdfViewerTarget = pdfFile to resolveDocumentDisplayName(
+                                selectedMsg,
+                                resolveDocumentMimeType(selectedMsg, pdfFile),
+                                pdfFile
+                            )
+                        }
+                    } else {
+                        viewModel.requestMediaDownload(selectedMsg, userInitiated = true)
+                    }
+                }
+                actionMenuTarget = null
+                showMoreReactionEmojis = false
+            }
+            SelectionBarAction.DELETE -> {
+                deleteConfirmTarget = selectedMsg
+                actionMenuTarget = null
+                showMoreReactionEmojis = false
+            }
+        }
+    }
+
+    val iconForSingleAction: (SelectionBarAction) -> androidx.compose.ui.graphics.vector.ImageVector = { action ->
+        when (action) {
+            SelectionBarAction.REPLY -> Icons.AutoMirrored.Rounded.Reply
+            SelectionBarAction.FORWARD -> Icons.AutoMirrored.Rounded.Forward
+            SelectionBarAction.PIN_UNPIN -> Icons.Rounded.PushPin
+            SelectionBarAction.EDIT -> Icons.Rounded.Edit
+            SelectionBarAction.COPY -> Icons.Rounded.ContentCopy
+            SelectionBarAction.SAVE_MEDIA -> Icons.Rounded.Download
+            SelectionBarAction.MESSAGE_INFO -> Icons.Rounded.Info
+            SelectionBarAction.EDIT_HISTORY -> Icons.Rounded.History
+            SelectionBarAction.OPEN_DOCUMENT -> Icons.Rounded.Description
+            SelectionBarAction.DELETE -> Icons.Rounded.Delete
+        }
+    }
+
+    val labelForSingleAction: (MessageEntity, Boolean, SelectionBarAction) -> String = { selectedMsg, isSelectedDoc, action ->
+        when (action) {
+            SelectionBarAction.REPLY -> "Reply"
+            SelectionBarAction.FORWARD -> "Forward"
+            SelectionBarAction.PIN_UNPIN -> if (selectedMsg.isPinned) {
+                context.getString(R.string.unpin_message)
+            } else {
+                context.getString(R.string.pin_message)
+            }
+            SelectionBarAction.EDIT -> "Edit"
+            SelectionBarAction.COPY -> "Copy"
+            SelectionBarAction.SAVE_MEDIA -> if (isSelectedDoc) {
+                context.getString(R.string.chat_doc_save_downloads)
+            } else {
+                "Save to Gallery"
+            }
+            SelectionBarAction.MESSAGE_INFO -> "Message info"
+            SelectionBarAction.EDIT_HISTORY -> "Edit history"
+            SelectionBarAction.OPEN_DOCUMENT -> context.getString(R.string.chat_doc_open_with)
+            SelectionBarAction.DELETE -> "Delete"
+        }
+    }
 
     Scaffold(
         containerColor = colors.chatCanvas,
@@ -1031,44 +1267,39 @@ fun ChatScreen(
                 ) { barState ->
                     when (barState) {
                     2 -> {
-                        // Multi-select bar
+                        // Multi-select bar (borderless icons directly on frosted glass top bar)
                         val selCount = selectedMessages.size
                         WuppGlassTopBar(
                             backdropState = wallpaperBackdropState,
                             classicMode = stealthConfig.classicWhatsAppLook,
-                            height = 58.dp,
+                            showBottomDivider = false,
+                            height = 56.dp,
                             leading = {
-                                WuppGlassCircleButton(
+                                IconButton(
                                     onClick = { selectedMessages = emptyMap() },
-                                    contentDescription = "Clear selection",
-                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                                    size = 36.dp,
-                                    iconSize = 19.dp,
-                                    backdropState = wallpaperBackdropState,
-                                    classicMode = stealthConfig.classicWhatsAppLook
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .clip(CircleShape)
-                                        .background(colors.pillActiveBg)
-                                        .padding(horizontal = 11.dp, vertical = 4.dp),
-                                    contentAlignment = Alignment.Center
+                                    modifier = Modifier.size(40.dp)
                                 ) {
-                                    Text(
-                                        text = "$selCount",
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = colors.pillActiveText
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                        contentDescription = "Clear selection",
+                                        tint = colors.textPrimary,
+                                        modifier = Modifier.size(23.dp)
                                     )
                                 }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "$selCount selected",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = colors.textPrimary
+                                )
                             },
                             trailing = {
                                 val msgs = selectedMessages.values.toList()
                                 val hasText = msgs.any { it.body.isNotBlank() }
                                 val canFwd = msgs.all { com.wa.beastclient.core.service.WaRealtimeService.isForwardableMessageType(it) }
                                 if (hasText) {
-                                    WuppGlassCircleButton(
+                                    IconButton(
                                         onClick = {
                                             val text = msgs.sortedBy { it.timestamp }
                                                 .joinToString("\n") { it.body }
@@ -1076,374 +1307,124 @@ fun ChatScreen(
                                             Toast.makeText(context, "${msgs.size} message(s) copied", Toast.LENGTH_SHORT).show()
                                             selectedMessages = emptyMap()
                                         },
-                                        contentDescription = "Copy",
-                                        imageVector = Icons.Rounded.ContentCopy,
-                                        size = 36.dp,
-                                        iconSize = 18.dp,
-                                        backdropState = wallpaperBackdropState,
-                                        classicMode = stealthConfig.classicWhatsAppLook
-                                    )
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.ContentCopy,
+                                            contentDescription = "Copy",
+                                            tint = colors.textPrimary,
+                                            modifier = Modifier.size(21.dp)
+                                        )
+                                    }
                                 }
                                 if (canFwd) {
-                                    WuppGlassCircleButton(
+                                    IconButton(
                                         onClick = {
                                             forwardTargets = msgs.sortedBy { it.timestamp }
                                             selectedMessages = emptyMap()
                                         },
-                                        contentDescription = "Forward",
-                                        imageVector = Icons.AutoMirrored.Rounded.Forward,
-                                        size = 36.dp,
-                                        iconSize = 18.dp,
-                                        backdropState = wallpaperBackdropState,
-                                        classicMode = stealthConfig.classicWhatsAppLook
-                                    )
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Rounded.Forward,
+                                            contentDescription = "Forward",
+                                            tint = colors.textPrimary,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
                                 }
-                                WuppGlassCircleButton(
+                                IconButton(
                                     onClick = {
                                         deleteConfirmTargets = msgs.sortedBy { it.timestamp }
                                         selectedMessages = emptyMap()
                                     },
-                                    contentDescription = "Delete",
-                                    imageVector = Icons.Rounded.Delete,
-                                    size = 36.dp,
-                                    iconSize = 18.dp,
-                                    tint = colors.antiDeleteRed,
-                                    backdropState = wallpaperBackdropState,
-                                    classicMode = stealthConfig.classicWhatsAppLook
-                                )
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Delete,
+                                        contentDescription = "Delete",
+                                        tint = colors.antiDeleteRed,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
                             }
                         )
                     }
                     1 -> {
-                    val selectedMsg = actionMenuTarget ?: return@AnimatedContent
-                    if (true) {
-                    val isSelectedDoc = remember(
-                        selectedMsg.id,
-                        selectedMsg.msgType,
-                        selectedMsg.mimeType,
-                        selectedMsg.body,
-                        selectedMsg.isViewOnce,
-                        selectedMsg.isDeletedBySender
-                    ) {
-                        !selectedMsg.localMediaPath.isNullOrBlank() && isDocumentMessage(selectedMsg)
-                    }
-                    val barLayout = remember(
-                        selectedMsg.id,
-                        selectedMsg.isFromMe,
-                        selectedMsg.msgType,
-                        selectedMsg.body,
-                        selectedMsg.localMediaPath,
-                        selectedMsg.isPinned,
-                        selectedMsg.isEdited,
-                        isChannel,
-                        isGroupAnnounceLocked,
-                        chat?.isGroup,
-                        isSelectedDoc
-                    ) {
-                        resolveSelectionBarLayout(
-                            msg = selectedMsg,
-                            isChannel = isChannel,
-                            isGroupAnnounceLocked = isGroupAnnounceLocked,
-                            isGroup = chat?.isGroup == true,
-                            isDocument = isSelectedDoc
-                        )
-                    }
-
-                    val triggerAction: (SelectionBarAction) -> Unit = { action ->
-                        showSelectionOverflow = false
-                        when (action) {
-                            SelectionBarAction.REPLY -> {
-                                replyTarget = selectedMsg
-                                actionMenuTarget = null
-                                showMoreReactionEmojis = false
-                            }
-                            SelectionBarAction.FORWARD -> {
-                                val upper = selectedMsg.msgType.uppercase()
-                                val localReady = upper == "TEXT" || selectedMsg.localMediaPath
-                                    ?.takeIf { it.isNotBlank() }
-                                    ?.let(::File)
-                                    ?.let { it.exists() && it.length() > 0L } == true
-                                if (localReady) {
-                                    forwardTarget = selectedMsg
-                                } else {
-                                    Toast.makeText(context, "Downloading media before forwarding…", Toast.LENGTH_SHORT).show()
-                                    viewModel.requestMediaDownload(selectedMsg, userInitiated = true)
-                                }
-                                actionMenuTarget = null
-                                showMoreReactionEmojis = false
-                            }
-                            SelectionBarAction.PIN_UNPIN -> {
-                                val target = selectedMsg
-                                actionMenuTarget = null
-                                showMoreReactionEmojis = false
-                                if (target.isPinned) {
-                                    viewModel.unpinMessage(chatJid, target)
-                                } else {
-                                    pinDurationDialogTarget = target
-                                }
-                            }
-                            SelectionBarAction.EDIT -> {
-                                editMessageDialogTarget = selectedMsg
-                                actionMenuTarget = null
-                                showMoreReactionEmojis = false
-                            }
-                            SelectionBarAction.COPY -> {
-                                clipboard.setText(AnnotatedString(selectedMsg.body))
-                                Toast.makeText(context, "Message copied", Toast.LENGTH_SHORT).show()
-                                actionMenuTarget = null
-                                showMoreReactionEmojis = false
-                            }
-                            SelectionBarAction.SAVE_MEDIA -> {
-                                val mediaPath = selectedMsg.localMediaPath
-                                if (!mediaPath.isNullOrBlank()) {
-                                    val targetFile = File(mediaPath)
-                                    val exportName = if (isSelectedDoc) {
-                                        buildDocumentExportFileName(selectedMsg, targetFile)
-                                    } else {
-                                        "WA_${selectedMsg.msgType}_${selectedMsg.id}.${targetFile.extension.ifBlank { "bin" }}"
-                                    }
-                                    val exportMime = if (isSelectedDoc) {
-                                        resolveDocumentMimeType(selectedMsg, targetFile)
-                                    } else {
-                                        selectedMsg.mimeType
-                                    }
-                                    viewModel.exportMediaToGallery(mediaPath, exportName, exportMime)
-                                }
-                                actionMenuTarget = null
-                                showMoreReactionEmojis = false
-                            }
-                            SelectionBarAction.MESSAGE_INFO -> {
-                                groupReceiptsTarget = selectedMsg
-                                actionMenuTarget = null
-                                showMoreReactionEmojis = false
-                            }
-                            SelectionBarAction.EDIT_HISTORY -> {
-                                editHistoryTarget = selectedMsg
-                                actionMenuTarget = null
-                                showMoreReactionEmojis = false
-                            }
-                            SelectionBarAction.OPEN_DOCUMENT -> {
-                                val mediaPath = selectedMsg.localMediaPath
-                                if (!mediaPath.isNullOrBlank()) {
-                                    val docFile = File(mediaPath)
-                                    if (docFile.exists()) {
-                                        openDocumentNatively(context, selectedMsg, docFile) { pdfFile ->
-                                            pdfViewerTarget = pdfFile to resolveDocumentDisplayName(
-                                                selectedMsg,
-                                                resolveDocumentMimeType(selectedMsg, pdfFile),
-                                                pdfFile
-                                            )
-                                        }
-                                    } else {
-                                        viewModel.requestMediaDownload(selectedMsg, userInitiated = true)
-                                    }
-                                }
-                                actionMenuTarget = null
-                                showMoreReactionEmojis = false
-                            }
-                            SelectionBarAction.DELETE -> {
-                                deleteConfirmTarget = selectedMsg
-                                actionMenuTarget = null
-                                showMoreReactionEmojis = false
-                            }
-                        }
-                    }
-
-                    val iconForAction: (SelectionBarAction) -> androidx.compose.ui.graphics.vector.ImageVector = { action ->
-                        when (action) {
-                            SelectionBarAction.REPLY -> Icons.AutoMirrored.Rounded.Reply
-                            SelectionBarAction.FORWARD -> Icons.AutoMirrored.Rounded.Forward
-                            SelectionBarAction.PIN_UNPIN -> Icons.Rounded.PushPin
-                            SelectionBarAction.EDIT -> Icons.Rounded.Edit
-                            SelectionBarAction.COPY -> Icons.Rounded.ContentCopy
-                            SelectionBarAction.SAVE_MEDIA -> Icons.Rounded.Download
-                            SelectionBarAction.MESSAGE_INFO -> Icons.Rounded.Info
-                            SelectionBarAction.EDIT_HISTORY -> Icons.Rounded.History
-                            SelectionBarAction.OPEN_DOCUMENT -> Icons.Rounded.Description
-                            SelectionBarAction.DELETE -> Icons.Rounded.Delete
-                        }
-                    }
-
-                    val labelForAction: (SelectionBarAction) -> String = { action ->
-                        when (action) {
-                            SelectionBarAction.REPLY -> "Reply"
-                            SelectionBarAction.FORWARD -> "Forward"
-                            SelectionBarAction.PIN_UNPIN -> if (selectedMsg.isPinned) {
-                                context.getString(R.string.unpin_message)
-                            } else {
-                                context.getString(R.string.pin_message)
-                            }
-                            SelectionBarAction.EDIT -> "Edit"
-                            SelectionBarAction.COPY -> "Copy"
-                            SelectionBarAction.SAVE_MEDIA -> if (isSelectedDoc) {
-                                context.getString(R.string.chat_doc_save_downloads)
-                            } else {
-                                "Save to Gallery"
-                            }
-                            SelectionBarAction.MESSAGE_INFO -> "Message info"
-                            SelectionBarAction.EDIT_HISTORY -> "Edit history"
-                            SelectionBarAction.OPEN_DOCUMENT -> context.getString(R.string.chat_doc_open_with)
-                            SelectionBarAction.DELETE -> "Delete"
-                        }
-                    }
-
                     WuppGlassTopBar(
                         backdropState = wallpaperBackdropState,
                         classicMode = stealthConfig.classicWhatsAppLook,
-                        height = 58.dp,
+                        showBottomDivider = false,
+                        height = 56.dp,
                         leading = {
-                            WuppGlassCircleButton(
+                            IconButton(
                                 onClick = {
                                     actionMenuTarget = null
                                     showMoreReactionEmojis = false
                                     showSelectionOverflow = false
                                 },
-                                contentDescription = "Clear selection",
-                                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                                size = 36.dp,
-                                iconSize = 19.dp,
-                                backdropState = wallpaperBackdropState,
-                                classicMode = stealthConfig.classicWhatsAppLook
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Box(
-                                modifier = Modifier
-                                    .clip(CircleShape)
-                                    .background(colors.pillActiveBg)
-                                    .padding(horizontal = 11.dp, vertical = 4.dp),
-                                contentAlignment = Alignment.Center
+                                modifier = Modifier.size(40.dp)
                             ) {
-                                Text(
-                                    text = "1",
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = colors.pillActiveText
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                    contentDescription = "Clear selection",
+                                    tint = colors.textPrimary,
+                                    modifier = Modifier.size(24.dp)
                                 )
                             }
-                        },
-                        trailing = {
-                            barLayout.directActions.forEach { action ->
-                                val tint = if (action == SelectionBarAction.PIN_UNPIN && selectedMsg.isPinned) {
-                                    colors.accentGreen
-                                } else {
-                                    colors.textPrimary
-                                }
-                                WuppGlassCircleButton(
-                                    onClick = { triggerAction(action) },
-                                    contentDescription = labelForAction(action),
-                                    imageVector = iconForAction(action),
-                                    size = 36.dp,
-                                    iconSize = 18.dp,
-                                    tint = tint,
-                                    backdropState = wallpaperBackdropState,
-                                    classicMode = stealthConfig.classicWhatsAppLook
-                                )
-                            }
-
-                            if (barLayout.overflowActions.isNotEmpty()) {
-                                Box {
-                                    WuppGlassCircleButton(
-                                        onClick = { showSelectionOverflow = true },
-                                        contentDescription = "More actions",
-                                        imageVector = Icons.Rounded.MoreHoriz,
-                                        size = 36.dp,
-                                        iconSize = 19.dp,
-                                        backdropState = wallpaperBackdropState,
-                                        classicMode = stealthConfig.classicWhatsAppLook
-                                    )
-                                    DropdownMenu(
-                                        expanded = showSelectionOverflow,
-                                        onDismissRequest = { showSelectionOverflow = false }
-                                    ) {
-                                        barLayout.overflowActions.forEach { action ->
-                                            val tint = if (action == SelectionBarAction.PIN_UNPIN && selectedMsg.isPinned) {
-                                                colors.accentGreen
-                                            } else {
-                                                colors.textPrimary
-                                            }
-                                            DropdownMenuItem(
-                                                text = { Text(labelForAction(action)) },
-                                                leadingIcon = {
-                                                    Icon(
-                                                        imageVector = iconForAction(action),
-                                                        contentDescription = null,
-                                                        tint = tint,
-                                                        modifier = Modifier.size(20.dp)
-                                                    )
-                                                },
-                                                onClick = { triggerAction(action) }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = "1 selected",
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.Normal,
+                                color = colors.textPrimary,
+                                maxLines = 1
+                            )
                         }
                     )
-                    } // end single-action bar (barState == 1)
-                    } // end if(true) + 1->
+                    }
                     0 -> {
                     WuppGlassTopBar(
                         backdropState = wallpaperBackdropState,
                         classicMode = stealthConfig.classicWhatsAppLook,
-                        height = 58.dp,
+                        showBottomDivider = false,
+                        height = 56.dp,
                         leading = {
-                            if (unreadChatsCount > 0) {
-                                val backPillInteraction = remember { MutableInteractionSource() }
-                                WuppGlassContainer(
-                                    modifier = Modifier
-                                        .height(38.dp)
-                                        .clip(CircleShape)
-                                        .clickable(
-                                            interactionSource = backPillInteraction,
-                                            indication = null,
-                                            onClick = onBack
-                                        ),
-                                    colors = colors,
-                                    shape = CircleShape,
-                                    elevation = 4.dp,
-                                    backdropState = wallpaperBackdropState,
-                                    blurRadius = 7.dp,
-                                    refractionHeight = 8.dp,
-                                    refractionAmount = 14.dp,
-                                    classicMode = stealthConfig.classicWhatsAppLook,
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(start = 5.dp, end = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(1.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
-                                            contentDescription = "Back",
-                                            tint = colors.textPrimary,
-                                            modifier = Modifier.size(22.dp)
-                                        )
-                                        Text(
-                                            text = if (unreadChatsCount > 99) "99+" else unreadChatsCount.toString(),
-                                            color = colors.textPrimary,
-                                            fontSize = 13.5.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1
-                                        )
-                                    }
-                                }
-                            } else {
-                                WuppGlassCircleButton(
-                                    onClick = onBack,
-                                    contentDescription = "Back",
+                            val backInteraction = remember { MutableInteractionSource() }
+                            Row(
+                                modifier = Modifier
+                                    .expressivePressScale(backInteraction, pressedScale = 0.90f)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable(
+                                        interactionSource = backInteraction,
+                                        indication = null,
+                                        onClick = onBack
+                                    )
+                                    .padding(vertical = 6.dp, horizontal = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(1.dp)
+                            ) {
+                                Icon(
                                     imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
-                                    size = 38.dp,
-                                    iconSize = 23.dp,
-                                    backdropState = wallpaperBackdropState,
-                                    classicMode = stealthConfig.classicWhatsAppLook
+                                    contentDescription = "Back",
+                                    tint = colors.textPrimary,
+                                    modifier = Modifier.size(28.dp)
                                 )
+                                if (unreadChatsCount > 0) {
+                                    Text(
+                                        text = if (unreadChatsCount > 99) "99+" else unreadChatsCount.toString(),
+                                        color = colors.textPrimary,
+                                        fontSize = 15.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1
+                                    )
+                                }
                             }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(
-                                    start = 2.dp,
-                                    end = if (isChannel) 92.dp else 138.dp
+                                    start = 6.dp,
+                                    end = if (isChannel) 82.dp else 118.dp
                                 )
                             ) {
                                 Box(modifier = Modifier.clickable { showProfilePhotoLightbox = true }) {
@@ -1454,7 +1435,7 @@ fun ChatScreen(
                                         size = 38.dp
                                     )
                                 }
-                                Spacer(modifier = Modifier.width(9.dp))
+                                Spacer(modifier = Modifier.width(10.dp))
                                 Column(
                                     modifier = Modifier
                                         .weight(1f, fill = false)
@@ -1471,13 +1452,48 @@ fun ChatScreen(
                                     Text(
                                         text = displayChatTitle,
                                         color = colors.textPrimary,
-                                        fontSize = 15.5.sp,
+                                        fontSize = 16.5.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     val effectiveAbout = remember(chat?.aboutText, contact?.aboutText) {
                                         chat?.aboutText?.takeIf { it.isNotBlank() } ?: contact?.aboutText.orEmpty()
+                                    }
+                                    val groupMembersSubtitle = remember(
+                                        chat?.isGroup,
+                                        isChannel,
+                                        participantMeta,
+                                        chatsByJid,
+                                        senderPushByJid
+                                    ) {
+                                        if (chat?.isGroup != true || isChannel || participantMeta.isEmpty()) {
+                                            ""
+                                        } else {
+                                            val others = participantMeta.values
+                                                .asSequence()
+                                                .filter { !it.isSelf }
+                                                .map { p ->
+                                                    val resolved = resolveSenderDisplayInfo(
+                                                        rawJidOrText = p.jid,
+                                                        explicitName = p.savedName.ifBlank { p.pushName },
+                                                        isSelf = false,
+                                                        participantMeta = participantMeta,
+                                                        chatsByJid = chatsByJid,
+                                                        senderPushByJid = senderPushByJid
+                                                    ).primary.removePrefix("~ ").trim()
+                                                    resolved.substringBefore(" ")
+                                                        .ifBlank { resolved }
+                                                }
+                                                .filter { it.isNotBlank() && !it.startsWith("User ·") }
+                                                .distinct()
+                                                .sortedBy { it.lowercase(Locale.getDefault()) }
+                                                .take(8)
+                                                .toList()
+                                            val hasSelf = participantMeta.values.any { it.isSelf }
+                                            val allNames = if (hasSelf) others + "You" else others
+                                            allNames.joinToString(", ")
+                                        }
                                     }
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         val presence = chat?.chatPresence.orEmpty()
@@ -1492,12 +1508,13 @@ fun ChatScreen(
                                             }
                                             Text(
                                                 text = presence,
-                                                fontSize = 11.5.sp,
+                                                fontSize = 12.5.sp,
                                                 color = colors.brightGreen
                                             )
                                         } else {
                                             val sub = when {
                                                 isChannel -> "Public channel"
+                                                chat?.isGroup == true && groupMembersSubtitle.isNotBlank() -> groupMembersSubtitle
                                                 chat?.isOnline == true -> stringResource(R.string.chat_status_online)
                                                 (chat?.lastSeen ?: 0L) > 0L -> "last seen ${formatMessageClock(chat!!.lastSeen, includeSeconds = showSeconds, use24Hour = use24Hour)}"
                                                 effectiveAbout.isNotBlank() -> effectiveAbout
@@ -1506,8 +1523,8 @@ fun ChatScreen(
                                             if (sub.isNotBlank()) {
                                                 Text(
                                                     text = sub,
-                                                    fontSize = 11.5.sp,
-                                                    color = if (chat?.isOnline == true && !isChannel) colors.brightGreen else colors.textSecondary,
+                                                    fontSize = 12.5.sp,
+                                                    color = if (chat?.isOnline == true && !isChannel && chat?.isGroup != true) colors.brightGreen else colors.textSecondary,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
@@ -1522,7 +1539,7 @@ fun ChatScreen(
                                     ) {
                                         Text(
                                             text = effectiveAbout,
-                                            fontSize = 10.5.sp,
+                                            fontSize = 11.sp,
                                             color = colors.textSecondary.copy(alpha = 0.85f),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
@@ -1533,45 +1550,89 @@ fun ChatScreen(
                         },
                         trailing = {
                             if (isChannel) {
-                                WuppGlassCircleButton(
-                                    onClick = { viewModel.toggleChannelMute(chatJid, chat?.isMuted == true) },
-                                    contentDescription = if (chat?.isMuted == true) "Unmute channel" else "Mute channel",
-                                    imageVector = if (chat?.isMuted == true) Icons.Rounded.NotificationsOff else Icons.Rounded.Notifications,
-                                    size = 38.dp,
-                                    iconSize = 19.dp,
-                                    backdropState = wallpaperBackdropState,
-                                    classicMode = stealthConfig.classicWhatsAppLook
-                                )
+                                val muteInteraction = remember { MutableInteractionSource() }
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .expressivePressScale(muteInteraction, pressedScale = 0.88f)
+                                        .clip(CircleShape)
+                                        .clickable(
+                                            interactionSource = muteInteraction,
+                                            indication = null,
+                                            onClick = { viewModel.toggleChannelMute(chatJid, chat?.isMuted == true) }
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (chat?.isMuted == true) Icons.Rounded.NotificationsOff else Icons.Rounded.Notifications,
+                                        contentDescription = if (chat?.isMuted == true) "Unmute channel" else "Mute channel",
+                                        tint = colors.textPrimary,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
                             } else {
-                                WuppGlassCircleButton(
-                                    onClick = { initiateCall(true) },
-                                    contentDescription = "Video call",
-                                    imageVector = Icons.Rounded.Videocam,
-                                    size = 38.dp,
-                                    iconSize = 19.dp,
-                                    backdropState = wallpaperBackdropState,
-                                    classicMode = stealthConfig.classicWhatsAppLook
-                                )
-                                WuppGlassCircleButton(
-                                    onClick = { initiateCall(false) },
-                                    contentDescription = "Voice call",
-                                    imageVector = Icons.Rounded.Call,
-                                    size = 38.dp,
-                                    iconSize = 18.dp,
-                                    backdropState = wallpaperBackdropState,
-                                    classicMode = stealthConfig.classicWhatsAppLook
-                                )
+                                val videoInteraction = remember { MutableInteractionSource() }
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .expressivePressScale(videoInteraction, pressedScale = 0.88f)
+                                        .clip(CircleShape)
+                                        .clickable(
+                                            interactionSource = videoInteraction,
+                                            indication = null,
+                                            onClick = { initiateCall(true) }
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Videocam,
+                                        contentDescription = "Video call",
+                                        tint = colors.textPrimary,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                                val voiceInteraction = remember { MutableInteractionSource() }
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .expressivePressScale(voiceInteraction, pressedScale = 0.88f)
+                                        .clip(CircleShape)
+                                        .clickable(
+                                            interactionSource = voiceInteraction,
+                                            indication = null,
+                                            onClick = { initiateCall(false) }
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Call,
+                                        contentDescription = "Voice call",
+                                        tint = colors.textPrimary,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
                             }
                             Box {
-                                WuppGlassCircleButton(
-                                    onClick = { showOverflow = true },
-                                    contentDescription = "More",
-                                    imageVector = Icons.Rounded.MoreHoriz,
-                                    size = 38.dp,
-                                    iconSize = 19.dp,
-                                    backdropState = wallpaperBackdropState,
-                                    classicMode = stealthConfig.classicWhatsAppLook
-                                )
+                                val moreInteraction = remember { MutableInteractionSource() }
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .expressivePressScale(moreInteraction, pressedScale = 0.88f)
+                                        .clip(CircleShape)
+                                        .clickable(
+                                            interactionSource = moreInteraction,
+                                            indication = null,
+                                            onClick = { showOverflow = true }
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.MoreVert,
+                                        contentDescription = "More",
+                                        tint = colors.textPrimary,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
                                 DropdownMenu(expanded = showOverflow, onDismissRequest = { showOverflow = false }) {
                                     DropdownMenuItem(
                                         text = { Text("Quick controls & privacy") },
@@ -1780,72 +1841,43 @@ fun ChatScreen(
             }
         }
     ) { innerPadding ->
-        DoodleBackground(
-            wallpaperUriOverride = effectiveWallpaper.uri,
-            wallpaperDimOverride = effectiveWallpaper.dim,
-            showDoodleOverride = effectiveWallpaper.showDoodle,
-            wallpaperScaleOverride = effectiveWallpaper.scale,
-            wallpaperOffsetXOverride = effectiveWallpaper.offsetXFraction,
-            wallpaperOffsetYOverride = effectiveWallpaper.offsetYFraction,
-            backdropState = if (stealthConfig.classicWhatsAppLook) null else wallpaperBackdropState,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            Column(
+        val topBarInsetDp = innerPadding.calculateTopPadding()
+        Box(modifier = Modifier.fillMaxSize()) {
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .imePadding()
-                    .navigationBarsPadding()
-            ) {
-                ActiveCallFloatingBar()
-                // Error 463 Ban Guard Warning Banner on genuinely unsaved zero-history chats (non-blocking)
-                if (coldStartWarningActive) {
-                    val warnAmber = Color(0xFFFFB020)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(warnAmber.copy(alpha = 0.14f))
-                            .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Rounded.Warning, null, tint = warnAmber, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Unsaved number · 0 prior messages. First message carries Error 463 risk.",
-                            color = colors.textPrimary,
-                            fontSize = 12.sp,
-                            lineHeight = 16.sp,
-                            modifier = Modifier.weight(1f)
-                        )
-                        TextButton(
-                            onClick = { coldStartConfirmed = true }
-                        ) {
-                            Text(
-                                text = "Allow",
-                                color = warnAmber,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                    .then(
+                        if (!stealthConfig.classicWhatsAppLook) {
+                            Modifier.wuppBackdropSource(wallpaperBackdropState)
+                        } else {
+                            Modifier
                         }
-                    }
-                }
-
-                // Paging 3 reverseLayout timeline + Floating WhatsApp Reaction Bar overlay
-                val showScrollToBottom by remember(listState) {
-                    derivedStateOf { listState.firstVisibleItemIndex > 2 }
-                }
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
+                    )
+            ) {
+                DoodleBackground(
+                    wallpaperUriOverride = effectiveWallpaper.uri,
+                    wallpaperDimOverride = effectiveWallpaper.dim,
+                    showDoodleOverride = effectiveWallpaper.showDoodle,
+                    wallpaperScaleOverride = effectiveWallpaper.scale,
+                    wallpaperOffsetXOverride = effectiveWallpaper.offsetXFraction,
+                    wallpaperOffsetYOverride = effectiveWallpaper.offsetYFraction,
+                    backdropState = null,
+                    modifier = Modifier.fillMaxSize()
                 ) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    reverseLayout = true,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
-                ) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .imePadding()
+                            .navigationBarsPadding(),
+                        reverseLayout = true,
+                        contentPadding = PaddingValues(
+                            start = 8.dp,
+                            end = 8.dp,
+                            top = topBarInsetDp + 6.dp,
+                            bottom = bottomOverlayInsetDp + 8.dp
+                        )
+                    ) {
                     items(
                         count = pagedItems.itemCount,
                         key = pagedItems.itemKey { it.id }
@@ -1879,12 +1911,33 @@ fun ChatScreen(
                             above.isFromMe != msg.isFromMe ||
                             (msgSenderKey.isBlank() && aboveSenderKey.isNotBlank()) ||
                             aboveSenderKey != msgSenderKey
-                        val isSelected = actionMenuTarget?.id == msg.id
+                        var prevVisibleIdx = index - 1
+                        var below: MessageEntity? = null
+                        while (prevVisibleIdx >= 0) {
+                            val candidate = pagedItems.peek(prevVisibleIdx)
+                            if (candidate != null && !isHiddenPlaceholderMessage(candidate)) {
+                                below = candidate
+                                break
+                            }
+                            prevVisibleIdx--
+                        }
+                        val belowSenderKey = below?.let { b ->
+                            b.senderJid.takeIf {
+                                it.isNotBlank() && !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(it, b.chatJid)
+                            } ?: b.senderName.trim()
+                        }.orEmpty()
+                        val isLastInCluster = below == null ||
+                            !isSameCalendarDay(msg.timestamp, below.timestamp) ||
+                            below.msgType == "SYSTEM" ||
+                            below.isFromMe != msg.isFromMe ||
+                            (msgSenderKey.isBlank() && belowSenderKey.isNotBlank()) ||
+                            belowSenderKey != msgSenderKey
+                        val isSelected = actionMenuTarget?.id == msg.id || selectedMessages.containsKey(msg.id)
                         val isHighlighted = highlightedMessageId == msg.id
                         val rowBgColor by animateColorAsState(
                             targetValue = when {
                                 isHighlighted -> colors.brightGreen.copy(alpha = 0.24f)
-                                isSelected -> colors.brightGreen.copy(alpha = 0.14f)
+                                isSelected -> colors.brightGreen.copy(alpha = 0.16f)
                                 else -> Color.Transparent
                             },
                             animationSpec = tween(durationMillis = 360),
@@ -1937,6 +1990,16 @@ fun ChatScreen(
                                 val quotedMentionsCsv = quotedEntity?.mentionsCsv.orEmpty()
                                 val quotedMediaPath = quotedEntity?.localMediaPath
                                 val quotedMsgType = quotedEntity?.msgType
+                                val quotedIsViewOnce = quotedEntity?.isViewOnce == true
+                                val quotedDurationSec = quotedEntity?.durationSec ?: 0
+                                val isVoiceOrMediaMsg = msg.msgType == "PTT" || msg.msgType == "AUDIO" ||
+                                    msg.msgType == "IMAGE" || msg.msgType == "VIDEO" || msg.msgType == "GIF"
+                                val showSenderForRow = isFirstInCluster || (
+                                    isGroupChat &&
+                                        !msg.isFromMe &&
+                                        isVoiceOrMediaMsg &&
+                                        above?.msgType != msg.msgType
+                                    )
                                 val mentionDisplayResolver: ((String) -> String?)? =
                                     if (isGroupChat) {
                                         { mentionJid: String ->
@@ -2007,13 +2070,22 @@ fun ChatScreen(
                                 }
                                 val isInSelectionMode = actionMenuTarget != null || selectedMessages.isNotEmpty()
                                 val isMsgSelected = actionMenuTarget?.id == msg.id || selectedMessages.containsKey(msg.id)
+                                val reportBubbleBounds: (androidx.compose.ui.geometry.Rect) -> Unit = { rect ->
+                                    messageBoundsInRoot[msg.id] = rect
+                                }
+                                val handleQuickForward: (() -> Unit)? = if (
+                                    com.wa.beastclient.core.service.WaRealtimeService.isForwardableMessageType(msg)
+                                ) {
+                                    { forwardTarget = msg }
+                                } else null
                                 if (isChannel || isGroupAnnounceLocked) {
                                     MessageBubbleRow(
                                         msg = msg,
                                         isGroup = isGroupChat,
                                         isChannel = isChannel,
                                         channelDisplayName = channelDisplayName,
-                                        showTail = if (isChannel) false else isFirstInCluster,
+                                        showTail = if (isChannel) false else isLastInCluster,
+                                        showSenderHeader = if (isChannel) false else showSenderForRow,
                                         isSenderAdmin = isGroupChat && isGroupAnnounceLocked && !msg.isFromMe,
                                         senderDisplay = senderDisplay,
                                         senderAvatarPath = senderAvatarPath,
@@ -2021,6 +2093,8 @@ fun ChatScreen(
                                         quotedMentionsCsv = quotedMentionsCsv,
                                         quotedMediaPath = quotedMediaPath,
                                         quotedMsgType = quotedMsgType,
+                                        quotedIsViewOnce = quotedIsViewOnce,
+                                        quotedDurationSec = quotedDurationSec,
                                         mentionDisplayResolver = mentionDisplayResolver,
                                         onClickSenderAvatar = clickAvatar,
                                         ghostPlayedActive = effectivePrivacy?.sendPlayedReceipts == false,
@@ -2029,6 +2103,9 @@ fun ChatScreen(
                                         isSelectionMode = isInSelectionMode,
                                         isSelected = isMsgSelected,
                                         onToggleSelect = { toggleMessageSelection(msg) },
+                                        onBubbleBoundsChanged = reportBubbleBounds,
+                                        onQuickForward = handleQuickForward,
+                                        onClickReaction = { reactionDetailsTarget = msg },
                                         onClickEditBadge = { editHistoryTarget = msg },
                                         onClickQuoted = jumpToQuotedMessage,
                                         onManualSendPlayedReceipt = { viewModel.markAudioPlayedExplicitly(msg) },
@@ -2048,13 +2125,16 @@ fun ChatScreen(
                                             isGroup = chat?.isGroup == true,
                                             isChannel = false,
                                             channelDisplayName = channelDisplayName,
-                                            showTail = isFirstInCluster,
+                                            showTail = isLastInCluster,
+                                            showSenderHeader = showSenderForRow,
                                             senderDisplay = senderDisplay,
                                             senderAvatarPath = senderAvatarPath,
                                             quotedDisplay = quotedDisplay,
                                             quotedMentionsCsv = quotedMentionsCsv,
                                             quotedMediaPath = quotedMediaPath,
                                             quotedMsgType = quotedMsgType,
+                                            quotedIsViewOnce = quotedIsViewOnce,
+                                            quotedDurationSec = quotedDurationSec,
                                             mentionDisplayResolver = mentionDisplayResolver,
                                             onClickSenderAvatar = clickAvatar,
                                             ghostPlayedActive = effectivePrivacy?.sendPlayedReceipts == false,
@@ -2063,6 +2143,9 @@ fun ChatScreen(
                                             isSelectionMode = isInSelectionMode,
                                             isSelected = isMsgSelected,
                                             onToggleSelect = { toggleMessageSelection(msg) },
+                                            onBubbleBoundsChanged = reportBubbleBounds,
+                                            onQuickForward = handleQuickForward,
+                                            onClickReaction = { reactionDetailsTarget = msg },
                                             onClickEditBadge = { editHistoryTarget = msg },
                                             onClickQuoted = jumpToQuotedMessage,
                                             onManualSendPlayedReceipt = { viewModel.markAudioPlayedExplicitly(msg) },
@@ -2081,8 +2164,63 @@ fun ChatScreen(
                         }
                     }
                 }
+                }
+                }
 
-                // Floating WhatsApp Emoji Reaction Picker Pill with M3 Expressive spring scale & bounce
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .imePadding()
+                        .navigationBarsPadding()
+                ) {
+                    Spacer(modifier = Modifier.height(topBarInsetDp))
+                    ActiveCallFloatingBar()
+                    // Error 463 Ban Guard Warning Banner on genuinely unsaved zero-history chats (non-blocking)
+                    if (coldStartWarningActive) {
+                        val warnAmber = Color(0xFFFFB020)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(warnAmber.copy(alpha = 0.14f))
+                                .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Rounded.Warning, null, tint = warnAmber, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Unsaved number · 0 prior messages. First message carries Error 463 risk.",
+                                color = colors.textPrimary,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(
+                                onClick = { coldStartConfirmed = true }
+                            ) {
+                                Text(
+                                    text = "Allow",
+                                    color = warnAmber,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    val showScrollToBottom by remember(listState) {
+                        derivedStateOf { listState.firstVisibleItemIndex > 2 }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .onGloballyPositioned { coords ->
+                                overlayOriginInRoot = coords.positionInRoot()
+                                overlaySizePx = coords.size
+                            }
+                    ) {
+
+                // Bubble-Anchored Emoji Reaction Pill + Floating Liquid Glass Context Menu Column
                 var lastReactionTarget by remember { mutableStateOf<MessageEntity?>(null) }
                 LaunchedEffect(actionMenuTarget) {
                     if (actionMenuTarget != null) lastReactionTarget = actionMenuTarget
@@ -2090,161 +2228,494 @@ fun ChatScreen(
                 val reactionMotion = MaterialTheme.motionScheme
                 androidx.compose.animation.AnimatedVisibility(
                     visible = actionMenuTarget != null && selectedMessages.isEmpty(),
-                    modifier = Modifier.align(Alignment.BottomCenter),
+                    modifier = Modifier.fillMaxSize(),
                     enter = fadeIn(reactionMotion.fastEffectsSpec()),
                     exit = fadeOut(reactionMotion.fastEffectsSpec())
                 ) {
                     val target = actionMenuTarget ?: lastReactionTarget
-                    Box(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentAlignment = Alignment.BottomCenter
-                    ) {
-                        if (target != null) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
+                    var pillSizePx by remember(target?.id) { mutableStateOf(IntSize.Zero) }
+                    var menuSizePx by remember(target?.id) { mutableStateOf(IntSize.Zero) }
+
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        // Whisper-light tap-outside scrim (keeps chat bright behind frosted glass)
+                        Box(
                             modifier = Modifier
-                                .padding(horizontal = 14.dp, vertical = 18.dp)
-                                .animateEnterExit(
-                                    enter = scaleIn(
-                                        animationSpec = reactionMotion.fastSpatialSpec(),
-                                        initialScale = 0.86f
-                                    ) + slideInVertically(
-                                        animationSpec = reactionMotion.fastSpatialSpec()
-                                    ) { it / 3 },
-                                    exit = scaleOut(
-                                        animationSpec = reactionMotion.fastEffectsSpec(),
-                                        targetScale = 0.90f
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = if (colors.isDark) 0.04f else 0.03f))
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    actionMenuTarget = null
+                                    showMoreReactionEmojis = false
+                                    showSelectionOverflow = false
+                                }
+                        )
+
+                        if (target != null) {
+                            val overlayW = overlaySizePx.width
+                            val overlayH = overlaySizePx.height
+                            val marginPx = with(overlayDensity) { 12.dp.roundToPx() }
+                            val gapPx = with(overlayDensity) { 8.dp.roundToPx() }
+                            val topSafePx = with(overlayDensity) { 6.dp.roundToPx() }
+                            val bottomSafePx = with(overlayDensity) { 10.dp.roundToPx() }
+
+                            val bubbleRect = messageBoundsInRoot[target.id]
+                            val bTop = if (bubbleRect != null && overlayH > 0) {
+                                (bubbleRect.top - overlayOriginInRoot.y).toInt()
+                            } else {
+                                (overlayH * 0.28f).toInt()
+                            }
+                            val bBottom = if (bubbleRect != null && overlayH > 0) {
+                                (bubbleRect.bottom - overlayOriginInRoot.y).toInt()
+                            } else {
+                                (overlayH * 0.42f).toInt()
+                            }
+                            val bLeft = if (bubbleRect != null && overlayW > 0) {
+                                (bubbleRect.left - overlayOriginInRoot.x).toInt()
+                            } else {
+                                marginPx
+                            }
+                            val bRight = if (bubbleRect != null && overlayW > 0) {
+                                (bubbleRect.right - overlayOriginInRoot.x).toInt()
+                            } else {
+                                (overlayW - marginPx).coerceAtLeast(marginPx)
+                            }
+
+                            val estPillW = if (pillSizePx.width > 0) pillSizePx.width else with(overlayDensity) { 332.dp.roundToPx() }
+                            val estPillH = if (pillSizePx.height > 0) pillSizePx.height else with(overlayDensity) { 54.dp.roundToPx() }
+                            val estMenuW = if (menuSizePx.width > 0) menuSizePx.width else with(overlayDensity) { 196.dp.roundToPx() }
+                            val estMenuH = if (menuSizePx.height > 0) menuSizePx.height else with(overlayDensity) { 356.dp.roundToPx() }
+
+                            val maxPillY = (overlayH - bottomSafePx - estPillH).coerceAtLeast(topSafePx)
+                            val maxMenuY = (overlayH - bottomSafePx - estMenuH).coerceAtLeast(topSafePx)
+
+                            val roomBelowBubble = overlayH - bottomSafePx - (bBottom + gapPx)
+                            val roomAboveBubble = bTop - topSafePx - gapPx
+
+                            val menuY: Int
+                            val pillY: Int
+                            if (roomBelowBubble >= estMenuH) {
+                                // Room below bubble: pill sits directly above bubble, glass menu right below bubble
+                                menuY = (bBottom + gapPx).coerceIn(topSafePx, maxMenuY)
+                                pillY = (bTop - gapPx - estPillH).coerceIn(topSafePx, (menuY - gapPx - estPillH).coerceAtLeast(topSafePx))
+                            } else if (roomAboveBubble >= estMenuH + gapPx + estPillH) {
+                                // Bubble near bottom: stack glass menu right above bubble and pill above menu
+                                menuY = (bTop - gapPx - estMenuH).coerceIn(topSafePx, maxMenuY)
+                                pillY = (menuY - gapPx - estPillH).coerceIn(topSafePx, maxPillY)
+                            } else {
+                                // Very tall media bubble or tight viewport: anchor near top of bubble without clipping
+                                pillY = bTop.coerceIn(topSafePx, (overlayH - bottomSafePx - estPillH - gapPx - 120).coerceAtLeast(topSafePx))
+                                menuY = (pillY + estPillH + gapPx).coerceIn(topSafePx, maxMenuY)
+                            }
+
+                            val isOutgoingTarget = target.isFromMe && !isChannel
+                            val maxPillX = (overlayW - marginPx - estPillW).coerceAtLeast(marginPx)
+                            val pillX = if (isOutgoingTarget) {
+                                (bRight - estPillW).coerceIn(marginPx, maxPillX)
+                            } else {
+                                bLeft.coerceIn(marginPx, maxPillX)
+                            }
+                            val maxMenuX = (overlayW - marginPx - estMenuW).coerceAtLeast(marginPx)
+                            val menuX = if (isOutgoingTarget) {
+                                (bRight - estMenuW).coerceIn(marginPx, maxMenuX)
+                            } else {
+                                bLeft.coerceIn(marginPx, maxMenuX)
+                            }
+
+                            val hasLiveGlass = !stealthConfig.classicWhatsAppLook && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                            val popupGlassTint = if (colors.isDark) Color(0xFF2B2E33) else Color(0xFFF8FAFC)
+                            val popupGlassAlpha = if (hasLiveGlass) {
+                                if (colors.isDark) 0.42f else 0.62f
+                            } else {
+                                if (colors.isDark) 0.82f else 0.94f
+                            }
+
+                            // 1. Anchored Floating Frosted Emoji Reaction Pill
+                            Column(
+                                horizontalAlignment = if (isOutgoingTarget) Alignment.End else Alignment.Start,
+                                modifier = Modifier
+                                    .offset { IntOffset(pillX, pillY) }
+                                    .onSizeChanged { pillSizePx = it }
+                                    .animateEnterExit(
+                                        enter = scaleIn(
+                                            animationSpec = reactionMotion.fastSpatialSpec(),
+                                            initialScale = 0.86f
+                                        ),
+                                        exit = scaleOut(
+                                            animationSpec = reactionMotion.fastEffectsSpec(),
+                                            targetScale = 0.92f
+                                        )
                                     )
-                                )
-                        ) {
-                            AnimatedVisibility(
-                                visible = showMoreReactionEmojis,
-                                enter = fadeIn(reactionMotion.fastEffectsSpec()) + scaleIn(
-                                    animationSpec = reactionMotion.fastSpatialSpec(),
-                                    initialScale = 0.88f
-                                ),
-                                exit = fadeOut(reactionMotion.fastEffectsSpec()) + scaleOut(
-                                    animationSpec = reactionMotion.fastEffectsSpec(),
-                                    targetScale = 0.92f
-                                )
                             ) {
                                 WuppGlassContainer(
-                                    shape = RoundedCornerShape(24.dp),
+                                    shape = CircleShape,
                                     colors = colors,
-                                    elevation = 12.dp,
+                                    elevation = 14.dp,
                                     backdropState = wallpaperBackdropState,
-                                    blurRadius = 10.dp,
-                                    refractionHeight = 12.dp,
-                                    refractionAmount = 20.dp,
-                                    classicMode = stealthConfig.classicWhatsAppLook,
-                                    modifier = Modifier.padding(bottom = 8.dp)
+                                    blurRadius = 16.dp,
+                                    refractionHeight = 10.dp,
+                                    refractionAmount = 18.dp,
+                                    chromaticAberration = false,
+                                    surfaceTintOverride = popupGlassTint,
+                                    surfaceAlphaOverride = popupGlassAlpha,
+                                    showHighlight = false,
+                                    classicMode = stealthConfig.classicWhatsAppLook
                                 ) {
-                                    Column(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    Row(
+                                        modifier = Modifier
+                                            .border(
+                                                width = 0.55.dp,
+                                                color = if (colors.isDark) Color.White.copy(alpha = 0.08f) else Color.White.copy(alpha = 0.45f),
+                                                shape = CircleShape
+                                            )
+                                            .padding(horizontal = 11.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(2.dp)
                                     ) {
-                                        val extraRows = listOf(
-                                            listOf("😍", "🔥", "👏", "🎉", "💯", "🤣"),
-                                            listOf("🥳", "🤝", "🙌", "✨", "👀", "🫡"),
-                                            listOf("😭", "😡", "👌", "✅", "💔", "🤔")
-                                        )
-                                        extraRows.forEach { rowEmojis ->
-                                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                                rowEmojis.forEach { emoji ->
-                                                    val extraInteraction = remember(emoji) { MutableInteractionSource() }
-                                                    Text(
-                                                        text = emoji,
-                                                        fontSize = 24.sp,
-                                                        modifier = Modifier
-                                                            .expressivePressScale(extraInteraction, pressedScale = 0.80f)
-                                                            .clip(CircleShape)
-                                                            .clickable(
-                                                                interactionSource = extraInteraction,
-                                                                indication = null
-                                                            ) {
-                                                                runWithOutboundGuard {
-                                                                    viewModel.sendReaction(chatJid, target, emoji)
+                                        val activeReactions = stealthConfig.quickReactionEmojis.ifEmpty {
+                                            StealthMatrixManager.DEFAULT_QUICK_REACTIONS
+                                        }
+                                        val myReaction by remember(target.id) {
+                                            viewModel.observeMyReaction(target.id)
+                                        }.collectAsState(initial = null)
+                                        activeReactions.forEach { emoji ->
+                                            val isCurrent = myReaction == emoji
+                                            val emojiInteraction = remember(emoji) { MutableInteractionSource() }
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(40.dp)
+                                                    .expressivePressScale(emojiInteraction, pressedScale = 0.80f)
+                                                    .clip(CircleShape)
+                                                    .background(if (isCurrent) colors.brightGreen.copy(alpha = 0.24f) else Color.Transparent)
+                                                    .clickable(
+                                                        interactionSource = emojiInteraction,
+                                                        indication = null
+                                                    ) {
+                                                        runWithOutboundGuard {
+                                                            viewModel.sendReaction(chatJid, target, emoji)
+                                                        }
+                                                        actionMenuTarget = null
+                                                        showMoreReactionEmojis = false
+                                                        showSelectionOverflow = false
+                                                    },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(text = emoji, fontSize = 27.sp)
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.width(2.dp))
+                                        val moreInteraction = remember { MutableInteractionSource() }
+                                        Box(
+                                            modifier = Modifier
+                                                .size(32.dp)
+                                                .expressivePressScale(moreInteraction, pressedScale = 0.84f)
+                                                .clip(CircleShape)
+                                                .background(
+                                                    if (colors.isDark) Color.White.copy(alpha = 0.34f)
+                                                    else Color.Black.copy(alpha = 0.14f)
+                                                )
+                                                .clickable(
+                                                    interactionSource = moreInteraction,
+                                                    indication = null
+                                                ) { showMoreReactionEmojis = !showMoreReactionEmojis },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = if (showMoreReactionEmojis) Icons.Rounded.Close else Icons.Rounded.Add,
+                                                contentDescription = "More reactions",
+                                                tint = if (colors.isDark) Color(0xFF14171A) else colors.textPrimary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                androidx.compose.animation.AnimatedVisibility(
+                                    visible = showMoreReactionEmojis,
+                                    enter = fadeIn(reactionMotion.fastEffectsSpec()) + scaleIn(
+                                        animationSpec = reactionMotion.fastSpatialSpec(),
+                                        initialScale = 0.88f
+                                    ),
+                                    exit = fadeOut(reactionMotion.fastEffectsSpec()) + scaleOut(
+                                        animationSpec = reactionMotion.fastEffectsSpec(),
+                                        targetScale = 0.92f
+                                    )
+                                ) {
+                                    WuppGlassContainer(
+                                        shape = RoundedCornerShape(24.dp),
+                                        colors = colors,
+                                        elevation = 14.dp,
+                                        backdropState = wallpaperBackdropState,
+                                        blurRadius = 16.dp,
+                                        refractionHeight = 10.dp,
+                                        refractionAmount = 18.dp,
+                                        surfaceTintOverride = popupGlassTint,
+                                        surfaceAlphaOverride = if (hasLiveGlass) {
+                                            if (colors.isDark) 0.56f else 0.72f
+                                        } else {
+                                            if (colors.isDark) 0.88f else 0.95f
+                                        },
+                                        showHighlight = false,
+                                        classicMode = stealthConfig.classicWhatsAppLook,
+                                        modifier = Modifier.padding(top = 8.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier
+                                                .border(
+                                                    width = 0.55.dp,
+                                                    color = if (colors.isDark) Color.White.copy(alpha = 0.08f) else Color.White.copy(alpha = 0.45f),
+                                                    shape = RoundedCornerShape(24.dp)
+                                                )
+                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            val extraRows = listOf(
+                                                listOf("😍", "🔥", "👏", "🎉", "💯", "🤣"),
+                                                listOf("🥳", "🤝", "🙌", "✨", "👀", "🫡"),
+                                                listOf("😭", "😡", "👌", "✅", "💔", "🤔")
+                                            )
+                                            extraRows.forEach { rowEmojis ->
+                                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                    rowEmojis.forEach { emoji ->
+                                                        val extraInteraction = remember(emoji) { MutableInteractionSource() }
+                                                        Text(
+                                                            text = emoji,
+                                                            fontSize = 25.sp,
+                                                            modifier = Modifier
+                                                                .expressivePressScale(extraInteraction, pressedScale = 0.80f)
+                                                                .clip(CircleShape)
+                                                                .clickable(
+                                                                    interactionSource = extraInteraction,
+                                                                    indication = null
+                                                                ) {
+                                                                    runWithOutboundGuard {
+                                                                        viewModel.sendReaction(chatJid, target, emoji)
+                                                                    }
+                                                                    actionMenuTarget = null
+                                                                    showMoreReactionEmojis = false
+                                                                    showSelectionOverflow = false
                                                                 }
-                                                                actionMenuTarget = null
-                                                                showMoreReactionEmojis = false
-                                                            }
-                                                            .padding(4.dp)
-                                                    )
+                                                                .padding(4.dp)
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
                             }
-                            WuppGlassContainer(
-                                shape = RoundedCornerShape(28.dp),
-                                colors = colors,
-                                elevation = 12.dp,
-                                backdropState = wallpaperBackdropState,
-                                blurRadius = 8.dp,
-                                refractionHeight = 12.dp,
-                                refractionAmount = 22.dp,
-                                chromaticAberration = true,
-                                classicMode = stealthConfig.classicWhatsAppLook
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+
+                            // 2. Anchored Floating Translucent Liquid Glass Message Options Column
+                            if (!showMoreReactionEmojis) {
+                                val isTargetDoc = remember(
+                                    target.id,
+                                    target.msgType,
+                                    target.mimeType,
+                                    target.body,
+                                    target.isViewOnce,
+                                    target.isDeletedBySender
                                 ) {
-                                    val activeReactions = stealthConfig.quickReactionEmojis.ifEmpty {
-                                        StealthMatrixManager.DEFAULT_QUICK_REACTIONS
-                                    }
-                                    val myReaction by remember(target.id) {
-                                        viewModel.observeMyReaction(target.id)
-                                    }.collectAsState(initial = null)
-                                    activeReactions.forEach { emoji ->
-                                        val isCurrent = myReaction == emoji
-                                        val emojiInteraction = remember(emoji) { MutableInteractionSource() }
-                                        Box(
-                                            modifier = Modifier
-                                                .size(38.dp)
-                                                .expressivePressScale(emojiInteraction, pressedScale = 0.80f)
-                                                .clip(CircleShape)
-                                                .background(if (isCurrent) colors.brightGreen.copy(alpha = 0.24f) else Color.Transparent)
-                                                .clickable(
-                                                    interactionSource = emojiInteraction,
-                                                    indication = null
-                                                ) {
-                                                    runWithOutboundGuard {
-                                                        viewModel.sendReaction(chatJid, target, emoji)
-                                                    }
-                                                    actionMenuTarget = null
-                                                    showMoreReactionEmojis = false
-                                                },
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(text = emoji, fontSize = 23.sp)
-                                        }
-                                    }
-                                    val moreInteraction = remember { MutableInteractionSource() }
-                                    Box(
-                                        modifier = Modifier
-                                            .size(34.dp)
-                                            .expressivePressScale(moreInteraction, pressedScale = 0.84f)
-                                            .clip(CircleShape)
-                                            .background(colors.quotedBg)
-                                            .clickable(
-                                                interactionSource = moreInteraction,
-                                                indication = null
-                                            ) { showMoreReactionEmojis = !showMoreReactionEmojis },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = if (showMoreReactionEmojis) Icons.Rounded.Close else Icons.Rounded.Add,
-                                            contentDescription = "More reactions",
-                                            tint = colors.textSecondary,
-                                            modifier = Modifier.size(20.dp)
+                                    !target.localMediaPath.isNullOrBlank() && isDocumentMessage(target)
+                                }
+                                val (primaryActions, moreActions) = remember(
+                                    target.id,
+                                    target.isFromMe,
+                                    target.msgType,
+                                    target.body,
+                                    target.localMediaPath,
+                                    target.isPinned,
+                                    target.isEdited,
+                                    isChannel,
+                                    isGroupAnnounceLocked,
+                                    isTargetDoc
+                                ) {
+                                    resolveFloatingContextActions(
+                                        msg = target,
+                                        isChannel = isChannel,
+                                        isGroupAnnounceLocked = isGroupAnnounceLocked,
+                                        isDocument = isTargetDoc
+                                    )
+                                }
+                                val maxMenuHeightDp = with(overlayDensity) {
+                                    (overlayH - topSafePx - bottomSafePx - estPillH - gapPx * 2)
+                                        .coerceAtLeast(200.dp.roundToPx())
+                                        .toDp()
+                                }
+                                val menuTextColor = if (colors.isDark) Color(0xFFF3F5F7) else colors.textPrimary
+                                val menuDeleteRed = if (colors.isDark) Color(0xFFD92626) else Color(0xFFD32F2F)
+                                val menuShape = RoundedCornerShape(28.dp)
+
+                                Box(
+                                    modifier = Modifier
+                                        .offset { IntOffset(menuX, menuY) }
+                                        .onSizeChanged { menuSizePx = it }
+                                        .animateEnterExit(
+                                            enter = scaleIn(
+                                                animationSpec = reactionMotion.fastSpatialSpec(),
+                                                initialScale = 0.88f
+                                            ),
+                                            exit = scaleOut(
+                                                animationSpec = reactionMotion.fastEffectsSpec(),
+                                                targetScale = 0.92f
+                                            )
                                         )
+                                ) {
+                                    WuppGlassContainer(
+                                        modifier = Modifier.width(196.dp),
+                                        shape = menuShape,
+                                        colors = colors,
+                                        elevation = 16.dp,
+                                        backdropState = wallpaperBackdropState,
+                                        blurRadius = 18.dp,
+                                        refractionHeight = 10.dp,
+                                        refractionAmount = 20.dp,
+                                        surfaceTintOverride = popupGlassTint,
+                                        surfaceAlphaOverride = popupGlassAlpha,
+                                        showHighlight = false,
+                                        classicMode = stealthConfig.classicWhatsAppLook
+                                    ) {
+                                        val menuScrollState = rememberScrollState()
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .heightIn(max = maxMenuHeightDp)
+                                                .border(
+                                                    width = 0.55.dp,
+                                                    color = if (colors.isDark) Color.White.copy(alpha = 0.08f) else Color.White.copy(alpha = 0.45f),
+                                                    shape = menuShape
+                                                )
+                                                .verticalScroll(menuScrollState)
+                                                .padding(vertical = 10.dp)
+                                        ) {
+                                            primaryActions.forEach { action ->
+                                                val isDelete = action == SelectionBarAction.DELETE
+                                                val itemTint = if (isDelete) menuDeleteRed else menuTextColor
+                                                val itemLabel = if (action == SelectionBarAction.MESSAGE_INFO) {
+                                                    "Info"
+                                                } else {
+                                                    labelForSingleAction(target, isTargetDoc, action)
+                                                }
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clickable {
+                                                            triggerSingleMessageAction(target, isTargetDoc, action)
+                                                        }
+                                                        .padding(start = 18.dp, end = 20.dp, top = 12.5.dp, bottom = 12.5.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                                ) {
+                                                    ContextMenuActionGlyph(
+                                                        action = action,
+                                                        tint = itemTint,
+                                                        modifier = Modifier.size(22.dp)
+                                                    )
+                                                    Text(
+                                                        text = itemLabel,
+                                                        color = itemTint,
+                                                        fontSize = 16.sp,
+                                                        fontWeight = FontWeight.Normal,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                            }
+
+                                            // Expandable "More" row (Pin/Unpin, Save to Gallery, Open Doc, Edit History, Select)
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable { showSelectionOverflow = !showSelectionOverflow }
+                                                    .padding(start = 18.dp, end = 20.dp, top = 12.5.dp, bottom = 12.5.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                            ) {
+                                                ContextMenuActionGlyph(
+                                                    action = null,
+                                                    tint = menuTextColor,
+                                                    modifier = Modifier.size(22.dp)
+                                                )
+                                                Text(
+                                                    text = if (showSelectionOverflow) "Less" else "More",
+                                                    color = menuTextColor,
+                                                    fontSize = 16.sp,
+                                                    fontWeight = FontWeight.Normal
+                                                )
+                                            }
+
+                                            androidx.compose.animation.AnimatedVisibility(visible = showSelectionOverflow) {
+                                                Column(modifier = Modifier.fillMaxWidth()) {
+                                                    HorizontalDivider(
+                                                        thickness = 0.5.dp,
+                                                        color = if (colors.isDark) Color.White.copy(alpha = 0.12f) else colors.divider,
+                                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                                                    )
+                                                    moreActions.forEach { action ->
+                                                        val itemTint = if (action == SelectionBarAction.PIN_UNPIN && target.isPinned) {
+                                                            colors.accentGreen
+                                                        } else {
+                                                            menuTextColor
+                                                        }
+                                                        Row(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .clickable {
+                                                                    triggerSingleMessageAction(target, isTargetDoc, action)
+                                                                }
+                                                                .padding(start = 18.dp, end = 20.dp, top = 11.5.dp, bottom = 11.5.dp),
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = iconForSingleAction(action),
+                                                                contentDescription = null,
+                                                                tint = itemTint,
+                                                                modifier = Modifier.size(21.dp)
+                                                            )
+                                                            Text(
+                                                                text = labelForSingleAction(target, isTargetDoc, action),
+                                                                color = itemTint,
+                                                                fontSize = 15.5.sp,
+                                                                fontWeight = FontWeight.Normal,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
+                                                            )
+                                                        }
+                                                    }
+                                                    // Enter multi-select mode right from the menu
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .clickable {
+                                                                selectedMessages = linkedMapOf(target.id to target)
+                                                                actionMenuTarget = null
+                                                                showMoreReactionEmojis = false
+                                                                showSelectionOverflow = false
+                                                            }
+                                                            .padding(start = 18.dp, end = 20.dp, top = 11.5.dp, bottom = 11.5.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Rounded.Collections,
+                                                            contentDescription = null,
+                                                            tint = menuTextColor,
+                                                            modifier = Modifier.size(21.dp)
+                                                        )
+                                                        Text(
+                                                            text = "Select multiple",
+                                                            color = menuTextColor,
+                                                            fontSize = 15.5.sp,
+                                                            fontWeight = FontWeight.Normal
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        }
                         }
                     }
                 }
@@ -2299,21 +2770,38 @@ fun ChatScreen(
                 }
 
                 if (showScrollToBottom && actionMenuTarget == null) {
-                    WuppGlassCircleButton(
-                        onClick = { scope.launch { listState.animateScrollToItem(0) } },
-                        contentDescription = "Scroll to latest message",
-                        imageVector = Icons.Rounded.KeyboardArrowDown,
-                        size = 42.dp,
-                        iconSize = 24.dp,
-                        backdropState = wallpaperBackdropState,
-                        classicMode = stealthConfig.classicWhatsAppLook,
+                    val scrollOrbInteraction = remember { MutableInteractionSource() }
+                    Box(
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
                             .padding(end = 12.dp, bottom = 12.dp)
-                    )
+                            .size(38.dp)
+                            .expressivePressScale(scrollOrbInteraction, pressedScale = 0.88f)
+                            .clip(CircleShape)
+                            .background(
+                                if (colors.isDark) Color(0xD9202529) else Color(0xEBFFFFFF)
+                            )
+                            .clickable(
+                                interactionSource = scrollOrbInteraction,
+                                indication = null
+                            ) { scope.launch { listState.animateScrollToItem(0) } },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.KeyboardDoubleArrowDown,
+                            contentDescription = "Scroll to latest message",
+                            tint = colors.textPrimary.copy(alpha = 0.90f),
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
                 }
                 }
 
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onSizeChanged { bottomOverlayPx = it.height }
+                ) {
                 if (isGroupAnnounceLocked && !isChannel) {
                     Surface(
                         color = colors.appSurface,
@@ -2333,159 +2821,6 @@ fun ChatScreen(
                         }
                     }
                 } else if (!isChannel) {
-                // Attachment & Quality Mode Tray (M3 Expressive connected button group)
-                val trayMotion = MaterialTheme.motionScheme
-                AnimatedVisibility(
-                    visible = showAttachTray,
-                    enter = fadeIn(trayMotion.fastEffectsSpec()) + slideInVertically(trayMotion.fastSpatialSpec()) { it / 4 },
-                    exit = fadeOut(trayMotion.fastEffectsSpec()) + slideOutVertically(trayMotion.fastSpatialSpec()) { it / 4 }
-                ) {
-                    WuppGlassContainer(
-                        shape = RoundedCornerShape(24.dp),
-                        colors = colors,
-                        elevation = 12.dp,
-                        backdropState = wallpaperBackdropState,
-                        blurRadius = 10.dp,
-                        refractionHeight = 12.dp,
-                        refractionAmount = 22.dp,
-                        classicMode = stealthConfig.classicWhatsAppLook,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 4.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Text(
-                                text = "Outbound Media Quality",
-                                fontWeight = FontWeight.Bold,
-                                color = colors.textPrimary,
-                                fontSize = 13.sp
-                            )
-                            val qualityToggleColors = ToggleButtonDefaults.colors(
-                                containerColor = colors.pillInactiveBg,
-                                contentColor = colors.textSecondary,
-                                checkedContainerColor = colors.accentGreen,
-                                checkedContentColor = colors.accentGreen.contrastingContentColor()
-                            )
-                            val modes = remember {
-                                listOf(
-                                    OutboundQualityMode.STANDARD,
-                                    OutboundQualityMode.HD,
-                                    OutboundQualityMode.ORIGINAL
-                                )
-                            }
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)
-                            ) {
-                                modes.forEachIndexed { index, mode ->
-                                    val selected = mode == qualityMode
-                                    val shapes = when (index) {
-                                        0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-                                        modes.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
-                                        else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
-                                    }
-                                    ToggleButton(
-                                        checked = selected,
-                                        onCheckedChange = { if (it) qualityMode = mode },
-                                        shapes = shapes,
-                                        colors = qualityToggleColors
-                                    ) {
-                                        Text(
-                                            text = mode.label,
-                                            fontSize = 11.5.sp,
-                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                            maxLines = 1
-                                        )
-                                    }
-                                }
-                            }
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                val galleryInteraction = remember { MutableInteractionSource() }
-                                Button(
-                                    onClick = {
-                                        AppLockManager.suspendNextBackgroundLock()
-                                        pickVisualMediaLauncher.launch(
-                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                                        )
-                                    },
-                                    interactionSource = galleryInteraction,
-                                    shape = RoundedCornerShape(16.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = colors.accentGreen),
-                                    modifier = Modifier.expressivePressScale(galleryInteraction, pressedScale = 0.96f)
-                                ) {
-                                    Icon(Icons.Rounded.Collections, null, modifier = Modifier.size(16.dp), tint = Color.White)
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = stringResource(R.string.chat_attach_gallery),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = Color.White
-                                    )
-                                }
-                                val docInteraction = remember { MutableInteractionSource() }
-                                OutlinedButton(
-                                    onClick = {
-                                        AppLockManager.suspendNextBackgroundLock()
-                                        pickMediaLauncher.launch("*/*")
-                                    },
-                                    interactionSource = docInteraction,
-                                    shape = RoundedCornerShape(16.dp),
-                                    modifier = Modifier.expressivePressScale(docInteraction, pressedScale = 0.96f)
-                                ) {
-                                    Icon(Icons.Rounded.Description, null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = stringResource(R.string.chat_attach_document),
-                                        fontSize = 12.sp
-                                    )
-                                }
-                                val contactInteraction = remember { MutableInteractionSource() }
-                                OutlinedButton(
-                                    onClick = {
-                                        showAttachTray = false
-                                        showInAppContactPicker = true
-                                    },
-                                    interactionSource = contactInteraction,
-                                    shape = RoundedCornerShape(16.dp),
-                                    modifier = Modifier.expressivePressScale(contactInteraction, pressedScale = 0.96f)
-                                ) {
-                                    Icon(Icons.Rounded.Person, null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "Contact",
-                                        fontSize = 12.sp
-                                    )
-                                }
-                                if (chat?.isGroup == true) {
-                                    val mentionInteraction = remember { MutableInteractionSource() }
-                                    OutlinedButton(
-                                        onClick = { ghostMentionEveryone = !ghostMentionEveryone },
-                                        interactionSource = mentionInteraction,
-                                        shape = RoundedCornerShape(16.dp),
-                                        modifier = Modifier.expressivePressScale(mentionInteraction, pressedScale = 0.96f)
-                                    ) {
-                                        Icon(Icons.Rounded.AlternateEmail, null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = if (ghostMentionEveryone) "@everyone Silent ON" else "@everyone Ghost Mention",
-                                            fontSize = 12.sp
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
 
                 // Live Voice Recording Elapsed Timer (ticks cleanly while recording)
                 var recordingElapsedSec by remember { mutableIntStateOf(0) }
@@ -2681,357 +3016,316 @@ fun ChatScreen(
                         }
                     } else {
                         val hasDraftText = draftValue.text.isNotBlank()
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.Bottom,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        WuppGlassBottomBar(
+                            backdropState = wallpaperBackdropState,
+                            classicMode = stealthConfig.classicWhatsAppLook
                         ) {
-                            // Far Left: Circular (+) Attach button
-                            WuppGlassCircleButton(
-                                onClick = {
-                                    val nextTray = !showAttachTray
-                                    showAttachTray = nextTray
-                                    if (nextTray) {
-                                        showEmojiPicker = false
-                                        holdDockForIme = false
-                                    }
-                                },
-                                contentDescription = "Attach",
-                                imageVector = if (showAttachTray) Icons.Rounded.Close else Icons.Rounded.Add,
-                                size = 40.dp,
-                                iconSize = 22.dp,
-                                tint = if (showAttachTray) colors.brightGreen else colors.textPrimary,
-                                backdropState = wallpaperBackdropState,
-                                classicMode = stealthConfig.classicWhatsAppLook,
-                                modifier = Modifier.padding(bottom = 1.dp)
-                            )
-
-                            // Middle: Unified Rounded Capsule (Embedded Quoted Reply Preview + Message Input + Right Sticker/Emoji Icon)
-                            WuppGlassContainer(
-                                modifier = Modifier.weight(1f),
-                                colors = colors,
-                                shape = RoundedCornerShape(if (replyTarget != null) 20.dp else 22.dp),
-                                elevation = 10.dp,
-                                backdropState = wallpaperBackdropState,
-                                classicMode = stealthConfig.classicWhatsAppLook
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.Bottom,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Column(modifier = Modifier.fillMaxWidth()) {
-                                    // Embedded Quoted Reply Preview inside top of capsule
-                                    AnimatedVisibility(visible = replyTarget != null) {
-                                        replyTarget?.let { rep ->
-                                            val repTypeUpper = rep.msgType.uppercase()
-                                            val repHasThumb = !rep.localMediaPath.isNullOrBlank() &&
-                                                (repTypeUpper == "IMAGE" || repTypeUpper == "VIDEO" || repTypeUpper == "GIF" || repTypeUpper == "STICKER")
-                                            val repThumbBmp by produceState<ImageBitmap?>(
-                                                initialValue = null,
-                                                key1 = rep.localMediaPath,
-                                                key2 = repTypeUpper
-                                            ) {
-                                                value = if (repHasThumb) {
-                                                    withContext(Dispatchers.IO) {
-                                                        decodeQuotedThumbnailBitmap(rep.localMediaPath!!, repTypeUpper == "VIDEO")
-                                                    }
-                                                } else null
+                                // Far Left: Borderless (+) / Keyboard toggle directly on frosted bar
+                                val attachInteraction = remember { MutableInteractionSource() }
+                                Box(
+                                    modifier = Modifier
+                                        .padding(bottom = 1.dp)
+                                        .size(38.dp)
+                                        .expressivePressScale(attachInteraction, pressedScale = 0.88f)
+                                        .clip(CircleShape)
+                                        .clickable(
+                                            interactionSource = attachInteraction,
+                                            indication = null
+                                        ) {
+                                            if (showAttachTray) {
+                                                showAttachTray = false
+                                                draftFocusRequester.requestFocus()
+                                                keyboardController?.show()
+                                            } else {
+                                                showEmojiPicker = false
+                                                holdDockForIme = false
+                                                keyboardController?.hide()
+                                                showAttachTray = true
                                             }
-                                            val replyPreviewText = rep.body.ifBlank {
-                                                when (repTypeUpper) {
-                                                    "IMAGE" -> "Photo"
-                                                    "VIDEO" -> "Video"
-                                                    "PTT", "AUDIO" -> "Voice message"
-                                                    "DOCUMENT" -> "Document"
-                                                    "STICKER" -> "Sticker"
-                                                    "GIF" -> "GIF"
-                                                    else -> rep.msgType
-                                                }
-                                            }
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 2.dp)
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .height(IntrinsicSize.Min)
-                                                        .clip(RoundedCornerShape(12.dp))
-                                                        .background(colors.quotedBg),
-                                                    verticalAlignment = Alignment.CenterVertically
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (showAttachTray) Icons.Rounded.Keyboard else Icons.Rounded.Add,
+                                        contentDescription = if (showAttachTray) "Show keyboard" else "Attach",
+                                        tint = colors.textPrimary,
+                                        modifier = Modifier.size(if (showAttachTray) 24.dp else 28.dp)
+                                    )
+                                }
+
+                                // Middle: Smooth Borderless Pill Input (Embedded Quoted Reply + Message + Folded Sticker Icon)
+                                val pillShape = RoundedCornerShape(if (replyTarget != null) 20.dp else 22.dp)
+                                val pillBg = if (colors.isDark) {
+                                    Color(0xFF262B30).copy(alpha = 0.80f)
+                                } else {
+                                    Color(0xFFE9EDF0)
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(pillShape)
+                                        .background(pillBg)
+                                ) {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        // Embedded Quoted Reply Preview inside top of capsule
+                                        androidx.compose.animation.AnimatedVisibility(visible = replyTarget != null) {
+                                            replyTarget?.let { rep ->
+                                                val repTypeUpper = rep.msgType.uppercase()
+                                                val repHasThumb = !rep.localMediaPath.isNullOrBlank() &&
+                                                    (repTypeUpper == "IMAGE" || repTypeUpper == "VIDEO" || repTypeUpper == "GIF" || repTypeUpper == "STICKER")
+                                                val repThumbBmp by produceState<ImageBitmap?>(
+                                                    initialValue = null,
+                                                    key1 = rep.localMediaPath,
+                                                    key2 = repTypeUpper
                                                 ) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .width(3.5.dp)
-                                                            .fillMaxHeight()
-                                                            .background(colors.brightGreen)
-                                                    )
-                                                    Column(
-                                                        modifier = Modifier
-                                                            .weight(1f)
-                                                            .padding(start = 9.dp, end = 28.dp, top = 6.dp, bottom = 6.dp),
-                                                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                                                    ) {
-                                                        Text(
-                                                            text = if (rep.isFromMe) "You" else rep.senderName.ifBlank { rep.senderJid.substringBefore("@") },
-                                                            color = colors.brightGreen,
-                                                            fontWeight = FontWeight.SemiBold,
-                                                            fontSize = 12.sp,
-                                                            maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis
-                                                        )
-                                                        Text(
-                                                            text = replyPreviewText,
-                                                            color = colors.textSecondary,
-                                                            fontSize = 12.5.sp,
-                                                            maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis
-                                                        )
-                                                    }
-                                                    if (repThumbBmp != null) {
-                                                        Image(
-                                                            bitmap = repThumbBmp!!,
-                                                            contentDescription = replyPreviewText,
-                                                            contentScale = ContentScale.Crop,
-                                                            modifier = Modifier
-                                                                .width(50.dp)
-                                                                .fillMaxHeight()
-                                                                .sizeIn(minHeight = 50.dp)
-                                                        )
+                                                    value = if (repHasThumb) {
+                                                        withContext(Dispatchers.IO) {
+                                                            decodeQuotedThumbnailBitmap(rep.localMediaPath!!, repTypeUpper == "VIDEO")
+                                                        }
+                                                    } else null
+                                                }
+                                                val replyPreviewText = rep.body.ifBlank {
+                                                    when (repTypeUpper) {
+                                                        "IMAGE" -> "Photo"
+                                                        "VIDEO" -> "Video"
+                                                        "PTT", "AUDIO" -> "Voice message"
+                                                        "DOCUMENT" -> "Document"
+                                                        "STICKER" -> "Sticker"
+                                                        "GIF" -> "GIF"
+                                                        else -> rep.msgType
                                                     }
                                                 }
-                                                // Top-right translucent circular close badge
                                                 Box(
                                                     modifier = Modifier
-                                                        .align(Alignment.TopEnd)
-                                                        .padding(4.dp)
-                                                        .size(21.dp)
-                                                        .clip(CircleShape)
-                                                        .background(Color.Black.copy(alpha = 0.56f))
-                                                        .clickable { replyTarget = null },
-                                                    contentAlignment = Alignment.Center
+                                                        .fillMaxWidth()
+                                                        .padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 2.dp)
                                                 ) {
-                                                    Icon(
-                                                        imageVector = Icons.Rounded.Close,
-                                                        contentDescription = "Cancel Reply",
-                                                        tint = Color.White,
-                                                        modifier = Modifier.size(13.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Text Entry Row: Message input LEFT + Sticker/Emoji icon INSIDE RIGHT
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .heightIn(min = 41.dp)
-                                            .padding(start = 13.dp, end = 4.dp, top = 3.dp, bottom = 3.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        if (ghostMentionEveryone && chat?.isGroup == true) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .clip(CircleShape)
-                                                    .background(colors.pillActiveBg)
-                                                    .padding(horizontal = 7.dp, vertical = 2.dp)
-                                            ) {
-                                                Text("@all", color = colors.pillActiveText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                            }
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                        }
-                                        Box(modifier = Modifier.weight(1f).padding(vertical = 5.dp)) {
-                                            if (draftValue.text.isEmpty()) {
-                                                Text(
-                                                    text = stringResource(R.string.chat_input_placeholder),
-                                                    color = colors.textSecondary,
-                                                    fontSize = 15.5.sp
-                                                )
-                                            }
-                                            val sendCurrentDraft: () -> Unit = {
-                                                if (draftValue.text.isNotBlank()) {
-                                                    runWithOutboundGuard {
-                                                        scrollToBottomPending = true
-                                                        viewModel.sendText(
-                                                            chatJid = chatJid,
-                                                            text = draftValue.text,
-                                                            quoted = replyTarget,
-                                                            ghostMentionEveryone = ghostMentionEveryone,
-                                                            allowUnsavedColdStart = allowUnsavedColdStartFlag
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .height(IntrinsicSize.Min)
+                                                            .clip(RoundedCornerShape(12.dp))
+                                                            .background(colors.quotedBg),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .width(3.5.dp)
+                                                                .fillMaxHeight()
+                                                                .background(colors.brightGreen)
                                                         )
-                                                        draftValue = TextFieldValue("")
-                                                        viewModel.saveChatDraft(chatJid, "")
-                                                        replyTarget = null
-                                                        ghostMentionEveryone = false
-                                                        scope.launch { listState.animateScrollToItem(0) }
+                                                        Column(
+                                                            modifier = Modifier
+                                                                .weight(1f)
+                                                                .padding(start = 9.dp, end = 28.dp, top = 6.dp, bottom = 6.dp),
+                                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = if (rep.isFromMe) "You" else rep.senderName.ifBlank { rep.senderJid.substringBefore("@") },
+                                                                color = colors.brightGreen,
+                                                                fontWeight = FontWeight.SemiBold,
+                                                                fontSize = 12.sp,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
+                                                            )
+                                                            Text(
+                                                                text = replyPreviewText,
+                                                                color = colors.textSecondary,
+                                                                fontSize = 12.5.sp,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
+                                                            )
+                                                        }
+                                                        if (repThumbBmp != null) {
+                                                            Image(
+                                                                bitmap = repThumbBmp!!,
+                                                                contentDescription = replyPreviewText,
+                                                                contentScale = ContentScale.Crop,
+                                                                modifier = Modifier
+                                                                    .width(50.dp)
+                                                                    .fillMaxHeight()
+                                                                    .sizeIn(minHeight = 50.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                    // Top-right translucent circular close badge
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .align(Alignment.TopEnd)
+                                                            .padding(4.dp)
+                                                            .size(21.dp)
+                                                            .clip(CircleShape)
+                                                            .background(Color.Black.copy(alpha = 0.56f))
+                                                            .clickable { replyTarget = null },
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Rounded.Close,
+                                                            contentDescription = "Cancel Reply",
+                                                            tint = Color.White,
+                                                            modifier = Modifier.size(13.dp)
+                                                        )
                                                     }
                                                 }
                                             }
-                                            BasicTextField(
-                                                value = draftValue,
-                                                onValueChange = { draftValue = it },
-                                                enabled = true,
-                                                interactionSource = draftInteractionSource,
-                                                textStyle = TextStyle(
-                                                    color = colors.textPrimary,
-                                                    fontSize = 15.5.sp,
-                                                    lineHeight = 20.sp
-                                                ),
-                                                cursorBrush = SolidColor(colors.brightGreen),
-                                                maxLines = 6,
-                                                keyboardOptions = KeyboardOptions(
-                                                    capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
-                                                    imeAction = if (stealthConfig.enterIsSend) ImeAction.Send else ImeAction.Default
-                                                ),
-                                                keyboardActions = KeyboardActions(
-                                                    onSend = { sendCurrentDraft() }
-                                                ),
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .focusRequester(draftFocusRequester)
-                                            )
                                         }
-                                        IconButton(
-                                            enabled = canSendOutbound,
-                                            onClick = {
-                                                if (showEmojiPicker) {
-                                                    holdDockForIme = true
-                                                    showEmojiPicker = false
-                                                    draftFocusRequester.requestFocus()
-                                                    keyboardController?.show()
-                                                } else {
-                                                    showAttachTray = false
-                                                    holdDockForIme = false
-                                                    showEmojiPicker = true
-                                                    keyboardController?.hide()
-                                                }
-                                            },
-                                            modifier = Modifier.size(34.dp)
+
+                                        // Text Entry Row: Message input LEFT + Sticker/Emoji icon INSIDE RIGHT
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .heightIn(min = 40.dp)
+                                                .padding(start = 14.dp, end = 5.dp, top = 2.dp, bottom = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            if (showEmojiPicker) {
-                                                Icon(
-                                                    imageVector = Icons.Rounded.Keyboard,
-                                                    contentDescription = stringResource(R.string.chat_switch_to_keyboard),
-                                                    tint = colors.brightGreen,
-                                                    modifier = Modifier.size(21.dp)
+                                            if (ghostMentionEveryone && chat?.isGroup == true) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(CircleShape)
+                                                        .background(colors.pillActiveBg)
+                                                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text("@all", color = colors.pillActiveText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                            }
+                                            Box(modifier = Modifier.weight(1f).padding(vertical = 5.dp)) {
+                                                if (draftValue.text.isEmpty()) {
+                                                    Text(
+                                                        text = stringResource(R.string.chat_input_placeholder),
+                                                        color = colors.textSecondary,
+                                                        fontSize = 16.sp
+                                                    )
+                                                }
+                                                val sendCurrentDraft: () -> Unit = {
+                                                    if (draftValue.text.isNotBlank()) {
+                                                        runWithOutboundGuard {
+                                                            scrollToBottomPending = true
+                                                            viewModel.sendText(
+                                                                chatJid = chatJid,
+                                                                text = draftValue.text,
+                                                                quoted = replyTarget,
+                                                                ghostMentionEveryone = ghostMentionEveryone,
+                                                                allowUnsavedColdStart = allowUnsavedColdStartFlag
+                                                            )
+                                                            draftValue = TextFieldValue("")
+                                                            viewModel.saveChatDraft(chatJid, "")
+                                                            replyTarget = null
+                                                            ghostMentionEveryone = false
+                                                            scope.launch { listState.animateScrollToItem(0) }
+                                                        }
+                                                    }
+                                                }
+                                                BasicTextField(
+                                                    value = draftValue,
+                                                    onValueChange = { draftValue = it },
+                                                    enabled = true,
+                                                    interactionSource = draftInteractionSource,
+                                                    textStyle = TextStyle(
+                                                        color = colors.textPrimary,
+                                                        fontSize = 16.sp,
+                                                        lineHeight = 20.5.sp
+                                                    ),
+                                                    cursorBrush = SolidColor(colors.brightGreen),
+                                                    maxLines = 6,
+                                                    keyboardOptions = KeyboardOptions(
+                                                        capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
+                                                        imeAction = if (stealthConfig.enterIsSend) ImeAction.Send else ImeAction.Default
+                                                    ),
+                                                    keyboardActions = KeyboardActions(
+                                                        onSend = { sendCurrentDraft() }
+                                                    ),
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .focusRequester(draftFocusRequester)
                                                 )
-                                            } else {
-                                                ComposerStickerIcon(
-                                                    tint = colors.textSecondary,
-                                                    modifier = Modifier.size(19.dp)
-                                                )
+                                            }
+                                            IconButton(
+                                                enabled = canSendOutbound,
+                                                onClick = {
+                                                    if (showEmojiPicker) {
+                                                        holdDockForIme = true
+                                                        showEmojiPicker = false
+                                                        draftFocusRequester.requestFocus()
+                                                        keyboardController?.show()
+                                                    } else {
+                                                        showAttachTray = false
+                                                        holdDockForIme = false
+                                                        showEmojiPicker = true
+                                                        keyboardController?.hide()
+                                                    }
+                                                },
+                                                modifier = Modifier.size(34.dp)
+                                            ) {
+                                                if (showEmojiPicker) {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.Keyboard,
+                                                        contentDescription = stringResource(R.string.chat_switch_to_keyboard),
+                                                        tint = colors.brightGreen,
+                                                        modifier = Modifier.size(21.dp)
+                                                    )
+                                                } else {
+                                                    ComposerStickerIcon(
+                                                        tint = colors.textPrimary.copy(alpha = 0.86f),
+                                                        modifier = Modifier.size(21.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                     }
                                 }
-                            }
 
-                            // Far Right: Camera + Mic when empty, circular Green Send when typing
-                            val fabMotion = MaterialTheme.motionScheme
-                            AnimatedContent(
-                                targetState = hasDraftText,
-                                transitionSpec = {
-                                    (scaleIn(
-                                        animationSpec = fabMotion.fastSpatialSpec(),
-                                        initialScale = 0.78f
-                                    ) + fadeIn(fabMotion.fastEffectsSpec())) togetherWith
-                                        (scaleOut(
-                                            animationSpec = fabMotion.fastEffectsSpec(),
-                                            targetScale = 0.78f
-                                        ) + fadeOut(fabMotion.fastEffectsSpec()))
-                                },
-                                label = "mb_composer_right_actions"
-                            ) { typing ->
-                                if (typing) {
-                                    val sendInteraction = remember { MutableInteractionSource() }
-                                    Box(
-                                        modifier = Modifier
-                                            .padding(bottom = 1.dp)
-                                            .size(40.dp)
-                                            .expressivePressScale(sendInteraction, pressedScale = 0.88f)
-                                            .clip(CircleShape)
-                                            .background(if (canSendOutbound) colors.brightGreen else colors.textSecondary)
-                                            .combinedClickable(
-                                                enabled = canSendOutbound,
-                                                interactionSource = sendInteraction,
-                                                indication = null,
-                                                onClick = {
-                                                    runWithOutboundGuard {
-                                                        scrollToBottomPending = true
-                                                        viewModel.sendText(
-                                                            chatJid = chatJid,
-                                                            text = draftValue.text,
-                                                            quoted = replyTarget,
-                                                            ghostMentionEveryone = ghostMentionEveryone,
-                                                            allowUnsavedColdStart = allowUnsavedColdStartFlag
-                                                        )
-                                                        draftValue = TextFieldValue("")
-                                                        viewModel.saveChatDraft(chatJid, "")
-                                                        replyTarget = null
-                                                        ghostMentionEveryone = false
-                                                        scope.launch { listState.animateScrollToItem(0) }
-                                                    }
-                                                },
-                                                onLongClick = {
-                                                    editingScheduledMessage = null
-                                                    showScheduleDialog = true
-                                                }
-                                            ),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.AutoMirrored.Rounded.Send,
-                                            contentDescription = "Send",
-                                            tint = if (canSendOutbound) colors.brightGreen.contrastingContentColor() else Color.White,
-                                            modifier = Modifier.size(19.dp)
-                                        )
-                                    }
-                                } else {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                                        modifier = Modifier.padding(bottom = 1.dp)
-                                    ) {
-                                        WuppGlassCircleButton(
-                                            onClick = {
-                                                AppLockManager.suspendNextBackgroundLock()
-                                                pickVisualMediaLauncher.launch(
-                                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                                                )
-                                            },
-                                            contentDescription = "Camera / Photo",
-                                            drawableRes = R.drawable.vec_ic_camera_reply,
-                                            size = 40.dp,
-                                            iconSize = 20.dp,
-                                            tint = colors.textPrimary,
-                                            backdropState = wallpaperBackdropState,
-                                            classicMode = stealthConfig.classicWhatsAppLook
-                                        )
-                                        val micInteraction = remember { MutableInteractionSource() }
-                                        WuppGlassContainer(
+                                // Far Right: Borderless Camera + Mic when empty, Green Send circle when typing
+                                val fabMotion = MaterialTheme.motionScheme
+                                AnimatedContent(
+                                    targetState = hasDraftText,
+                                    transitionSpec = {
+                                        (scaleIn(
+                                            animationSpec = fabMotion.fastSpatialSpec(),
+                                            initialScale = 0.78f
+                                        ) + fadeIn(fabMotion.fastEffectsSpec())) togetherWith
+                                            (scaleOut(
+                                                animationSpec = fabMotion.fastEffectsSpec(),
+                                                targetScale = 0.78f
+                                            ) + fadeOut(fabMotion.fastEffectsSpec()))
+                                    },
+                                    label = "composer_right_actions"
+                                ) { typing ->
+                                    if (typing) {
+                                        val sendInteraction = remember { MutableInteractionSource() }
+                                        Box(
                                             modifier = Modifier
-                                                .size(40.dp)
-                                                .expressivePressScale(micInteraction, pressedScale = 0.88f)
+                                                .padding(bottom = 1.dp)
+                                                .size(38.dp)
+                                                .expressivePressScale(sendInteraction, pressedScale = 0.88f)
                                                 .clip(CircleShape)
+                                                .background(if (canSendOutbound) colors.brightGreen else colors.textSecondary)
                                                 .combinedClickable(
                                                     enabled = canSendOutbound,
-                                                    interactionSource = micInteraction,
+                                                    interactionSource = sendInteraction,
                                                     indication = null,
                                                     onClick = {
-                                                        val hasMic = ContextCompat.checkSelfPermission(
-                                                            context,
-                                                            Manifest.permission.RECORD_AUDIO
-                                                        ) == PackageManager.PERMISSION_GRANTED
-                                                        if (hasMic) {
-                                                            runWithOutboundGuard {
-                                                                viewModel.toggleVoiceRecording(
-                                                                    chatJid,
-                                                                    true,
-                                                                    allowUnsavedColdStart = allowUnsavedColdStartFlag
-                                                                )
-                                                            }
-                                                        } else {
-                                                            micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                                        runWithOutboundGuard {
+                                                            scrollToBottomPending = true
+                                                            viewModel.sendText(
+                                                                chatJid = chatJid,
+                                                                text = draftValue.text,
+                                                                quoted = replyTarget,
+                                                                ghostMentionEveryone = ghostMentionEveryone,
+                                                                allowUnsavedColdStart = allowUnsavedColdStartFlag
+                                                            )
+                                                            draftValue = TextFieldValue("")
+                                                            viewModel.saveChatDraft(chatJid, "")
+                                                            replyTarget = null
+                                                            ghostMentionEveryone = false
+                                                            scope.launch { listState.animateScrollToItem(0) }
                                                         }
                                                     },
                                                     onLongClick = {
@@ -3039,26 +3333,298 @@ fun ChatScreen(
                                                         showScheduleDialog = true
                                                     }
                                                 ),
-                                            colors = colors,
-                                            shape = CircleShape,
-                                            elevation = 6.dp,
-                                            backdropState = wallpaperBackdropState,
-                                            blurRadius = 7.dp,
-                                            refractionHeight = 8.dp,
-                                            refractionAmount = 14.dp,
-                                            classicMode = stealthConfig.classicWhatsAppLook,
                                             contentAlignment = Alignment.Center
                                         ) {
                                             Icon(
-                                                painter = painterResource(R.drawable.msg_status_mic),
-                                                contentDescription = "Record Voice Note",
-                                                tint = if (canSendOutbound) colors.textPrimary else colors.textSecondary,
-                                                modifier = Modifier.size(20.dp)
+                                                imageVector = Icons.AutoMirrored.Rounded.Send,
+                                                contentDescription = "Send",
+                                                tint = if (canSendOutbound) colors.brightGreen.contrastingContentColor() else Color.White,
+                                                modifier = Modifier.size(18.dp)
                                             )
+                                        }
+                                    } else {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                            modifier = Modifier.padding(bottom = 1.dp)
+                                        ) {
+                                            val camInteraction = remember { MutableInteractionSource() }
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(38.dp)
+                                                    .expressivePressScale(camInteraction, pressedScale = 0.88f)
+                                                    .clip(CircleShape)
+                                                    .clickable(
+                                                        interactionSource = camInteraction,
+                                                        indication = null,
+                                                        onClick = { openCameraOrRequestPermission() }
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.PhotoCamera,
+                                                    contentDescription = "Take photo",
+                                                    tint = colors.textPrimary,
+                                                    modifier = Modifier.size(24.dp)
+                                                )
+                                            }
+                                            val micInteraction = remember { MutableInteractionSource() }
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(38.dp)
+                                                    .expressivePressScale(micInteraction, pressedScale = 0.88f)
+                                                    .clip(CircleShape)
+                                                    .combinedClickable(
+                                                        enabled = canSendOutbound,
+                                                        interactionSource = micInteraction,
+                                                        indication = null,
+                                                        onClick = {
+                                                            val hasMic = ContextCompat.checkSelfPermission(
+                                                                context,
+                                                                Manifest.permission.RECORD_AUDIO
+                                                            ) == PackageManager.PERMISSION_GRANTED
+                                                            if (hasMic) {
+                                                                runWithOutboundGuard {
+                                                                    viewModel.toggleVoiceRecording(
+                                                                        chatJid,
+                                                                        true,
+                                                                        allowUnsavedColdStart = allowUnsavedColdStartFlag
+                                                                    )
+                                                                }
+                                                            } else {
+                                                                micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                                            }
+                                                        },
+                                                        onLongClick = {
+                                                            editingScheduledMessage = null
+                                                            showScheduleDialog = true
+                                                        }
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Mic,
+                                                    contentDescription = "Record Voice Note",
+                                                    tint = if (canSendOutbound) colors.textPrimary else colors.textSecondary,
+                                                    modifier = Modifier.size(24.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+
+                // Sleek Dark Attachment Sheet docked directly beneath the composer
+                val trayMotion = MaterialTheme.motionScheme
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showAttachTray && !isRecordingVoice,
+                    enter = fadeIn(trayMotion.fastEffectsSpec()) + expandVertically(trayMotion.fastSpatialSpec()),
+                    exit = fadeOut(trayMotion.fastEffectsSpec()) + shrinkVertically(trayMotion.fastSpatialSpec())
+                ) {
+                    val sheetBg = if (colors.isDark) Color(0xFF0A0C0E) else colors.appSurface
+                    val tileBg = if (colors.isDark) Color(0xFF161A1D) else Color(0xFFF0F3F6)
+                    val tileBorder = if (colors.isDark) Color(0xFF23282D) else Color(0xFFE1E6EB)
+                    val labelColor = if (colors.isDark) Color(0xFFB8C0C7) else colors.textSecondary
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(sheetBg)
+                            .padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 22.dp),
+                        verticalArrangement = Arrangement.spacedBy(22.dp)
+                    ) {
+                        // Top Row: 3 sleek rounded capsule quick-tool pills
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            // Pill 1: Schedule message
+                            ComposerQuickPill(
+                                icon = Icons.Rounded.Schedule,
+                                iconTint = Color(0xFF38BDF8),
+                                label = "Schedule\nmessage",
+                                pillBg = tileBg,
+                                pillBorder = tileBorder,
+                                labelColor = labelColor,
+                                modifier = Modifier.weight(1f),
+                                onClick = {
+                                    showAttachTray = false
+                                    editingScheduledMessage = null
+                                    showScheduleDialog = true
+                                }
+                            )
+                            // Pill 2: Media Quality toggle (HD / Original / Standard)
+                            val qualityShort = when (qualityMode) {
+                                OutboundQualityMode.HD -> "HD Quality"
+                                OutboundQualityMode.ORIGINAL -> "Original\nLossless"
+                                OutboundQualityMode.STANDARD -> "Standard\nFast"
+                                else -> qualityMode.label
+                            }
+                            val qualityTint = when (qualityMode) {
+                                OutboundQualityMode.HD -> Color(0xFF22C55E)
+                                OutboundQualityMode.ORIGINAL -> Color(0xFFFACC15)
+                                else -> Color(0xFF94A3B8)
+                            }
+                            ComposerQuickPill(
+                                icon = Icons.Rounded.HighQuality,
+                                iconTint = qualityTint,
+                                label = qualityShort,
+                                pillBg = tileBg,
+                                pillBorder = if (qualityMode != OutboundQualityMode.STANDARD) qualityTint.copy(alpha = 0.45f) else tileBorder,
+                                labelColor = labelColor,
+                                modifier = Modifier.weight(1f),
+                                onClick = {
+                                    qualityMode = when (qualityMode) {
+                                        OutboundQualityMode.HD -> OutboundQualityMode.ORIGINAL
+                                        OutboundQualityMode.ORIGINAL -> OutboundQualityMode.STANDARD
+                                        else -> OutboundQualityMode.HD
+                                    }
+                                    Toast.makeText(context, "Media quality: ${qualityMode.label}", Toast.LENGTH_SHORT).show()
+                                }
+                            )
+                            // Pill 3: Group @everyone silent mention OR Scheduled list
+                            if (chat?.isGroup == true) {
+                                ComposerQuickPill(
+                                    icon = Icons.Rounded.AlternateEmail,
+                                    iconTint = if (ghostMentionEveryone) Color(0xFF22C55E) else Color(0xFFEC4899),
+                                    label = if (ghostMentionEveryone) "@everyone\nActive" else "@everyone\nGhost",
+                                    pillBg = tileBg,
+                                    pillBorder = if (ghostMentionEveryone) Color(0xFF22C55E).copy(alpha = 0.50f) else tileBorder,
+                                    labelColor = labelColor,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { ghostMentionEveryone = !ghostMentionEveryone }
+                                )
+                            } else {
+                                ComposerQuickPill(
+                                    icon = Icons.Rounded.EventNote,
+                                    iconTint = Color(0xFFEC4899),
+                                    label = "Scheduled\nqueue",
+                                    pillBg = tileBg,
+                                    pillBorder = tileBorder,
+                                    labelColor = labelColor,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = {
+                                        showAttachTray = false
+                                        showScheduledSheet = true
+                                    }
+                                )
+                            }
+                        }
+
+                        // Main 4x2 Rounded-Square Attachment Grid
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            ComposerAttachTile(
+                                icon = Icons.Rounded.Collections,
+                                iconTint = Color(0xFF22C55E),
+                                label = "Gallery",
+                                tileBg = tileBg,
+                                tileBorder = tileBorder,
+                                labelColor = labelColor,
+                                onClick = {
+                                    showAttachTray = false
+                                    AppLockManager.suspendNextBackgroundLock()
+                                    pickVisualMediaLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                    )
+                                }
+                            )
+                            ComposerAttachTile(
+                                icon = Icons.Rounded.PhotoCamera,
+                                iconTint = Color(0xFFF43F5E),
+                                label = "Camera",
+                                tileBg = tileBg,
+                                tileBorder = tileBorder,
+                                labelColor = labelColor,
+                                onClick = { openCameraOrRequestPermission() }
+                            )
+                            ComposerAttachTile(
+                                icon = Icons.Rounded.Description,
+                                iconTint = Color(0xFF7C5CFF),
+                                label = "Document",
+                                tileBg = tileBg,
+                                tileBorder = tileBorder,
+                                labelColor = labelColor,
+                                onClick = {
+                                    showAttachTray = false
+                                    AppLockManager.suspendNextBackgroundLock()
+                                    pickMediaLauncher.launch("*/*")
+                                }
+                            )
+                            ComposerAttachTile(
+                                icon = Icons.Rounded.Person,
+                                iconTint = Color(0xFF14B8A6),
+                                label = "Contact",
+                                tileBg = tileBg,
+                                tileBorder = tileBorder,
+                                labelColor = labelColor,
+                                onClick = {
+                                    showAttachTray = false
+                                    showInAppContactPicker = true
+                                }
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            ComposerAttachTile(
+                                icon = Icons.Rounded.Headphones,
+                                iconTint = Color(0xFFF97316),
+                                label = "Audio",
+                                tileBg = tileBg,
+                                tileBorder = tileBorder,
+                                labelColor = labelColor,
+                                onClick = {
+                                    showAttachTray = false
+                                    AppLockManager.suspendNextBackgroundLock()
+                                    pickAudioLauncher.launch("audio/*")
+                                }
+                            )
+                            ComposerAttachTile(
+                                icon = Icons.Rounded.EmojiEmotions,
+                                iconTint = Color(0xFFFACC15),
+                                label = "Stickers",
+                                tileBg = tileBg,
+                                tileBorder = tileBorder,
+                                labelColor = labelColor,
+                                onClick = {
+                                    showAttachTray = false
+                                    holdDockForIme = false
+                                    keyboardController?.hide()
+                                    showEmojiPicker = true
+                                }
+                            )
+                            ComposerAttachTile(
+                                icon = Icons.Rounded.Wallpaper,
+                                iconTint = Color(0xFF38BDF8),
+                                label = "Wallpaper",
+                                tileBg = tileBg,
+                                tileBorder = tileBorder,
+                                labelColor = labelColor,
+                                onClick = {
+                                    showAttachTray = false
+                                    showWallpaperDialog = true
+                                }
+                            )
+                            ComposerAttachTile(
+                                icon = Icons.Rounded.Shield,
+                                iconTint = Color(0xFFEC4899),
+                                label = "Privacy",
+                                tileBg = tileBg,
+                                tileBorder = tileBorder,
+                                labelColor = labelColor,
+                                onClick = {
+                                    showAttachTray = false
+                                    showGhostOverrideSheet = true
+                                }
+                            )
                         }
                     }
                 }
@@ -3148,6 +3714,7 @@ fun ChatScreen(
                     }
                 }
                 }
+            }
             }
         }
     }
@@ -3410,6 +3977,274 @@ fun ChatScreen(
                 }
             }
         )
+    }
+
+    // Message Reactions Details Sheet ("Who reacted" — 100% local Room DB, zero extra server calls)
+    reactionDetailsTarget?.let { target ->
+        val storedReactions by remember(target.id) {
+            viewModel.observeReactionsFor(target.id)
+        }.collectAsState(initial = emptyList())
+        val effectiveReactions = remember(storedReactions, target.reactionSummary) {
+            if (storedReactions.isNotEmpty()) {
+                storedReactions
+            } else {
+                target.reactionSummary
+                    .split(Regex("\\s+"))
+                    .filter { it.isNotBlank() }
+                    .mapIndexed { idx, emoji ->
+                        MessageReactionEntity(
+                            messageId = target.id,
+                            actor = "${MessageReactionEntity.LEGACY_PREFIX}$idx:$emoji",
+                            emoji = emoji,
+                            updatedAt = 0L
+                        )
+                    }
+            }
+        }
+        val groupedCounts = remember(effectiveReactions) {
+            effectiveReactions.groupingBy { it.emoji }.eachCount().entries.toList()
+        }
+        var selectedEmojiFilter by remember(target.id) { mutableStateOf<String?>(null) }
+        var showSheetQuickReact by remember(target.id) { mutableStateOf(false) }
+        val visibleReactions = remember(effectiveReactions, selectedEmojiFilter) {
+            val f = selectedEmojiFilter
+            if (f == null) effectiveReactions else effectiveReactions.filter { it.emoji == f }
+        }
+        LaunchedEffect(effectiveReactions.size) {
+            if (selectedEmojiFilter != null && effectiveReactions.none { it.emoji == selectedEmojiFilter }) {
+                selectedEmojiFilter = null
+            }
+        }
+        val sheetBg = if (colors.isDark) Color(0xFF121518) else colors.elevatedBar
+        val chipBg = if (colors.isDark) Color(0xFF252A2E) else colors.pillInactiveBg
+        val chipSelectedBg = if (colors.isDark) Color(0xFF353C42) else colors.pillActiveBg
+
+        ModalBottomSheet(
+            onDismissRequest = { reactionDetailsTarget = null },
+            containerColor = sheetBg
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 26.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                val totalCount = effectiveReactions.size
+                Text(
+                    text = if (totalCount == 1) "1 reaction" else "$totalCount reactions",
+                    fontWeight = FontWeight.Medium,
+                    color = colors.textPrimary,
+                    fontSize = 18.sp
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Quick-react toggle chip (add or switch your own reaction)
+                    if (!isChannel && !isGroupAnnounceLocked) {
+                        Box(
+                            modifier = Modifier
+                                .height(36.dp)
+                                .widthIn(min = 58.dp)
+                                .clip(CircleShape)
+                                .background(if (showSheetQuickReact) chipSelectedBg else chipBg)
+                                .clickable { showSheetQuickReact = !showSheetQuickReact }
+                                .padding(horizontal = 16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AddReaction,
+                                contentDescription = "Add reaction",
+                                tint = colors.textPrimary.copy(alpha = 0.88f),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    if (groupedCounts.size > 1) {
+                        val isAll = selectedEmojiFilter == null
+                        Box(
+                            modifier = Modifier
+                                .height(36.dp)
+                                .clip(CircleShape)
+                                .background(if (isAll) chipSelectedBg else chipBg)
+                                .clickable { selectedEmojiFilter = null }
+                                .padding(horizontal = 16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "All $totalCount",
+                                color = colors.textPrimary,
+                                fontSize = 14.sp,
+                                fontWeight = if (isAll) FontWeight.SemiBold else FontWeight.Normal
+                            )
+                        }
+                    }
+
+                    groupedCounts.forEach { (emoji, count) ->
+                        val selected = selectedEmojiFilter == emoji || (groupedCounts.size == 1 && selectedEmojiFilter == null)
+                        Row(
+                            modifier = Modifier
+                                .height(36.dp)
+                                .clip(CircleShape)
+                                .background(if (selected) chipSelectedBg else chipBg)
+                                .clickable {
+                                    selectedEmojiFilter = if (selectedEmojiFilter == emoji) null else emoji
+                                }
+                                .padding(horizontal = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(text = emoji, fontSize = 17.sp)
+                            Text(
+                                text = count.toString(),
+                                color = colors.textSecondary,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+
+                androidx.compose.animation.AnimatedVisibility(visible = showSheetQuickReact) {
+                    val quickList = stealthConfig.quickReactionEmojis.ifEmpty {
+                        StealthMatrixManager.DEFAULT_QUICK_REACTIONS
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(chipBg)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        quickList.forEach { emoji ->
+                            Text(
+                                text = emoji,
+                                fontSize = 24.sp,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .clickable {
+                                        runWithOutboundGuard {
+                                            viewModel.sendReaction(chatJid, target, emoji)
+                                        }
+                                        showSheetQuickReact = false
+                                    }
+                                    .padding(6.dp)
+                            )
+                        }
+                    }
+                }
+
+                if (visibleReactions.isEmpty()) {
+                    Text(
+                        text = "No reactions yet",
+                        color = colors.textSecondary,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        visibleReactions.forEach { item ->
+                            val isMe = item.actor == MessageReactionEntity.ME_ACTOR ||
+                                (bridgeStatus.ownJid.isNotBlank() && item.actor == bridgeStatus.ownJid)
+                            val isLegacy = item.actor.startsWith(MessageReactionEntity.LEGACY_PREFIX)
+                            val meta = if (!isMe && !isLegacy) participantMeta[item.actor] else null
+                            val altJid = meta?.altJid.orEmpty()
+                            val reactorAvatar = when {
+                                isMe -> bridgeStatus.ownJid.takeIf { it.isNotBlank() }?.let { chatsByJid[it]?.avatarPath }
+                                isLegacy -> null
+                                else -> meta?.avatarPath?.takeIf { it.isNotBlank() }
+                                    ?: chatsByJid[item.actor]?.avatarPath?.takeIf { it.isNotBlank() }
+                                    ?: altJid.takeIf { it.isNotBlank() }?.let { chatsByJid[it]?.avatarPath?.takeIf { p -> p.isNotBlank() } }
+                                    ?: if (chat?.isGroup != true) chat?.avatarPath?.takeIf { it.isNotBlank() } else null
+                            }
+                            val reactorName = when {
+                                isMe -> "You"
+                                isLegacy -> if (chat?.isGroup != true) {
+                                    chat?.name?.takeIf { it.isNotBlank() } ?: "Contact"
+                                } else {
+                                    "Participant"
+                                }
+                                else -> resolveSenderDisplayInfo(
+                                    rawJidOrText = item.actor,
+                                    explicitName = "",
+                                    isSelf = false,
+                                    participantMeta = participantMeta,
+                                    chatsByJid = chatsByJid,
+                                    senderPushByJid = senderPushByJid
+                                ).primary.removePrefix("~ ").trim().ifBlank { item.actor.substringBefore("@") }
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .then(
+                                        if (isMe && !isChannel && !isGroupAnnounceLocked) {
+                                            Modifier.clickable {
+                                                runWithOutboundGuard {
+                                                    viewModel.sendReaction(chatJid, target, "")
+                                                }
+                                                if (effectiveReactions.size <= 1) {
+                                                    reactionDetailsTarget = null
+                                                }
+                                            }
+                                        } else {
+                                            Modifier
+                                        }
+                                    )
+                                    .padding(vertical = 8.dp, horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                WhatsAppAvatar(
+                                    jid = if (isMe) bridgeStatus.ownJid else if (isLegacy) "" else item.actor,
+                                    avatarPath = reactorAvatar,
+                                    isGroup = false,
+                                    size = 44.dp,
+                                    initialChar = extractAvatarInitialChar(reactorName)
+                                )
+                                Spacer(modifier = Modifier.width(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = reactorName,
+                                        color = colors.textPrimary,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    if (isMe && !isChannel && !isGroupAnnounceLocked) {
+                                        Text(
+                                            text = "Tap to remove",
+                                            color = colors.textSecondary,
+                                            fontSize = 12.5.sp,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = item.emoji,
+                                    fontSize = 24.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Unlimited Edit History Bottom Sheet
@@ -3995,6 +4830,35 @@ internal fun resolveSelectionBarLayout(
     return SelectionBarLayout(directActions = direct, overflowActions = overflow)
 }
 
+internal fun resolveFloatingContextActions(
+    msg: MessageEntity,
+    isChannel: Boolean,
+    isGroupAnnounceLocked: Boolean,
+    isDocument: Boolean
+): Pair<List<SelectionBarAction>, List<SelectionBarAction>> {
+    val primary = buildList {
+        if (!isChannel && !isGroupAnnounceLocked) add(SelectionBarAction.REPLY)
+        if (com.wa.beastclient.core.service.WaRealtimeService.isForwardableMessageType(msg)) {
+            add(SelectionBarAction.FORWARD)
+        }
+        if (msg.body.isNotBlank()) add(SelectionBarAction.COPY)
+        if (msg.isFromMe && msg.msgType == "TEXT") add(SelectionBarAction.EDIT)
+        add(SelectionBarAction.DELETE)
+        add(SelectionBarAction.MESSAGE_INFO)
+    }
+    val secondary = buildList {
+        add(SelectionBarAction.PIN_UNPIN)
+        if (!msg.localMediaPath.isNullOrBlank()) {
+            add(SelectionBarAction.SAVE_MEDIA)
+        }
+        if (!msg.localMediaPath.isNullOrBlank() && isDocument) {
+            add(SelectionBarAction.OPEN_DOCUMENT)
+        }
+        if (msg.isEdited) add(SelectionBarAction.EDIT_HISTORY)
+    }
+    return primary to secondary
+}
+
 @Composable
 private fun ActionSheetRow(
     title: String,
@@ -4023,6 +4887,7 @@ private fun MessageBubbleRow(
     isChannel: Boolean = false,
     channelDisplayName: String = "",
     showTail: Boolean,
+    showSenderHeader: Boolean = showTail,
     isSenderAdmin: Boolean = false,
     senderDisplay: SenderDisplayInfo? = null,
     senderAvatarPath: String? = null,
@@ -4030,6 +4895,8 @@ private fun MessageBubbleRow(
     quotedMentionsCsv: String = "",
     quotedMediaPath: String? = null,
     quotedMsgType: String? = null,
+    quotedIsViewOnce: Boolean = false,
+    quotedDurationSec: Int = 0,
     mentionDisplayResolver: ((String) -> String?)? = null,
     onClickSenderAvatar: () -> Unit = {},
     ghostPlayedActive: Boolean,
@@ -4038,6 +4905,9 @@ private fun MessageBubbleRow(
     isSelectionMode: Boolean = false,
     isSelected: Boolean = false,
     onToggleSelect: () -> Unit = {},
+    onBubbleBoundsChanged: ((androidx.compose.ui.geometry.Rect) -> Unit)? = null,
+    onQuickForward: (() -> Unit)? = null,
+    onClickReaction: (() -> Unit)? = null,
     onClickEditBadge: () -> Unit,
     onClickQuoted: (String) -> Unit = {},
     onManualSendPlayedReceipt: () -> Unit,
@@ -4084,17 +4954,18 @@ private fun MessageBubbleRow(
         msg.msgType != "VIEW_ONCE_STRIPPED" &&
         !msg.isDeletedBySender
 
+    val tailOffsetDp = 5.5.dp
     val sideStartPad = when {
         isSticker -> 0.dp
-        isMediaCard -> if (!isChannel && showTail && !effectiveOutgoing) 9.dp else 3.dp
-        isDocCard || isContactCard -> if (!isChannel && showTail && !effectiveOutgoing) 10.dp else 6.dp
-        else -> if (!isChannel && showTail && !effectiveOutgoing) 14.dp else 10.dp
+        isMediaCard -> if (!isChannel && showTail && !effectiveOutgoing) 8.5.dp else 3.dp
+        isDocCard || isContactCard -> if (!isChannel && showTail && !effectiveOutgoing) 11.5.dp else 6.dp
+        else -> if (!isChannel && showTail && !effectiveOutgoing) 15.5.dp else 10.dp
     }
     val sideEndPad = when {
         isSticker -> 0.dp
-        isMediaCard -> if (!isChannel && showTail && effectiveOutgoing) 9.dp else 3.dp
-        isDocCard || isContactCard -> if (!isChannel && showTail && effectiveOutgoing) 10.dp else 6.dp
-        else -> if (!isChannel && showTail && effectiveOutgoing) 14.dp else 10.dp
+        isMediaCard -> if (!isChannel && showTail && effectiveOutgoing) 8.5.dp else 3.dp
+        isDocCard || isContactCard -> if (!isChannel && showTail && effectiveOutgoing) 11.5.dp else 6.dp
+        else -> if (!isChannel && showTail && effectiveOutgoing) 15.5.dp else 10.dp
     }
     val topBottomPad = when {
         isSticker -> 0.dp
@@ -4104,17 +4975,18 @@ private fun MessageBubbleRow(
     }
     val bubbleMaxW = when {
         isSticker -> 160.dp
-        isMediaCard -> 256.dp
+        isMediaCard -> 282.dp
         isContactCard -> 270.dp
         isDocCard -> 285.dp
         else -> 305.dp
     }
     val showGroupGutter = isGroup && !effectiveOutgoing
+    val nonTailStartAlign = if (!isChannel && !isSticker && !effectiveOutgoing && !showTail) tailOffsetDp else 0.dp
+    val nonTailEndAlign = if (!isChannel && !isSticker && effectiveOutgoing && !showTail) tailOffsetDp else 0.dp
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(if (isSelected) colors.brightGreen.copy(alpha = 0.18f) else Color.Transparent)
             .then(
                 if (isSelectionMode) {
                     Modifier.clickable(
@@ -4128,13 +5000,13 @@ private fun MessageBubbleRow(
                 start = when {
                     isChannel -> 4.dp
                     effectiveOutgoing -> 52.dp
-                    else -> 0.dp
+                    else -> nonTailStartAlign
                 },
                 end = when {
                     isChannel -> 4.dp
-                    effectiveOutgoing -> 0.dp
-                    showGroupGutter -> 38.dp
-                    else -> 52.dp
+                    effectiveOutgoing -> nonTailEndAlign
+                    showGroupGutter -> 34.dp
+                    else -> 48.dp
                 }
             ),
         horizontalArrangement = when {
@@ -4145,7 +5017,7 @@ private fun MessageBubbleRow(
         verticalAlignment = Alignment.Top
     ) {
         if (showGroupGutter) {
-            if (showTail) {
+            if (showSenderHeader) {
                 val resolvedPrimary = senderDisplay?.primary ?: msg.senderName
                 val showInitials = resolvedPrimary != "~ Member" && resolvedPrimary != "Group Admin"
                 Box(
@@ -4165,12 +5037,34 @@ private fun MessageBubbleRow(
                 Spacer(modifier = Modifier.width(34.dp))
             }
         }
+        if (effectiveOutgoing && isMediaCard && hasVaultFile && onQuickForward != null && !isSelectionMode && !isChannel) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterVertically)
+                    .padding(end = 10.dp)
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(if (colors.isDark) Color(0xD41F2428) else Color(0xE0FFFFFF))
+                    .clickable(onClick = onQuickForward),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.Forward,
+                    contentDescription = "Forward media",
+                    tint = if (colors.isDark) Color.White else colors.textPrimary,
+                    modifier = Modifier.size(19.dp)
+                )
+            }
+        }
         Column(
             horizontalAlignment = if (effectiveOutgoing) Alignment.End else Alignment.Start
         ) {
         Box(
             modifier = Modifier
                 .then(if (isChannel) Modifier.fillMaxWidth().widthIn(max = 390.dp) else Modifier.widthIn(max = bubbleMaxW))
+                .onGloballyPositioned { coords ->
+                    onBubbleBoundsChanged?.invoke(coords.boundsInRoot())
+                }
                 .clip(shape)
                 .background(bubbleColor)
                 .combinedClickable(
@@ -4197,7 +5091,12 @@ private fun MessageBubbleRow(
             )
             .padding(start = sideStartPad, end = sideEndPad, top = topBottomPad, bottom = topBottomPad)
         ) {
-            Column {
+            val useTightIntrinsicWidth = !msg.quotedId.isNullOrBlank() &&
+                !isChannel && !isMediaCard && !isDocCard && !isContactCard &&
+                msg.msgType != "PTT" && msg.msgType != "AUDIO"
+            Column(
+                modifier = if (useTightIntrinsicWidth) Modifier.width(IntrinsicSize.Max) else Modifier
+            ) {
                 // Sender color label in Groups
                 val cleanSenderJid = msg.senderJid.takeIf {
                     it.isNotBlank() && !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(it, msg.chatJid)
@@ -4209,7 +5108,7 @@ private fun MessageBubbleRow(
                     }
                     ?: cleanSenderJid.substringBefore("@").takeIf { it.isNotBlank() }
                     ?: "~ Member"
-                if (isGroup && !effectiveOutgoing && showTail && senderPrimary.isNotBlank()) {
+                if (isGroup && !effectiveOutgoing && showSenderHeader && senderPrimary.isNotBlank()) {
                     val palette = listOf(Color(0xFF53BDEB), Color(0xFFFFB74D), Color(0xFF7CE8A5), Color(0xFFF48FB1))
                     val colorKey = senderDisplay?.keyForColor?.takeIf {
                         it.isNotBlank() && it != "participant" && it != "group"
@@ -4233,7 +5132,7 @@ private fun MessageBubbleRow(
                             text = resolvedPrimary,
                             color = c,
                             fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.5.sp,
+                            fontSize = 13.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false)
@@ -4257,7 +5156,7 @@ private fun MessageBubbleRow(
                     }
                 }
 
-                // Quoted Context Banner with full-height accent bar + 52dp right-edge media thumbnail
+                // Quoted Context Banner with full-height accent bar + media glyph + 50dp square thumbnail
                 if (!msg.quotedId.isNullOrBlank()) {
                     val rawQuoted = msg.quotedSender.orEmpty()
                     val qPrimary = quotedDisplay?.primary?.takeIf { it.isNotBlank() } ?: when {
@@ -4280,12 +5179,13 @@ private fun MessageBubbleRow(
                         )[abs((quotedDisplay?.keyForColor ?: rawQuoted).hashCode()) % 4]
                     }
                     val qTypeUpper = quotedMsgType.orEmpty().uppercase()
-                    val hasQuotedThumb = !quotedMediaPath.isNullOrBlank() &&
+                    val hasQuotedThumb = !quotedIsViewOnce && !quotedMediaPath.isNullOrBlank() &&
                         (qTypeUpper == "IMAGE" || qTypeUpper == "VIDEO" || qTypeUpper == "GIF" || qTypeUpper == "STICKER")
                     val quotedThumbBmp by produceState<ImageBitmap?>(
                         initialValue = null,
                         key1 = quotedMediaPath,
-                        key2 = qTypeUpper
+                        key2 = qTypeUpper,
+                        key3 = quotedIsViewOnce
                     ) {
                         value = if (hasQuotedThumb) {
                             withContext(Dispatchers.IO) {
@@ -4293,10 +5193,11 @@ private fun MessageBubbleRow(
                             }
                         } else null
                     }
+                    val durationSuffix = if (quotedDurationSec > 0) " (${formatVideoDuration(quotedDurationSec)})" else ""
                     val mediaTypeFallback = when (qTypeUpper) {
                         "IMAGE" -> "Photo"
-                        "VIDEO" -> "Video"
-                        "PTT", "AUDIO" -> "Voice message"
+                        "VIDEO" -> "Video$durationSuffix"
+                        "PTT", "AUDIO" -> "Voice message$durationSuffix"
                         "DOCUMENT" -> "Document"
                         "STICKER" -> "Sticker"
                         "GIF" -> "GIF"
@@ -4304,19 +5205,15 @@ private fun MessageBubbleRow(
                     }
                     Row(
                         modifier = Modifier
-                            .then(
-                                if (isMediaCard || isDocCard) {
-                                    Modifier.fillMaxWidth()
-                                } else {
-                                    Modifier.widthIn(min = 148.dp)
-                                }
-                            )
+                            .fillMaxWidth()
+                            .widthIn(min = 148.dp)
                             .padding(
                                 start = if (isMediaCard) 3.dp else 0.dp,
                                 end = if (isMediaCard) 3.dp else 0.dp,
                                 bottom = 5.dp
                             )
                             .height(IntrinsicSize.Min)
+                            .heightIn(min = 46.dp, max = 56.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .background(colors.quotedBg)
                             .combinedClickable(
@@ -4338,28 +5235,26 @@ private fun MessageBubbleRow(
                         )
                         Column(
                             modifier = Modifier
-                                .then(
-                                    if (isMediaCard || isDocCard) Modifier.weight(1f)
-                                    else Modifier.weight(1f, fill = false)
-                                )
+                                .weight(1f)
                                 .padding(horizontal = 8.5.dp, vertical = 5.5.dp),
-                            verticalArrangement = Arrangement.spacedBy(1.5.dp)
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             Row(
-                                modifier = if (isMediaCard || isDocCard) Modifier.fillMaxWidth() else Modifier,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
                                     text = qPrimary,
                                     color = qAccent,
                                     fontWeight = FontWeight.SemiBold,
-                                    fontSize = 12.sp,
+                                    fontSize = 12.5.sp,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f, fill = false)
                                 )
                                 if (qPhone.isNotBlank()) {
+                                    Spacer(modifier = Modifier.width(8.dp))
                                     Text(
                                         text = qPhone,
                                         color = colors.textSecondary,
@@ -4376,25 +5271,83 @@ private fun MessageBubbleRow(
                             val displayQuotedText = resolvedQuotedBody.ifBlank {
                                 mediaTypeFallback.ifBlank { "Message" }
                             }
-                            Text(
-                                text = displayQuotedText,
-                                color = if (colors.isDark) Color(0xFFC5CDD4) else colors.textSecondary,
-                                fontSize = 12.5.sp,
-                                lineHeight = 16.sp,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            val quotedTint = if (colors.isDark) Color(0xFFBDC5CC) else colors.textSecondary
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                when {
+                                    quotedIsViewOnce -> {
+                                        Icon(
+                                            painter = painterResource(R.drawable.vec_ic_view_once),
+                                            contentDescription = null,
+                                            tint = quotedTint,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                    qTypeUpper == "VIDEO" -> {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Videocam,
+                                            contentDescription = null,
+                                            tint = quotedTint,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                    qTypeUpper == "PTT" || qTypeUpper == "AUDIO" -> {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Mic,
+                                            contentDescription = null,
+                                            tint = quotedTint,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                    qTypeUpper == "IMAGE" -> {
+                                        Icon(
+                                            imageVector = Icons.Rounded.PhotoCamera,
+                                            contentDescription = null,
+                                            tint = quotedTint,
+                                            modifier = Modifier.size(13.5.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = displayQuotedText,
+                                    color = quotedTint,
+                                    fontSize = 13.sp,
+                                    lineHeight = 16.5.sp,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                         if (quotedThumbBmp != null) {
-                            Image(
-                                bitmap = quotedThumbBmp!!,
-                                contentDescription = mediaTypeFallback.ifBlank { "Quoted media" },
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .width(50.dp)
-                                    .fillMaxHeight()
-                                    .sizeIn(minHeight = 50.dp)
-                            )
+                            Box(
+                                modifier = Modifier.size(50.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Image(
+                                    bitmap = quotedThumbBmp!!,
+                                    contentDescription = mediaTypeFallback.ifBlank { "Quoted media" },
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                if (qTypeUpper == "VIDEO") {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0x9912171B)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.PlayArrow,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -4665,7 +5618,7 @@ private fun MessageBubbleRow(
                             )
                         val isPureVideo = msg.msgType == "VIDEO" ||
                             (msg.mimeType.startsWith("video/", ignoreCase = true) && msg.msgType != "GIF")
-                        val bmp by produceState<ImageBitmap?>(
+                        val previewMeta by produceState<MediaPreviewMeta?>(
                             initialValue = null,
                             key1 = localFile?.absolutePath,
                             key2 = isVideo,
@@ -4675,11 +5628,11 @@ private fun MessageBubbleRow(
                                 null
                             } else if (!isVideo) {
                                 withContext(Dispatchers.IO) {
-                                    runCatching { BitmapFactory.decodeFile(localFile.absolutePath)?.asImageBitmap() }.getOrNull()
+                                    decodeImagePreviewMeta(localFile.absolutePath)
                                 }
                             } else {
                                 withContext(Dispatchers.IO) {
-                                    extractVideoThumbnailBitmap(localFile.absolutePath)?.asImageBitmap()
+                                    extractVideoPreviewMeta(localFile.absolutePath)
                                 }
                             }
                         }
@@ -4689,10 +5642,51 @@ private fun MessageBubbleRow(
                                 onAutoRequestDownload()
                             }
                         }
+                        val loadedBmp = previewMeta?.bitmap
+                        val origW = previewMeta?.origWidth?.takeIf { it > 0 } ?: (loadedBmp?.width ?: 0)
+                        val origH = previewMeta?.origHeight?.takeIf { it > 0 } ?: (loadedBmp?.height ?: 0)
+                        val mediaRatio = if (origW > 0 && origH > 0) {
+                            (origW.toFloat() / origH.toFloat()).coerceIn(0.45f, 2.2f)
+                        } else {
+                            null
+                        }
+                        // Official WhatsApp HD thresholds: videos >= 720p, photos >= 2000px longest side
+                        val isHdMedia = if (origW > 0 && origH > 0) {
+                            val minSide = minOf(origW, origH)
+                            val maxSide = maxOf(origW, origH)
+                            if (isPureVideo) (minSide >= 720 || maxSide >= 1280)
+                            else if (!isVideo && !isImageGif) maxSide >= 2000
+                            else false
+                        } else {
+                            false
+                        }
+                        // Auto-adjust card width & height cleanly according to portrait / square / landscape aspect ratio
+                        val (mediaWidthDp, mediaHeightDp) = when {
+                            isChannel -> null to (mediaRatio?.let { (340f / it).coerceIn(170f, 340f).dp } ?: 220.dp)
+                            localFile == null -> 248.dp to 206.dp
+                            isImageGif -> 248.dp to 210.dp
+                            mediaRatio == null -> 248.dp to 215.dp
+                            mediaRatio < 0.90f -> {
+                                val w = 248f
+                                w.dp to (w / mediaRatio).coerceIn(235f, 325f).dp
+                            }
+                            mediaRatio <= 1.15f -> {
+                                val w = 256f
+                                w.dp to (w / mediaRatio).coerceIn(220f, 275f).dp
+                            }
+                            else -> {
+                                val w = 272f
+                                w.dp to (w / mediaRatio).coerceIn(148f, 232f).dp
+                            }
+                        }
+                        val mediaBoxSizeMod = if (mediaWidthDp != null) {
+                            Modifier.width(mediaWidthDp).height(mediaHeightDp)
+                        } else {
+                            Modifier.fillMaxWidth().height(mediaHeightDp)
+                        }
                         Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(13.dp))
+                            modifier = mediaBoxSizeMod
+                                .clip(RoundedCornerShape(12.dp))
                                 .combinedClickable(
                                     onClick = {
                                         if (localFile != null) onOpenMedia() else onRequestDownload()
@@ -4701,38 +5695,41 @@ private fun MessageBubbleRow(
                                 )
                         ) {
                             if (localFile != null) {
-                                val loadedBmp = bmp
                                 if (isImageGif) {
                                     coil.compose.AsyncImage(
                                         model = localFile,
                                         contentDescription = msg.body.ifBlank { "GIF" },
                                         contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .heightIn(min = 120.dp, max = 260.dp)
+                                        modifier = Modifier.fillMaxSize()
                                     )
                                 } else if (loadedBmp != null) {
-                                    val ratio = if (loadedBmp.height > 0) {
-                                        (loadedBmp.width.toFloat() / loadedBmp.height.toFloat()).coerceIn(0.55f, 1.85f)
-                                    } else {
-                                        1f
-                                    }
                                     Image(
                                         bitmap = loadedBmp,
                                         contentDescription = msg.body,
                                         contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .aspectRatio(ratio)
+                                        modifier = Modifier.fillMaxSize()
                                     )
                                 } else {
                                     Box(
                                         modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(210.dp)
+                                            .fillMaxSize()
                                             .background(
                                                 Brush.verticalGradient(
-                                                    listOf(Color(0xFF162229), Color(0xFF0B141A))
+                                                    listOf(Color(0xFF1A2228), Color(0xFF0E1418))
+                                                )
+                                            )
+                                    )
+                                }
+                                // Soft bottom gradient scrim for legible HD badge, duration, and timestamp
+                                if (isVideo || isHdMedia || msg.body.isBlank()) {
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .fillMaxWidth()
+                                            .height(48.dp)
+                                            .background(
+                                                Brush.verticalGradient(
+                                                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.62f))
                                                 )
                                             )
                                     )
@@ -4741,9 +5738,9 @@ private fun MessageBubbleRow(
                                     Box(
                                         modifier = Modifier
                                             .align(Alignment.Center)
-                                            .size(50.dp)
+                                            .size(52.dp)
                                             .clip(CircleShape)
-                                            .background(Color(0x99000000)),
+                                            .background(Color.Black.copy(alpha = 0.50f)),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
@@ -4753,19 +5750,23 @@ private fun MessageBubbleRow(
                                             modifier = Modifier.size(32.dp)
                                         )
                                     }
-                                    if (msg.durationSec > 0) {
-                                        Box(
-                                            modifier = Modifier
-                                                .align(Alignment.BottomStart)
-                                                .padding(8.dp)
-                                                .clip(RoundedCornerShape(6.dp))
-                                                .background(Color(0x99000000))
-                                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                                        ) {
+                                }
+                                if (isHdMedia || (isVideo && msg.durationSec > 0)) {
+                                    Row(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomStart)
+                                            .padding(start = 8.dp, bottom = 7.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        if (isHdMedia) {
+                                            HdMediaBadge()
+                                        }
+                                        if (isVideo && msg.durationSec > 0) {
                                             Text(
                                                 text = formatVideoDuration(msg.durationSec),
                                                 color = Color.White,
-                                                fontSize = 11.sp,
+                                                fontSize = 12.5.sp,
                                                 fontWeight = FontWeight.Medium
                                             )
                                         }
@@ -4774,8 +5775,7 @@ private fun MessageBubbleRow(
                             } else {
                                 Box(
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(210.dp)
+                                        .fillMaxSize()
                                         .background(colors.quotedBg),
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -4814,22 +5814,20 @@ private fun MessageBubbleRow(
                                         Text(
                                             text = stateLabel,
                                             color = if (mediaDownloadError != null && !isDownloadingMedia) Color(0xFFFFB74D) else colors.textSecondary,
-                                            fontSize = 12.sp
+                                            fontSize = 12.5.sp
                                         )
                                     }
                                     if (isVideo && msg.durationSec > 0) {
                                         Box(
                                             modifier = Modifier
                                                 .align(Alignment.BottomStart)
-                                                .padding(8.dp)
-                                                .clip(RoundedCornerShape(6.dp))
-                                                .background(Color(0x88000000))
-                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                .padding(start = 8.dp, bottom = 7.dp)
                                         ) {
                                             Text(
                                                 text = formatVideoDuration(msg.durationSec),
                                                 color = Color.White,
-                                                fontSize = 11.sp
+                                                fontSize = 12.5.sp,
+                                                fontWeight = FontWeight.Medium
                                             )
                                         }
                                     }
@@ -4839,10 +5837,7 @@ private fun MessageBubbleRow(
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.BottomEnd)
-                                        .padding(6.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(colors.mediaScrim)
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        .padding(end = 8.dp, bottom = 6.dp)
                                 ) {
                                     MessageMetaCluster(
                                         timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour),
@@ -4850,7 +5845,7 @@ private fun MessageBubbleRow(
                                         isEphemeral = msg.isEphemeral,
                                         isFromMe = msg.isFromMe,
                                         deliveryStatus = msg.deliveryStatus,
-                                        tintOverride = Color.White,
+                                        tintOverride = Color.White.copy(alpha = 0.94f),
                                         isPinned = msg.isPinned
                                     )
                                 }
@@ -4998,22 +5993,57 @@ private fun MessageBubbleRow(
                 }
             }
         }
-        // Reaction & forward pill underneath the bubble/card
+        // Clickable overlapping Reaction pill underneath the bubble/card
         if (msg.reactionSummary.isNotBlank()) {
+            val reactInteraction = remember { MutableInteractionSource() }
             Box(
                 modifier = Modifier
-                    .padding(top = 3.dp, start = 4.dp, end = 4.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(colors.elevatedBar)
-                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                    .offset(y = (-6).dp)
+                    .padding(horizontal = 8.dp)
+                    .expressivePressScale(reactInteraction, pressedScale = 0.88f)
+                    .clip(CircleShape)
+                    .background(if (colors.isDark) Color(0xFF23282C) else colors.elevatedBar)
+                    .border(1.4.dp, colors.chatCanvas, CircleShape)
+                    .then(
+                        if (onClickReaction != null && !isSelectionMode) {
+                            Modifier.clickable(
+                                interactionSource = reactInteraction,
+                                indication = null,
+                                onClick = onClickReaction
+                            )
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = msg.reactionSummary,
-                    color = colors.textSecondary,
-                    fontSize = 12.sp
+                    color = colors.textPrimary,
+                    fontSize = 14.5.sp
                 )
             }
         }
+        }
+        if (!effectiveOutgoing && isMediaCard && hasVaultFile && onQuickForward != null && !isSelectionMode && !isChannel) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterVertically)
+                    .padding(start = 10.dp)
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(if (colors.isDark) Color(0xD41F2428) else Color(0xE0FFFFFF))
+                    .clickable(onClick = onQuickForward),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.Forward,
+                    contentDescription = "Forward media",
+                    tint = if (colors.isDark) Color.White else colors.textPrimary,
+                    modifier = Modifier.size(19.dp)
+                )
+            }
         }
     }
 }
@@ -5123,6 +6153,167 @@ private fun ComposerStickerIcon(
 }
 
 @Composable
+private fun ContextMenuActionGlyph(
+    action: SelectionBarAction?,
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val sw = (w * 0.075f).coerceAtLeast(1.45f)
+        val stroke = Stroke(width = sw, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        when (action) {
+            SelectionBarAction.REPLY -> {
+                // Hollow outlined curved reply arrow pointing left
+                val p = Path().apply {
+                    moveTo(w * 0.42f, h * 0.20f)
+                    lineTo(w * 0.14f, h * 0.45f)
+                    lineTo(w * 0.42f, h * 0.70f)
+                    lineTo(w * 0.42f, h * 0.54f)
+                    cubicTo(w * 0.64f, h * 0.54f, w * 0.78f, h * 0.62f, w * 0.87f, h * 0.79f)
+                    cubicTo(w * 0.86f, h * 0.50f, w * 0.68f, h * 0.36f, w * 0.42f, h * 0.36f)
+                    close()
+                }
+                drawPath(path = p, color = tint, style = stroke)
+            }
+            SelectionBarAction.FORWARD -> {
+                // Hollow outlined curved forward arrow pointing right
+                val p = Path().apply {
+                    moveTo(w * 0.58f, h * 0.20f)
+                    lineTo(w * 0.86f, h * 0.45f)
+                    lineTo(w * 0.58f, h * 0.70f)
+                    lineTo(w * 0.58f, h * 0.54f)
+                    cubicTo(w * 0.36f, h * 0.54f, w * 0.22f, h * 0.62f, w * 0.13f, h * 0.79f)
+                    cubicTo(w * 0.14f, h * 0.50f, w * 0.32f, h * 0.36f, w * 0.58f, h * 0.36f)
+                    close()
+                }
+                drawPath(path = p, color = tint, style = stroke)
+            }
+            SelectionBarAction.COPY -> {
+                // Two crisp overlapping outlined pages
+                val cr = CornerRadius(w * 0.10f, h * 0.10f)
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(w * 0.18f, h * 0.28f),
+                    size = Size(w * 0.52f, h * 0.58f),
+                    cornerRadius = cr,
+                    style = stroke
+                )
+                val back = Path().apply {
+                    moveTo(w * 0.32f, h * 0.28f)
+                    lineTo(w * 0.32f, h * 0.20f)
+                    quadraticTo(w * 0.32f, h * 0.13f, w * 0.39f, h * 0.13f)
+                    lineTo(w * 0.75f, h * 0.13f)
+                    quadraticTo(w * 0.82f, h * 0.13f, w * 0.82f, h * 0.20f)
+                    lineTo(w * 0.82f, h * 0.64f)
+                    quadraticTo(w * 0.82f, h * 0.71f, w * 0.75f, h * 0.71f)
+                    lineTo(w * 0.70f, h * 0.71f)
+                }
+                drawPath(path = back, color = tint, style = stroke)
+            }
+            SelectionBarAction.EDIT -> {
+                // Slim hollow diagonal pencil
+                val body = Path().apply {
+                    moveTo(w * 0.18f, h * 0.82f)
+                    lineTo(w * 0.24f, h * 0.62f)
+                    lineTo(w * 0.68f, h * 0.18f)
+                    quadraticTo(w * 0.74f, h * 0.12f, w * 0.80f, h * 0.18f)
+                    lineTo(w * 0.82f, h * 0.20f)
+                    quadraticTo(w * 0.88f, h * 0.26f, w * 0.82f, h * 0.32f)
+                    lineTo(w * 0.38f, h * 0.76f)
+                    close()
+                }
+                drawPath(path = body, color = tint, style = stroke)
+                drawLine(
+                    color = tint,
+                    start = Offset(w * 0.59f, h * 0.27f),
+                    end = Offset(w * 0.73f, h * 0.41f),
+                    strokeWidth = sw,
+                    cap = StrokeCap.Round
+                )
+            }
+            SelectionBarAction.DELETE -> {
+                // Crisp hollow trash bin with top handle, lid bar, tapered body, and 2 vertical ribs
+                drawLine(
+                    color = tint,
+                    start = Offset(w * 0.18f, h * 0.26f),
+                    end = Offset(w * 0.82f, h * 0.26f),
+                    strokeWidth = sw,
+                    cap = StrokeCap.Round
+                )
+                val handle = Path().apply {
+                    moveTo(w * 0.38f, h * 0.26f)
+                    lineTo(w * 0.38f, h * 0.18f)
+                    quadraticTo(w * 0.38f, h * 0.14f, w * 0.43f, h * 0.14f)
+                    lineTo(w * 0.57f, h * 0.14f)
+                    quadraticTo(w * 0.62f, h * 0.14f, w * 0.62f, h * 0.18f)
+                    lineTo(w * 0.62f, h * 0.26f)
+                }
+                drawPath(path = handle, color = tint, style = stroke)
+                val bin = Path().apply {
+                    moveTo(w * 0.26f, h * 0.26f)
+                    lineTo(w * 0.30f, h * 0.80f)
+                    quadraticTo(w * 0.31f, h * 0.86f, w * 0.37f, h * 0.86f)
+                    lineTo(w * 0.63f, h * 0.86f)
+                    quadraticTo(w * 0.69f, h * 0.86f, w * 0.70f, h * 0.80f)
+                    lineTo(w * 0.74f, h * 0.26f)
+                }
+                drawPath(path = bin, color = tint, style = stroke)
+                drawLine(
+                    color = tint,
+                    start = Offset(w * 0.43f, h * 0.40f),
+                    end = Offset(w * 0.44f, h * 0.73f),
+                    strokeWidth = sw,
+                    cap = StrokeCap.Round
+                )
+                drawLine(
+                    color = tint,
+                    start = Offset(w * 0.57f, h * 0.40f),
+                    end = Offset(w * 0.56f, h * 0.73f),
+                    strokeWidth = sw,
+                    cap = StrokeCap.Round
+                )
+            }
+            SelectionBarAction.MESSAGE_INFO -> {
+                // Crisp outlined info circle with dot + vertical stem
+                drawCircle(
+                    color = tint,
+                    radius = w * 0.38f,
+                    center = Offset(w * 0.50f, h * 0.50f),
+                    style = stroke
+                )
+                drawCircle(
+                    color = tint,
+                    radius = sw * 0.58f,
+                    center = Offset(w * 0.50f, h * 0.34f)
+                )
+                drawLine(
+                    color = tint,
+                    start = Offset(w * 0.50f, h * 0.46f),
+                    end = Offset(w * 0.50f, h * 0.69f),
+                    strokeWidth = sw,
+                    cap = StrokeCap.Round
+                )
+            }
+            else -> {
+                // Outlined circle with 3 crisp centered dots ("More")
+                drawCircle(
+                    color = tint,
+                    radius = w * 0.38f,
+                    center = Offset(w * 0.50f, h * 0.50f),
+                    style = stroke
+                )
+                val dotR = sw * 0.62f
+                drawCircle(color = tint, radius = dotR, center = Offset(w * 0.34f, h * 0.50f))
+                drawCircle(color = tint, radius = dotR, center = Offset(w * 0.50f, h * 0.50f))
+                drawCircle(color = tint, radius = dotR, center = Offset(w * 0.66f, h * 0.50f))
+            }
+        }
+    }
+}
+
+@Composable
 private fun SystemNoticePill(text: String) {
     if (text.isBlank()) return
     val colors = LocalWaColors.current
@@ -5150,21 +6341,353 @@ private fun SystemNoticePill(text: String) {
     }
 }
 
+@Composable
+private fun HdMediaBadge(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(3.dp))
+            .background(Color.White.copy(alpha = 0.94f))
+            .padding(horizontal = 3.5.dp, vertical = 0.5.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "HD",
+            color = Color(0xFF121619),
+            fontSize = 9.5.sp,
+            fontWeight = FontWeight.ExtraBold,
+            lineHeight = 11.sp
+        )
+    }
+}
+
+@Composable
+private fun ComposerQuickPill(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    iconTint: Color,
+    label: String,
+    pillBg: Color,
+    pillBorder: Color,
+    labelColor: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val interaction = remember { MutableInteractionSource() }
+    Column(
+        modifier = modifier
+            .expressivePressScale(interaction, pressedScale = 0.94f)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick
+            ),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(38.dp)
+                .clip(CircleShape)
+                .background(pillBg)
+                .border(0.8.dp, pillBorder, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = iconTint,
+                modifier = Modifier.size(21.dp)
+            )
+        }
+        Text(
+            text = label,
+            color = labelColor,
+            fontSize = 12.sp,
+            lineHeight = 15.sp,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            maxLines = 2
+        )
+    }
+}
+
+@Composable
+private fun ComposerAttachTile(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    iconTint: Color,
+    label: String,
+    tileBg: Color,
+    tileBorder: Color,
+    labelColor: Color,
+    onClick: () -> Unit
+) {
+    val interaction = remember { MutableInteractionSource() }
+    Column(
+        modifier = Modifier
+            .width(68.dp)
+            .expressivePressScale(interaction, pressedScale = 0.90f)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick
+            ),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(tileBg)
+                .border(0.8.dp, tileBorder, RoundedCornerShape(16.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = iconTint,
+                modifier = Modifier.size(26.dp)
+            )
+        }
+        Text(
+            text = label,
+            color = labelColor,
+            fontSize = 12.5.sp,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+private data class MediaPreviewMeta(
+    val bitmap: ImageBitmap?,
+    val origWidth: Int,
+    val origHeight: Int
+)
+
+private fun ensureSoftwareBitmap(bmp: Bitmap): Bitmap {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && bmp.config == Bitmap.Config.HARDWARE) {
+        val copy = runCatching { bmp.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull()
+        if (copy != null) {
+            bmp.recycle()
+            return copy
+        }
+    }
+    return bmp
+}
+
+private fun isMostlyBlackFrame(bmp: Bitmap): Boolean {
+    val w = bmp.width
+    val h = bmp.height
+    if (w <= 0 || h <= 0) return true
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && bmp.config == Bitmap.Config.HARDWARE) {
+        return false
+    }
+    var totalLum = 0L
+    var maxLum = 0L
+    var samples = 0
+    for (gx in 1..4) {
+        val x = ((w * gx) / 5).coerceIn(0, w - 1)
+        for (gy in 1..4) {
+            val y = ((h * gy) / 5).coerceIn(0, h - 1)
+            val px = bmp.getPixel(x, y)
+            val r = (px shr 16) and 0xFF
+            val g = (px shr 8) and 0xFF
+            val b = px and 0xFF
+            val lum = (r * 3L + g * 6L + b) / 10L
+            totalLum += lum
+            if (lum > maxLum) maxLum = lum
+            samples++
+        }
+    }
+    return samples == 0 || ((totalLum / samples) < 12L && maxLum < 26L)
+}
+
+private fun decodeVideoFrameSafe(
+    retriever: MediaMetadataRetriever,
+    timeUs: Long,
+    option: Int
+): Bitmap? {
+    val raw = runCatching {
+        when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.P -> {
+                val params = MediaMetadataRetriever.BitmapParams().apply {
+                    preferredConfig = Bitmap.Config.ARGB_8888
+                }
+                retriever.getScaledFrameAtTime(timeUs, option, 720, 720, params)
+            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1 -> {
+                retriever.getScaledFrameAtTime(timeUs, option, 720, 720)
+            }
+            else -> {
+                retriever.getFrameAtTime(timeUs, option)
+            }
+        }
+    }.getOrNull() ?: runCatching {
+        retriever.getFrameAtTime(timeUs, option)
+    }.getOrNull() ?: return null
+    return ensureSoftwareBitmap(raw)
+}
+
+private fun extractVideoPreviewMeta(path: String): MediaPreviewMeta {
+    val retriever = MediaMetadataRetriever()
+    var origW = 0
+    var origH = 0
+    return try {
+        retriever.setDataSource(path)
+        val rawW = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+        val rawH = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+        val rot = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+        val swapped = (rot % 180) != 0
+        origW = if (swapped) rawH else rawW
+        origH = if (swapped) rawW else rawH
+        val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        val maxUs = ((durationMs - 120L).coerceAtLeast(0L)) * 1_000L
+
+        var fallback: Bitmap? = null
+        var chosen: Bitmap? = null
+
+        // 1. Fast sync check first (instant on normal videos whose keyframe isn't black)
+        val fastFrame = decodeVideoFrameSafe(
+            retriever,
+            minOf(500_000L, maxUs),
+            MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+        )
+        if (fastFrame != null) {
+            if (!isMostlyBlackFrame(fastFrame)) {
+                chosen = fastFrame
+            } else {
+                fallback = fastFrame
+            }
+        }
+
+        // 2. If keyframe was black/null (common on short phone videos with a single black GOP at t=0),
+        //    probe exact non-keyframes with OPTION_CLOSEST across the video timeline.
+        if (chosen == null) {
+            val probeUs = linkedSetOf<Long>()
+            probeUs.add(minOf(400_000L, maxUs))
+            probeUs.add(minOf(1_100_000L, maxUs))
+            if (durationMs > 1_500L) {
+                probeUs.add((durationMs * 330L).coerceAtMost(maxUs))
+                probeUs.add((durationMs * 500L).coerceAtMost(maxUs))
+                probeUs.add((durationMs * 700L).coerceAtMost(maxUs))
+            }
+            probeUs.add(0L)
+            for (tUs in probeUs) {
+                val frame = decodeVideoFrameSafe(retriever, tUs, MediaMetadataRetriever.OPTION_CLOSEST) ?: continue
+                if (!isMostlyBlackFrame(frame)) {
+                    chosen = frame
+                    break
+                }
+                if (fallback == null) {
+                    fallback = frame
+                } else {
+                    frame.recycle()
+                }
+            }
+        }
+
+        // 3. Fallback to Android ThumbnailUtils on API 29+ if retriever couldn't decode a frame
+        if (chosen == null && fallback == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val thumb = runCatching {
+                ThumbnailUtils.createVideoThumbnail(File(path), android.util.Size(720, 720), null)
+            }.getOrNull()?.let(::ensureSoftwareBitmap)
+            if (thumb != null) {
+                chosen = thumb
+            }
+        }
+
+        val raw = chosen ?: fallback ?: retriever.frameAtTime?.let(::ensureSoftwareBitmap)
+        if (chosen != null && fallback != null && fallback !== chosen) {
+            fallback.recycle()
+        }
+        val finalBmp = raw?.let { bmp ->
+            val maxSide = maxOf(bmp.width, bmp.height)
+            if (maxSide <= 720) bmp
+            else {
+                val scale = 720f / maxSide.toFloat()
+                val w = (bmp.width * scale).toInt().coerceAtLeast(1)
+                val h = (bmp.height * scale).toInt().coerceAtLeast(1)
+                val scaled = Bitmap.createScaledBitmap(bmp, w, h, true)
+                if (scaled !== bmp) bmp.recycle()
+                scaled
+            }
+        }
+        val resolvedW = origW.takeIf { it > 0 } ?: (finalBmp?.width ?: 0)
+        val resolvedH = origH.takeIf { it > 0 } ?: (finalBmp?.height ?: 0)
+        MediaPreviewMeta(finalBmp?.asImageBitmap(), resolvedW, resolvedH)
+    } catch (_: Throwable) {
+        MediaPreviewMeta(null, origW, origH)
+    } finally {
+        runCatching { retriever.release() }
+    }
+}
+
+private fun decodeImagePreviewMeta(path: String): MediaPreviewMeta {
+    return runCatching {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        val rawW = bounds.outWidth.coerceAtLeast(0)
+        val rawH = bounds.outHeight.coerceAtLeast(0)
+        val exifOrientation = runCatching {
+            android.media.ExifInterface(path).getAttributeInt(
+                android.media.ExifInterface.TAG_ORIENTATION,
+                android.media.ExifInterface.ORIENTATION_NORMAL
+            )
+        }.getOrDefault(android.media.ExifInterface.ORIENTATION_NORMAL)
+        val degrees = when (exifOrientation) {
+            android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+        val swapped = degrees == 90f || degrees == 270f
+        val origW = if (swapped) rawH else rawW
+        val origH = if (swapped) rawW else rawH
+        var sample = 1
+        while (rawW / sample > 1080 || rawH / sample > 1080) {
+            sample *= 2
+        }
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        var bmp = BitmapFactory.decodeFile(path, opts)
+        if (bmp != null && degrees != 0f) {
+            val matrix = android.graphics.Matrix().apply { postRotate(degrees) }
+            val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+            if (rotated !== bmp) bmp.recycle()
+            bmp = rotated
+        }
+        MediaPreviewMeta(
+            bitmap = bmp?.asImageBitmap(),
+            origWidth = origW.takeIf { it > 0 } ?: (bmp?.width ?: 0),
+            origHeight = origH.takeIf { it > 0 } ?: (bmp?.height ?: 0)
+        )
+    }.getOrElse { MediaPreviewMeta(null, 0, 0) }
+}
+
 private fun extractVideoThumbnailBitmap(path: String): Bitmap? {
     val retriever = MediaMetadataRetriever()
     return try {
         retriever.setDataSource(path)
-        val raw = retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-            ?: retriever.frameAtTime
-            ?: return null
-        val maxSide = maxOf(raw.width, raw.height)
-        if (maxSide <= 720) return raw
-        val scale = 720f / maxSide.toFloat()
-        val w = (raw.width * scale).toInt().coerceAtLeast(1)
-        val h = (raw.height * scale).toInt().coerceAtLeast(1)
-        val scaled = Bitmap.createScaledBitmap(raw, w, h, true)
-        if (scaled != raw) raw.recycle()
-        scaled
+        val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        val maxUs = ((durationMs - 120L).coerceAtLeast(0L)) * 1_000L
+        val fast = decodeVideoFrameSafe(retriever, minOf(500_000L, maxUs), MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        if (fast != null && !isMostlyBlackFrame(fast)) return fast
+        var fallback: Bitmap? = fast
+        val probes = longArrayOf(
+            minOf(400_000L, maxUs),
+            minOf(1_100_000L, maxUs),
+            (durationMs * 500L).coerceAtMost(maxUs),
+            0L
+        )
+        for (tUs in probes) {
+            val frame = decodeVideoFrameSafe(retriever, tUs, MediaMetadataRetriever.OPTION_CLOSEST) ?: continue
+            if (!isMostlyBlackFrame(frame)) {
+                fallback?.recycle()
+                return frame
+            }
+            if (fallback == null) fallback = frame else frame.recycle()
+        }
+        fallback
     } catch (_: Throwable) {
         null
     } finally {
@@ -5177,7 +6700,7 @@ private fun decodeQuotedThumbnailBitmap(path: String, isVideo: Boolean): ImageBi
     if (!file.exists() || file.length() <= 0L) return null
     return runCatching {
         if (isVideo) {
-            extractVideoThumbnailBitmap(path)?.asImageBitmap()
+            extractVideoPreviewMeta(path).bitmap
         } else {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(path, bounds)

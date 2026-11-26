@@ -149,8 +149,8 @@ fun InlineTimestampMessage(
                     Text(
                         text = styledText,
                         color = colors.textPrimary,
-                        fontSize = (15f * fontScale).sp,
-                        lineHeight = (20f * fontScale).sp,
+                        fontSize = (15.5f * fontScale).sp,
+                        lineHeight = (20.5f * fontScale).sp,
                         onTextLayout = { lastLayout = it }
                     )
                     MessageMetaCluster(
@@ -236,7 +236,16 @@ fun MessageMetaCluster(
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
-    val secondary = tintOverride ?: colors.textSecondary
+    val secondary = tintOverride ?: if (isFromMe && colors.isDark) {
+        Color.White.copy(alpha = 0.78f)
+    } else {
+        colors.textSecondary
+    }
+    val tickMuted = tintOverride ?: if (isFromMe && colors.isDark) {
+        Color.White.copy(alpha = 0.88f)
+    } else {
+        colors.textSecondary
+    }
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -246,32 +255,32 @@ fun MessageMetaCluster(
             Icon(
                 imageVector = Icons.Rounded.PushPin,
                 contentDescription = "Pinned",
-                modifier = Modifier.size(11.dp),
+                modifier = Modifier.size(11.5.dp),
                 tint = secondary
             )
         }
         if (isEphemeral) {
             Text(
                 text = "⏳",
-                fontSize = 10.sp,
+                fontSize = 10.5.sp,
                 color = colors.accentGreen
             )
         }
         if (isEdited) {
             Text(
                 text = "Edited",
-                fontSize = 11.sp,
+                fontSize = 11.5.sp,
                 color = secondary
             )
         }
         Text(
             text = timeText,
-            fontSize = 11.sp,
+            fontSize = 12.sp,
             color = secondary
         )
         if (isFromMe) {
             Spacer(modifier = Modifier.width(1.dp))
-            DeliveryTickIcon(status = deliveryStatus, mutedColor = secondary)
+            DeliveryTickIcon(status = deliveryStatus, mutedColor = tickMuted)
         }
     }
 }
@@ -293,7 +302,7 @@ fun DeliveryTickIcon(
         painter = painterResource(resId),
         contentDescription = status,
         colorFilter = ColorFilter.tint(tint),
-        modifier = modifier.size(width = 16.dp, height = 11.dp)
+        modifier = modifier.size(width = 17.dp, height = 11.5.dp)
     )
 }
 

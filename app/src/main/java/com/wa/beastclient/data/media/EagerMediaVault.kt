@@ -563,43 +563,72 @@ object EagerMediaVault {
             }
         }
 
-        // Compressed OGG/Opus or M4A fallback: sample container frame envelope cleanly
+        // Compressed OGG/Opus or M4A: sample VBR packet sizes via MediaExtractor (tracks true speech energy)
         return runCatching {
             val extractor = MediaExtractor()
-            extractor.setDataSource(file.absolutePath)
-            var durationUs = 0L
-            for (i in 0 until extractor.trackCount) {
-                val fmt = extractor.getTrackFormat(i)
-                if (fmt.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
-                    if (fmt.containsKey(MediaFormat.KEY_DURATION)) {
-                        durationUs = fmt.getLong(MediaFormat.KEY_DURATION)
+            try {
+                extractor.setDataSource(file.absolutePath)
+                var audioTrack = -1
+                var durationUs = 0L
+                for (i in 0 until extractor.trackCount) {
+                    val fmt = extractor.getTrackFormat(i)
+                    if (fmt.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
+                        audioTrack = i
+                        if (fmt.containsKey(MediaFormat.KEY_DURATION)) {
+                            durationUs = fmt.getLong(MediaFormat.KEY_DURATION)
+                        }
+                        break
                     }
-                    break
                 }
-            }
-            extractor.release()
-            val bytes = file.readBytes()
-            val chunk = max(1, bytes.size / 40)
-            IntArray(40) { bar ->
-                val start = bar * chunk
-                val end = min(bytes.size, start + chunk)
-                var energy = 0L
-                for (idx in start until end) {
-                    energy += abs(bytes[idx].toInt())
+                if (audioTrack < 0) throw IllegalStateException("No audio track")
+                extractor.selectTrack(audioTrack)
+                val samples = ArrayList<Pair<Long, Int>>(256)
+                var maxTimeUs = durationUs
+                var steps = 0
+                while (steps < 4000) {
+                    val sz = extractor.sampleSize
+                    if (sz <= 0L) break
+                    val ts = extractor.sampleTime.coerceAtLeast(0L)
+                    if (ts > maxTimeUs) maxTimeUs = ts
+                    samples.add(ts to sz.toInt())
+                    steps++
+                    if (!extractor.advance()) break
                 }
-                val avg = (energy / max(1, end - start)).toInt()
-                val boost = if (durationUs > 0) 10 else 6
-                (avg + boost).coerceIn(12, 96)
+                if (samples.size < 4) throw IllegalStateException("Too few audio packets")
+                val buckets = FloatArray(40)
+                val counts = IntArray(40)
+                val totalSpanUs = maxTimeUs.coerceAtLeast(1L)
+                val useTimeBuckets = maxTimeUs > 0L
+                samples.forEachIndexed { idx, (ts, sz) ->
+                    val b = if (useTimeBuckets) {
+                        ((ts.toDouble() / totalSpanUs.toDouble()) * 39.999).toInt().coerceIn(0, 39)
+                    } else {
+                        ((idx.toDouble() / samples.size.toDouble()) * 39.999).toInt().coerceIn(0, 39)
+                    }
+                    buckets[b] += sz.toFloat()
+                    counts[b]++
+                }
+                val avgs = FloatArray(40) { i -> if (counts[i] > 0) buckets[i] / counts[i] else 0f }
+                val nonZero = avgs.filter { it > 0f }
+                val minV = nonZero.minOrNull() ?: 0f
+                val maxV = nonZero.maxOrNull() ?: 1f
+                val span = (maxV - minV).coerceAtLeast(1f)
+                IntArray(40) { i ->
+                    val v = avgs[i]
+                    if (v <= 0f) 4
+                    else {
+                        val norm = ((v - minV) / span).coerceIn(0f, 1f)
+                        (4 + (Math.pow(norm.toDouble(), 0.85) * 94.0).roundToInt()).coerceIn(4, 98)
+                    }
+                }
+            } finally {
+                runCatching { extractor.release() }
             }
         }.getOrElse {
-            val bytes = file.readBytes()
-            val chunk = max(1, bytes.size / 40)
-            IntArray(40) { bar ->
-                val start = bar * chunk
-                val end = min(bytes.size, start + chunk)
-                var sum = 0
-                for (k in start until end) sum += abs(bytes[k].toInt())
-                (sum / max(1, end - start)).coerceIn(10, 95)
+            IntArray(40) { idx ->
+                val edge = min(idx, 39 - idx).coerceAtMost(4) / 4f
+                val wave = 0.5f + 0.35f * kotlin.math.sin(idx * 0.72).toFloat() + 0.15f * kotlin.math.cos(idx * 1.35).toFloat()
+                (4 + (wave * edge * 86f).roundToInt()).coerceIn(4, 94)
             }
         }
     }

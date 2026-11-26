@@ -38,7 +38,7 @@ class WhatsAppBubbleShape(
         }
 
         val tailW = with(density) { 5.5.dp.toPx() }
-        val tailDrop = with(density) { 9.dp.toPx() }.coerceAtMost(size.height * 0.55f)
+        val tailRise = with(density) { 11.dp.toPx() }.coerceAtMost(size.height * 0.55f)
         val w = size.width
         val h = size.height
 
@@ -46,11 +46,11 @@ class WhatsAppBubbleShape(
             if (isFromMe) {
                 val bodyRight = (w - tailW).coerceAtLeast(r * 1.5f)
                 moveTo(r, 0f)
-                lineTo(w - 3f, 0f)
-                quadraticTo(w + 1f, 0f, w - 1.5f, 3.5f)
-                quadraticTo(bodyRight, tailDrop * 0.55f, bodyRight, tailDrop)
-                lineTo(bodyRight, h - r)
-                quadraticTo(bodyRight, h, bodyRight - r, h)
+                lineTo(bodyRight - r, 0f)
+                quadraticTo(bodyRight, 0f, bodyRight, r)
+                lineTo(bodyRight, h - tailRise)
+                quadraticTo(bodyRight, h - 3f, w - 1f, h - 1.5f)
+                quadraticTo(w + 0.5f, h, w - 3.5f, h)
                 lineTo(r, h)
                 quadraticTo(0f, h, 0f, h - r)
                 lineTo(0f, r)
@@ -58,16 +58,16 @@ class WhatsAppBubbleShape(
                 close()
             } else {
                 val bodyLeft = tailW.coerceAtMost(w * 0.25f)
-                moveTo(3f, 0f)
+                moveTo(bodyLeft + r, 0f)
                 lineTo(w - r, 0f)
                 quadraticTo(w, 0f, w, r)
                 lineTo(w, h - r)
                 quadraticTo(w, h, w - r, h)
-                lineTo(bodyLeft + r, h)
-                quadraticTo(bodyLeft, h, bodyLeft, h - r)
-                lineTo(bodyLeft, tailDrop)
-                quadraticTo(bodyLeft, tailDrop * 0.55f, 1.5f, 3.5f)
-                quadraticTo(-1f, 0f, 3f, 0f)
+                lineTo(3.5f, h)
+                quadraticTo(-0.5f, h, 1f, h - 1.5f)
+                quadraticTo(bodyLeft, h - 3f, bodyLeft, h - tailRise)
+                lineTo(bodyLeft, r)
+                quadraticTo(bodyLeft, 0f, bodyLeft + r, 0f)
                 close()
             }
         }
