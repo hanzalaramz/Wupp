@@ -162,15 +162,23 @@ internal fun resolveDocumentMimeType(msg: MessageEntity, localFile: File? = null
 
 internal fun resolveDocumentExtensionLabel(mimeType: String, fileName: String): String {
     val ext = resolveDocumentTitleLine(fileName).substringAfterLast('.', "").lowercase(Locale.US)
+    val mime = mimeType.lowercase(Locale.US)
     return when {
-        mimeType.contains("android.package-archive", ignoreCase = true) || ext == "apk" -> "APK"
-        mimeType.contains("pdf", ignoreCase = true) || ext == "pdf" -> "PDF"
+        mime.contains("android.package-archive") || ext == "apk" -> "APK"
+        mime.contains("pdf") || ext == "pdf" -> "PDF"
         ext in DOC_EXTENSIONS -> ext.uppercase(Locale.US)
-        mimeType.contains("msword", ignoreCase = true) || mimeType.contains("wordprocessingml", ignoreCase = true) -> "DOCX"
-        mimeType.contains("spreadsheetml", ignoreCase = true) || mimeType.contains("ms-excel", ignoreCase = true) -> "XLSX"
-        mimeType.contains("presentationml", ignoreCase = true) || mimeType.contains("ms-powerpoint", ignoreCase = true) -> "PPTX"
-        mimeType.contains("zip", ignoreCase = true) -> "ZIP"
-        mimeType.startsWith("text/", ignoreCase = true) -> "TXT"
+        mime.contains("msword") || mime.contains("wordprocessingml") -> "DOCX"
+        mime.contains("spreadsheetml") || mime.contains("ms-excel") -> "XLSX"
+        mime.contains("presentationml") || mime.contains("ms-powerpoint") -> "PPTX"
+        mime.contains("zip") -> "ZIP"
+        mime.startsWith("text/") -> "TXT"
+        mime == "image/jpeg" || mime == "image/jpg" || ext == "jpg" || ext == "jpeg" -> "JPG"
+        mime == "image/png" || ext == "png" -> "PNG"
+        mime == "image/webp" || ext == "webp" -> "WEBP"
+        mime == "image/gif" || ext == "gif" -> "GIF"
+        mime == "image/heic" || mime == "image/heif" || ext == "heic" || ext == "heif" -> "HEIC"
+        mime.startsWith("video/") || ext in setOf("mp4", "mov", "mkv", "webm") -> ext.ifBlank { "MP4" }.uppercase(Locale.US)
+        mime.startsWith("audio/") || ext in setOf("mp3", "m4a", "ogg", "opus", "wav") -> ext.ifBlank { "AUDIO" }.uppercase(Locale.US)
         else -> "FILE"
     }
 }

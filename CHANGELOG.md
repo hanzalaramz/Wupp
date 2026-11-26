@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.3.10] - 2026-11-26
+
+### ✨ Features
+- Made the small self-preview window during video calls smoothly draggable to any of the four screen corners (#198).
+- Unlocked incoming View-Once photos, videos, and voice notes directly inside Wupp with automatic Gallery saving and a manual **Download & Mark Opened** option when keys are withheld.
+- Added Home layout presets (Classic, iOS-inspired, and Compact) plus a live-preview Home appearance menu for colors, badges, density, and navigation.
+- Redesigned chat headers, composer bar, attachment grid, selection bars, and reaction popups with smooth borderless frosted glass and direct multi-select.
+- Added rich location preview cards and GPS/address location sharing (#184), QR contact sharing and scanning (#166), one-tap callback on call log bubbles (#186), voice note Pause/Resume and View Once (#168), and group member profile sheets plus reaction counts (#183).
+- Added tap-to-swap / flip-camera PiP settings (#188) and a **Diagnostics & Crash Logs** viewer in Settings to save or share logs (#163).
+
+### 🛠️ Fixes
+- Fixed favorited stickers disappearing from the Favorites tab by storing durable local copies, removing the 120-sticker lookup cap, and fixing blank-hash grouping and tab jump offsets (#207).
+- Fixed photos sent with captions in Original quality turning into `FILE` document cards, and preserved real filenames above captions on documents (#203).
+- Fixed video call crashes on camera toggle, front/back switch, voice-to-video upgrade, and fresh app launch (#196), and blocked accidental calls on Meta AI and channels (#197).
+- Fixed outgoing video freezing or sticking on camera off/on or camera flip, plus stretched, rotated, or black-barred video call framing (#188).
+- Fixed black video thumbnails, stretched media/quoted previews, flat voice waveforms, and voice note download retry states.
+
 ## [0.3.10-pre.13] - 2026-11-26
 
 ### 🛠️ Fixes

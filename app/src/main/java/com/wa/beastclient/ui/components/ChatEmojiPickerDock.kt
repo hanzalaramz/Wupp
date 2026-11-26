@@ -103,6 +103,7 @@ import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.data.media.BuiltinSticker
 import com.wa.beastclient.data.media.CuppyPackManager
 import com.wa.beastclient.data.media.CustomStickerItem
+import com.wa.beastclient.data.media.isStickerMatchedByFavoriteKeys
 import com.wa.beastclient.data.media.CustomStickerStore
 import com.wa.beastclient.ui.theme.WaColors
 import kotlinx.coroutines.Dispatchers
@@ -650,14 +651,21 @@ fun ChatEmojiPickerDock(
                         }
                     }
 
+                    val filteredCustom = remember(customStickers, searchQuery) {
+                        if (searchQuery.isBlank()) customStickers else {
+                            customStickers.filter { it.label.contains(searchQuery, ignoreCase = true) }
+                        }
+                    }
+
                     // Section index anchors for jumping and bottom bar highlights
                     // Item 0 is always Create Sticker action
-                    val favHeaderIndex = remember(filteredRecent.size, filteredFavorites.size) {
-                        if (filteredFavorites.isNotEmpty()) 1 + filteredRecent.size else -1
+                    val customSectionCount = if (filteredCustom.isNotEmpty()) 1 + filteredCustom.size else 0
+                    val favHeaderIndex = remember(customSectionCount, filteredRecent.size, filteredFavorites.size) {
+                        if (filteredFavorites.isNotEmpty()) 1 + customSectionCount + filteredRecent.size else -1
                     }
-                    val cuppyHeaderIndex = remember(filteredRecent.size, filteredFavorites.size, filteredCuppy.size) {
+                    val cuppyHeaderIndex = remember(customSectionCount, filteredRecent.size, filteredFavorites.size, filteredCuppy.size) {
                         if (filteredCuppy.isNotEmpty()) {
-                            1 + filteredRecent.size + (if (filteredFavorites.isNotEmpty()) 1 + filteredFavorites.size else 0)
+                            1 + customSectionCount + filteredRecent.size + (if (filteredFavorites.isNotEmpty()) 1 + filteredFavorites.size else 0)
                         } else -1
                     }
 
@@ -692,37 +700,35 @@ fun ChatEmojiPickerDock(
                                 }
 
                                 // 1b. "My Stickers" from Sticker Studio
-                                if (customStickers.isNotEmpty()) {
-                                    val filteredCustom = if (searchQuery.isBlank()) customStickers else {
-                                        customStickers.filter { it.label.contains(searchQuery, ignoreCase = true) }
+                                if (filteredCustom.isNotEmpty()) {
+                                    item(span = { GridItemSpan(5) }) {
+                                        Text(
+                                            text = CustomStickerStore.PACK_NAME,
+                                            color = colors.accentGreen,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 4.dp)
+                                        )
                                     }
-                                    if (filteredCustom.isNotEmpty()) {
-                                        item(span = { GridItemSpan(5) }) {
-                                            Text(
-                                                text = CustomStickerStore.PACK_NAME,
-                                                color = colors.accentGreen,
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 4.dp)
-                                            )
-                                        }
-                                        items(filteredCustom, key = { it.id }) { custom ->
-                                            StickerPickerGridItem(
-                                                filePath = custom.filePath,
-                                                colors = colors,
-                                                isFavorite = false,
-                                                onClick = { latestOnSendCustom(custom) },
-                                                onLongClick = { contextStickerItem = custom }
-                                            )
-                                        }
+                                    items(filteredCustom, key = { it.id }) { custom ->
+                                        StickerPickerGridItem(
+                                            filePath = custom.filePath,
+                                            colors = colors,
+                                            isFavorite = false,
+                                            onClick = { latestOnSendCustom(custom) },
+                                            onLongClick = { contextStickerItem = custom }
+                                        )
                                     }
                                 }
 
                                 // 2. Recent Stickers
                                 items(filteredRecent, key = { it.id }) { stickerMsg ->
-                                    val isFav = favoriteStickerKeys.contains(stickerMsg.mediaSha256) ||
-                                        favoriteStickerKeys.contains(stickerMsg.localMediaPath) ||
-                                        favoriteStickerKeys.contains(stickerMsg.id)
+                                    val isFav = isStickerMatchedByFavoriteKeys(
+                                        sha256 = stickerMsg.mediaSha256,
+                                        localPath = stickerMsg.localMediaPath,
+                                        messageId = stickerMsg.id,
+                                        favoriteKeys = favoriteStickerKeys
+                                    )
                                     StickerPickerGridItem(
                                         filePath = stickerMsg.localMediaPath,
                                         colors = colors,
@@ -943,9 +949,12 @@ fun ChatEmojiPickerDock(
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     if (item is MessageEntity) {
-                        val isFav = favoriteStickerKeys.contains(item.mediaSha256) ||
-                            favoriteStickerKeys.contains(item.localMediaPath) ||
-                            favoriteStickerKeys.contains(item.id)
+                        val isFav = isStickerMatchedByFavoriteKeys(
+                            sha256 = item.mediaSha256,
+                            localPath = item.localMediaPath,
+                            messageId = item.id,
+                            favoriteKeys = favoriteStickerKeys
+                        )
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()

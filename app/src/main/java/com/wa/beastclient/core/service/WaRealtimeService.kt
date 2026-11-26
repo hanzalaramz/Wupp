@@ -85,8 +85,8 @@ data class BridgeStatus(
 
 /**
  * Resolves the UI message type and bridge upload wire mode for outbound attachments.
- * Videos remain native VIDEO messages even when [OutboundQualityMode.ORIGINAL] is active so
- * they render with preview thumbnails and playback controls instead of raw document filenames.
+ * Images and videos remain native IMAGE/VIDEO messages even when [OutboundQualityMode.ORIGINAL]
+ * is active so photos with captions render as inline image bubbles instead of FILE document cards.
  */
 internal fun resolveOutboundMediaDispatch(
     mimeType: String,
@@ -105,10 +105,33 @@ internal fun resolveOutboundMediaDispatch(
         "VIDEO" to wireMode
     }
     mimeType.equals("text/vcard", ignoreCase = true) || mimeType.equals("text/x-vcard", ignoreCase = true) -> "CONTACT" to "document"
-    qualityMode == OutboundQualityMode.ORIGINAL -> "DOCUMENT" to OutboundQualityMode.ORIGINAL.wireValue
     mimeType.startsWith("image/", ignoreCase = true) -> "IMAGE" to qualityMode.wireValue
+    qualityMode == OutboundQualityMode.ORIGINAL -> "DOCUMENT" to OutboundQualityMode.ORIGINAL.wireValue
     mimeType.startsWith("audio/", ignoreCase = true) -> "AUDIO" to qualityMode.wireValue
     else -> "DOCUMENT" to qualityMode.wireValue
+}
+
+/**
+ * Formats the local MessageEntity body for outbound media.
+ * Documents preserve the filename on line 1 and optional caption on line 2 so
+ * DocumentMessageCard never renders a user caption as a broken filename.
+ */
+internal fun formatOutboundMediaBody(
+    msgType: String,
+    caption: String,
+    fileName: String
+): String {
+    val cleanCaption = caption.trim()
+    val cleanFileName = fileName.trim()
+    return if (msgType.equals("DOCUMENT", ignoreCase = true)) {
+        when {
+            cleanFileName.isNotEmpty() && cleanCaption.isNotEmpty() -> "$cleanFileName\n$cleanCaption"
+            cleanFileName.isNotEmpty() -> cleanFileName
+            else -> cleanCaption
+        }
+    } else {
+        cleanCaption
+    }
 }
 
 internal fun resolveEngineReadyBridgeStatus(
@@ -4063,7 +4086,7 @@ class WaRealtimeService : Service() {
                     senderName = "You",
                     isFromMe = true,
                     timestamp = System.currentTimeMillis(),
-                    body = caption.ifBlank { if (msgType == "DOCUMENT") prepared.file.name else "" },
+                    body = formatOutboundMediaBody(msgType, caption, prepared.file.name),
                     msgType = msgType,
                     mimeType = resolvedOutMime,
                     localMediaPath = prepared.file.absolutePath,

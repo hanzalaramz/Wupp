@@ -37,8 +37,11 @@ import com.wa.beastclient.data.media.EagerMediaVault
 import com.wa.beastclient.data.media.OpusOggVoiceRecorder
 import com.wa.beastclient.data.media.OutboundQualityMode
 import com.wa.beastclient.data.media.hasExtractableAudioTrack
+import com.wa.beastclient.data.media.FavoriteStickerRecord
 import com.wa.beastclient.data.media.SoundPoolManager
 import com.wa.beastclient.data.media.StickerFavoritesStore
+import com.wa.beastclient.data.media.collectStickerLookupKeys
+import com.wa.beastclient.data.media.isStickerMatchedByFavoriteKeys
 import com.wa.beastclient.domain.accounts.AccountManager
 import com.wa.beastclient.domain.appearance.HomeAppearanceManager
 import com.wa.beastclient.domain.drafts.ChatDraftManager
@@ -349,22 +352,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
+    private val allLocalStickers: StateFlow<List<MessageEntity>> = activeDaoFlow
+        .flatMapLatest { it.observeAllLocalStickers() }
+        .map { list ->
+            list.filter { !it.localMediaPath.isNullOrBlank() && File(it.localMediaPath).exists() }
+        }
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
     private val stickerFavoritesStore = StickerFavoritesStore.getInstance(appContext)
 
     val favoriteStickerKeys: StateFlow<Set<String>> = stickerFavoritesStore.favorites
 
     val favoriteStickers: StateFlow<List<MessageEntity>> = combine(
-        recentStickers,
+        allLocalStickers,
+        stickerFavoritesStore.records,
         favoriteStickerKeys
-    ) { stickers, favKeys ->
-        stickers.filter { msg ->
-            val sha = msg.mediaSha256
-            val path = msg.localMediaPath
-            val id = msg.id
-            (sha != null && favKeys.contains(sha)) ||
-                (path != null && favKeys.contains(path)) ||
-                favKeys.contains(id)
-        }
+    ) { stickers, records, favKeys ->
+        resolveFavoriteStickerEntities(
+            allLocalStickers = stickers,
+            favoriteRecords = records,
+            favoriteKeys = favKeys
+        )
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val cuppyStickers: StateFlow<List<BuiltinSticker>> = flow {
@@ -1685,19 +1693,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun toggleFavoriteSticker(msg: MessageEntity): Boolean {
-        val key = msg.mediaSha256?.takeIf { it.isNotBlank() }
-            ?: msg.localMediaPath?.takeIf { it.isNotBlank() }
-            ?: msg.id
-        return stickerFavoritesStore.toggleFavorite(key)
-    }
+    fun toggleFavoriteSticker(msg: MessageEntity): Boolean =
+        stickerFavoritesStore.toggleFavoriteSticker(
+            sha256 = msg.mediaSha256,
+            localPath = msg.localMediaPath,
+            messageId = msg.id
+        )
 
-    fun isStickerFavorite(msg: MessageEntity): Boolean {
-        val key = msg.mediaSha256?.takeIf { it.isNotBlank() }
-            ?: msg.localMediaPath?.takeIf { it.isNotBlank() }
-            ?: msg.id
-        return stickerFavoritesStore.isFavorite(key)
-    }
+    fun isStickerFavorite(msg: MessageEntity): Boolean =
+        stickerFavoritesStore.isFavoriteAny(
+            sha256 = msg.mediaSha256,
+            localPath = msg.localMediaPath,
+            messageId = msg.id
+        )
 
     fun sendStickerFromUri(chatJid: String, uri: Uri, allowUnsavedColdStart: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -2439,3 +2447,96 @@ internal fun computeRecordedElapsedMs(
 
 internal fun resolveVoicePauseSupported(sdkInt: Int, isOpusRecorder: Boolean): Boolean =
     isOpusRecorder || sdkInt >= Build.VERSION_CODES.N
+
+/**
+ * Merges persisted favorite sticker records (durable local copies) with uncapped local DB stickers
+ * matching [favoriteKeys], newest-favorited first, deduplicated cleanly without blank-key collisions.
+ */
+internal fun resolveFavoriteStickerEntities(
+    allLocalStickers: List<MessageEntity>,
+    favoriteRecords: List<FavoriteStickerRecord>,
+    favoriteKeys: Set<String>,
+    fileExists: (String) -> Boolean = { path ->
+        path.isNotBlank() && File(path).let { it.exists() && it.length() > 0L }
+    }
+): List<MessageEntity> {
+    if (favoriteRecords.isEmpty() && favoriteKeys.isEmpty()) return emptyList()
+
+    val result = mutableListOf<MessageEntity>()
+    val seenKeys = HashSet<String>()
+    val seenIds = HashSet<String>()
+
+    fun recordSeen(msg: MessageEntity, extraKeys: Collection<String> = emptyList()) {
+        seenIds.add(msg.id)
+        seenKeys.addAll(
+            collectStickerLookupKeys(
+                sha256 = msg.mediaSha256,
+                localPath = msg.localMediaPath,
+                messageId = msg.id,
+                extraPaths = extraKeys
+            )
+        )
+    }
+
+    // 1. Persisted favorite records first (newest-favorited first)
+    favoriteRecords.forEach { rec ->
+        val recLookupKeys = collectStickerLookupKeys(
+            sha256 = rec.sha256,
+            localPath = rec.filePath,
+            messageId = rec.messageId,
+            extraPaths = listOf(rec.key, rec.originalPath)
+        )
+        if (recLookupKeys.any { it in seenKeys }) return@forEach
+
+        val matchedDb = allLocalStickers.firstOrNull { dbMsg ->
+            val dbKeys = collectStickerLookupKeys(dbMsg.mediaSha256, dbMsg.localMediaPath, dbMsg.id)
+            dbKeys.any { it in recLookupKeys }
+        }
+        val resolvedPath = rec.filePath.takeIf(fileExists)
+            ?: rec.originalPath.takeIf(fileExists)
+            ?: matchedDb?.localMediaPath?.takeIf(fileExists)
+            ?: return@forEach
+
+        val baseId = matchedDb?.id
+            ?: rec.messageId.takeIf { it.isNotBlank() }
+            ?: "fav_${rec.key}"
+        val uniqueId = if (seenIds.contains(baseId)) "fav_${rec.key}_${result.size}" else baseId
+
+        val entity = if (matchedDb != null) {
+            matchedDb.copy(
+                id = uniqueId,
+                localMediaPath = resolvedPath,
+                mediaSha256 = matchedDb.mediaSha256?.takeIf { it.isNotBlank() } ?: rec.sha256.takeIf { it.isNotBlank() }
+            )
+        } else {
+            MessageEntity(
+                id = uniqueId,
+                chatJid = "favorites@local",
+                senderJid = "favorites@local",
+                senderName = "Favorite",
+                isFromMe = true,
+                timestamp = rec.addedAt.takeIf { it > 0L } ?: System.currentTimeMillis(),
+                body = "",
+                msgType = "STICKER",
+                mimeType = "image/webp",
+                localMediaPath = resolvedPath,
+                mediaSha256 = rec.sha256.takeIf { it.isNotBlank() }
+            )
+        }
+        result.add(entity)
+        recordSeen(entity, recLookupKeys)
+    }
+
+    // 2. Fallback: DB stickers matched via legacy SharedPreferences or synced favorite keys
+    allLocalStickers.forEach { msg ->
+        val path = msg.localMediaPath.orEmpty()
+        if (!fileExists(path)) return@forEach
+        if (!isStickerMatchedByFavoriteKeys(msg.mediaSha256, path, msg.id, favoriteKeys)) return@forEach
+        val msgKeys = collectStickerLookupKeys(msg.mediaSha256, path, msg.id)
+        if (msgKeys.any { it in seenKeys } || seenIds.contains(msg.id)) return@forEach
+        result.add(msg)
+        recordSeen(msg)
+    }
+
+    return result
+}

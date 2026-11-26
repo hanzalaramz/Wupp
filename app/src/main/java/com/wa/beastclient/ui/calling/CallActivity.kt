@@ -18,28 +18,37 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -83,6 +92,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -92,13 +102,20 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import com.wa.beastclient.core.calling.CallAudioRoute
 import com.wa.beastclient.core.calling.CallPhase
 import com.wa.beastclient.core.calling.CallStateManager
@@ -376,9 +393,12 @@ private fun CallScreenContent(
         }
     }
 
+    var rootSizePx by remember { mutableStateOf(IntSize.Zero) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .onSizeChanged { rootSizePx = it }
             .background(
                 Brush.verticalGradient(
                     listOf(
@@ -414,15 +434,159 @@ private fun CallScreenContent(
             val localHState by rememberUpdatedState(state.localVideoHeight)
             val localMaxCropState by rememberUpdatedState(if (showLocalAsPip) 0.99f else 0.35f)
 
-            val pipCardModifier = Modifier
-                .align(Alignment.TopEnd)
-                .statusBarsPadding()
-                .padding(top = 74.dp, end = 16.dp)
-                .size(width = 108.dp, height = 162.dp)
+            val density = LocalDensity.current
+            val pipWidthDp = 108.dp
+            val pipHeightDp = 162.dp
+            val pipWidthPx = with(density) { pipWidthDp.toPx() }
+            val pipHeightPx = with(density) { pipHeightDp.toPx() }
+            val marginSidePx = with(density) { 16.dp.toPx() }
+            val statusTopPx = WindowInsets.statusBars.getTop(density).toFloat()
+            val navBottomPx = WindowInsets.navigationBars.getBottom(density).toFloat()
+            val marginTopPx = statusTopPx + with(density) { (if (showChrome) 74.dp else 16.dp).toPx() }
+            val marginBottomPx = navBottomPx + with(density) { (if (showChrome) 118.dp else 20.dp).toPx() }
+
+            var pipCorner by rememberSaveable(state.callId) { mutableStateOf(CallPipCorner.TOP_END) }
+            var isDraggingPip by remember { mutableStateOf(false) }
+            var hasInitializedPipPos by remember(state.callId) { mutableStateOf(false) }
+            val pipOffsetX = remember(state.callId) { Animatable(0f) }
+            val pipOffsetY = remember(state.callId) { Animatable(0f) }
+            val pipScope = rememberCoroutineScope()
+            val pipDragScale by animateFloatAsState(
+                targetValue = if (isDraggingPip) 1.04f else 1f,
+                animationSpec = spring(stiffness = Spring.StiffnessMedium),
+                label = "pip_drag_scale"
+            )
+
+            val latestRootSize by rememberUpdatedState(rootSizePx)
+            val latestMarginTopPx by rememberUpdatedState(marginTopPx)
+            val latestMarginBottomPx by rememberUpdatedState(marginBottomPx)
+            val latestPipWidthPx by rememberUpdatedState(pipWidthPx)
+            val latestPipHeightPx by rememberUpdatedState(pipHeightPx)
+            val latestMarginSidePx by rememberUpdatedState(marginSidePx)
+
+            LaunchedEffect(rootSizePx, pipCorner, marginTopPx, marginBottomPx) {
+                if (rootSizePx.width <= 0 || rootSizePx.height <= 0 || isDraggingPip) return@LaunchedEffect
+                val (targetX, targetY) = resolvePipCornerOffsetPx(
+                    corner = pipCorner,
+                    containerWidthPx = rootSizePx.width.toFloat(),
+                    containerHeightPx = rootSizePx.height.toFloat(),
+                    cardWidthPx = pipWidthPx,
+                    cardHeightPx = pipHeightPx,
+                    marginStartPx = marginSidePx,
+                    marginEndPx = marginSidePx,
+                    marginTopPx = marginTopPx,
+                    marginBottomPx = marginBottomPx
+                )
+                if (!hasInitializedPipPos) {
+                    pipOffsetX.snapTo(targetX)
+                    pipOffsetY.snapTo(targetY)
+                    hasInitializedPipPos = true
+                } else {
+                    val snapSpec = spring<Float>(
+                        dampingRatio = 0.82f,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                    launch { pipOffsetX.animateTo(targetX, snapSpec) }
+                    launch { pipOffsetY.animateTo(targetY, snapSpec) }
+                }
+            }
+
+            val snapPipToNearestCorner = {
+                isDraggingPip = false
+                val container = latestRootSize
+                if (container.width > 0 && container.height > 0) {
+                    val nextCorner = resolveNearestPipCorner(
+                        currentX = pipOffsetX.value,
+                        currentY = pipOffsetY.value,
+                        containerWidthPx = container.width.toFloat(),
+                        containerHeightPx = container.height.toFloat(),
+                        cardWidthPx = latestPipWidthPx,
+                        cardHeightPx = latestPipHeightPx,
+                        marginStartPx = latestMarginSidePx,
+                        marginEndPx = latestMarginSidePx,
+                        marginTopPx = latestMarginTopPx,
+                        marginBottomPx = latestMarginBottomPx
+                    )
+                    pipCorner = nextCorner
+                    val (targetX, targetY) = resolvePipCornerOffsetPx(
+                        corner = nextCorner,
+                        containerWidthPx = container.width.toFloat(),
+                        containerHeightPx = container.height.toFloat(),
+                        cardWidthPx = latestPipWidthPx,
+                        cardHeightPx = latestPipHeightPx,
+                        marginStartPx = latestMarginSidePx,
+                        marginEndPx = latestMarginSidePx,
+                        marginTopPx = latestMarginTopPx,
+                        marginBottomPx = latestMarginBottomPx
+                    )
+                    pipScope.launch {
+                        val snapSpec = spring<Float>(
+                            dampingRatio = 0.82f,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                        launch { pipOffsetX.animateTo(targetX, snapSpec) }
+                        launch { pipOffsetY.animateTo(targetY, snapSpec) }
+                    }
+                }
+            }
+
+            val pipPositionModifier = if (hasInitializedPipPos && rootSizePx.width > 0 && rootSizePx.height > 0) {
+                Modifier
+                    .align(Alignment.TopStart)
+                    .offset { IntOffset(pipOffsetX.value.roundToInt(), pipOffsetY.value.roundToInt()) }
+            } else {
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(top = 74.dp, end = 16.dp)
+            }
+
+            val pipCardModifier = pipPositionModifier
+                .size(width = pipWidthDp, height = pipHeightDp)
+                .scale(pipDragScale)
                 .clip(RoundedCornerShape(18.dp))
                 .background(Color(0xFF101C22))
-                .border(1.5.dp, Color.White.copy(alpha = 0.28f), RoundedCornerShape(18.dp))
-                .zIndex(2f)
+                .border(
+                    width = if (isDraggingPip) 2.dp else 1.5.dp,
+                    color = Color.White.copy(alpha = if (isDraggingPip) 0.52f else 0.28f),
+                    shape = RoundedCornerShape(18.dp)
+                )
+                .pointerInput(state.callId) {
+                    detectDragGestures(
+                        onDragStart = {
+                            isDraggingPip = true
+                        },
+                        onDragEnd = {
+                            snapPipToNearestCorner()
+                        },
+                        onDragCancel = {
+                            snapPipToNearestCorner()
+                        },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            val container = latestRootSize
+                            if (container.width > 0 && container.height > 0) {
+                                val (clampedX, clampedY) = clampPipOffsetPx(
+                                    x = pipOffsetX.value + dragAmount.x,
+                                    y = pipOffsetY.value + dragAmount.y,
+                                    containerWidthPx = container.width.toFloat(),
+                                    containerHeightPx = container.height.toFloat(),
+                                    cardWidthPx = latestPipWidthPx,
+                                    cardHeightPx = latestPipHeightPx,
+                                    marginStartPx = latestMarginSidePx,
+                                    marginEndPx = latestMarginSidePx,
+                                    marginTopPx = latestMarginTopPx,
+                                    marginBottomPx = latestMarginBottomPx
+                                )
+                                pipScope.launch {
+                                    pipOffsetX.snapTo(clampedX)
+                                    pipOffsetY.snapTo(clampedY)
+                                }
+                            }
+                        }
+                    )
+                }
+                .zIndex(if (isDraggingPip) 4f else 2f)
 
             val handlePipTap = {
                 if (pipTapAction == CallPipTapAction.SWAP_LAYOUT && canSwapViews) {
@@ -1331,4 +1495,90 @@ private fun routeIcon(route: CallAudioRoute): ImageVector = when (route) {
     CallAudioRoute.BLUETOOTH -> Icons.Rounded.BluetoothAudio
     CallAudioRoute.WIRED_HEADSET -> Icons.Rounded.HeadsetMic
     CallAudioRoute.EARPIECE -> Icons.Rounded.PhoneInTalk
+}
+
+internal enum class CallPipCorner {
+    TOP_START,
+    TOP_END,
+    BOTTOM_START,
+    BOTTOM_END
+}
+
+internal fun resolvePipCornerOffsetPx(
+    corner: CallPipCorner,
+    containerWidthPx: Float,
+    containerHeightPx: Float,
+    cardWidthPx: Float,
+    cardHeightPx: Float,
+    marginStartPx: Float,
+    marginEndPx: Float,
+    marginTopPx: Float,
+    marginBottomPx: Float
+): Pair<Float, Float> {
+    val minX = marginStartPx.coerceAtLeast(0f)
+    val maxX = (containerWidthPx - cardWidthPx - marginEndPx).coerceAtLeast(minX)
+    val minY = marginTopPx.coerceAtLeast(0f)
+    val maxY = (containerHeightPx - cardHeightPx - marginBottomPx).coerceAtLeast(minY)
+    return when (corner) {
+        CallPipCorner.TOP_START -> minX to minY
+        CallPipCorner.TOP_END -> maxX to minY
+        CallPipCorner.BOTTOM_START -> minX to maxY
+        CallPipCorner.BOTTOM_END -> maxX to maxY
+    }
+}
+
+internal fun clampPipOffsetPx(
+    x: Float,
+    y: Float,
+    containerWidthPx: Float,
+    containerHeightPx: Float,
+    cardWidthPx: Float,
+    cardHeightPx: Float,
+    marginStartPx: Float,
+    marginEndPx: Float,
+    marginTopPx: Float,
+    marginBottomPx: Float
+): Pair<Float, Float> {
+    val minX = marginStartPx.coerceAtLeast(0f)
+    val maxX = (containerWidthPx - cardWidthPx - marginEndPx).coerceAtLeast(minX)
+    val minY = marginTopPx.coerceAtLeast(0f)
+    val maxY = (containerHeightPx - cardHeightPx - marginBottomPx).coerceAtLeast(minY)
+    return x.coerceIn(minX, maxX) to y.coerceIn(minY, maxY)
+}
+
+internal fun resolveNearestPipCorner(
+    currentX: Float,
+    currentY: Float,
+    containerWidthPx: Float,
+    containerHeightPx: Float,
+    cardWidthPx: Float,
+    cardHeightPx: Float,
+    marginStartPx: Float,
+    marginEndPx: Float,
+    marginTopPx: Float,
+    marginBottomPx: Float
+): CallPipCorner {
+    var bestCorner = CallPipCorner.TOP_END
+    var bestDistSq = Float.POSITIVE_INFINITY
+    for (corner in CallPipCorner.entries) {
+        val (tx, ty) = resolvePipCornerOffsetPx(
+            corner = corner,
+            containerWidthPx = containerWidthPx,
+            containerHeightPx = containerHeightPx,
+            cardWidthPx = cardWidthPx,
+            cardHeightPx = cardHeightPx,
+            marginStartPx = marginStartPx,
+            marginEndPx = marginEndPx,
+            marginTopPx = marginTopPx,
+            marginBottomPx = marginBottomPx
+        )
+        val dx = currentX - tx
+        val dy = currentY - ty
+        val distSq = dx * dx + dy * dy
+        if (distSq < bestDistSq) {
+            bestDistSq = distSq
+            bestCorner = corner
+        }
+    }
+    return bestCorner
 }

@@ -253,6 +253,7 @@ import com.wa.beastclient.data.db.ChatEntity
 import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.data.db.MessageReactionEntity
 import com.wa.beastclient.data.media.OutboundQualityMode
+import com.wa.beastclient.data.media.isStickerMatchedByFavoriteKeys
 import com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
 import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.domain.stealth.CallBackendMode
@@ -3931,9 +3932,12 @@ fun ChatScreen(
 
     activeStickerActionMsg?.let { stickerMsg ->
         val file = stickerMsg.localMediaPath?.let { File(it) }?.takeIf { it.exists() }
-        val isFav = (stickerMsg.mediaSha256 != null && favoriteStickerKeys.contains(stickerMsg.mediaSha256)) ||
-            (stickerMsg.localMediaPath != null && favoriteStickerKeys.contains(stickerMsg.localMediaPath)) ||
-            favoriteStickerKeys.contains(stickerMsg.id)
+        val isFav = isStickerMatchedByFavoriteKeys(
+            sha256 = stickerMsg.mediaSha256,
+            localPath = stickerMsg.localMediaPath,
+            messageId = stickerMsg.id,
+            favoriteKeys = favoriteStickerKeys
+        )
 
         AlertDialog(
             onDismissRequest = { activeStickerActionMsg = null },

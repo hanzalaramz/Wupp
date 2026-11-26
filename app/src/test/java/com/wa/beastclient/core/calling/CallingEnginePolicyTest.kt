@@ -475,4 +475,68 @@ class CallingEnginePolicyTest {
         assertTrue(shouldShowLocalPreviewAsPip(hasRemoteVideo = true, effectiveSwapped = false))
         assertFalse(shouldShowLocalPreviewAsPip(hasRemoteVideo = true, effectiveSwapped = true))
     }
+
+    @Test
+    fun draggablePipSnapsToAllFourSafeCornersAndClampsWithinBounds() {
+        val w = 1080f
+        val h = 2400f
+        val cw = 324f
+        val ch = 486f
+        val side = 48f
+        val top = 260f
+        val bottom = 420f
+
+        assertEquals(
+            48f to 260f,
+            com.wa.beastclient.ui.calling.resolvePipCornerOffsetPx(
+                com.wa.beastclient.ui.calling.CallPipCorner.TOP_START, w, h, cw, ch, side, side, top, bottom
+            )
+        )
+        assertEquals(
+            708f to 260f,
+            com.wa.beastclient.ui.calling.resolvePipCornerOffsetPx(
+                com.wa.beastclient.ui.calling.CallPipCorner.TOP_END, w, h, cw, ch, side, side, top, bottom
+            )
+        )
+        assertEquals(
+            48f to 1494f,
+            com.wa.beastclient.ui.calling.resolvePipCornerOffsetPx(
+                com.wa.beastclient.ui.calling.CallPipCorner.BOTTOM_START, w, h, cw, ch, side, side, top, bottom
+            )
+        )
+        assertEquals(
+            708f to 1494f,
+            com.wa.beastclient.ui.calling.resolvePipCornerOffsetPx(
+                com.wa.beastclient.ui.calling.CallPipCorner.BOTTOM_END, w, h, cw, ch, side, side, top, bottom
+            )
+        )
+
+        // Clamping keeps dragged PiP inside safe viewport
+        assertEquals(
+            48f to 260f,
+            com.wa.beastclient.ui.calling.clampPipOffsetPx(-500f, -200f, w, h, cw, ch, side, side, top, bottom)
+        )
+        assertEquals(
+            708f to 1494f,
+            com.wa.beastclient.ui.calling.clampPipOffsetPx(2000f, 3000f, w, h, cw, ch, side, side, top, bottom)
+        )
+
+        // Nearest corner resolves cleanly for all four quadrants
+        assertEquals(
+            com.wa.beastclient.ui.calling.CallPipCorner.TOP_START,
+            com.wa.beastclient.ui.calling.resolveNearestPipCorner(100f, 300f, w, h, cw, ch, side, side, top, bottom)
+        )
+        assertEquals(
+            com.wa.beastclient.ui.calling.CallPipCorner.TOP_END,
+            com.wa.beastclient.ui.calling.resolveNearestPipCorner(650f, 320f, w, h, cw, ch, side, side, top, bottom)
+        )
+        assertEquals(
+            com.wa.beastclient.ui.calling.CallPipCorner.BOTTOM_START,
+            com.wa.beastclient.ui.calling.resolveNearestPipCorner(90f, 1300f, w, h, cw, ch, side, side, top, bottom)
+        )
+        assertEquals(
+            com.wa.beastclient.ui.calling.CallPipCorner.BOTTOM_END,
+            com.wa.beastclient.ui.calling.resolveNearestPipCorner(680f, 1400f, w, h, cw, ch, side, side, top, bottom)
+        )
+    }
 }

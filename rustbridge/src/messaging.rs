@@ -1702,39 +1702,8 @@ pub async fn send_media_message(
         .map_err(|e| format!("read task failed for {file_path}: {e}"))?
         .map_err(|e| format!("failed to read upload file {file_path}: {e}"))?;
 
-    let mime_lower = mime_type.to_ascii_lowercase();
-    let raw_mode = quality_mode.trim().to_ascii_lowercase();
-    let is_view_once_flag = raw_mode.contains("viewonce") || raw_mode.contains("view_once");
-    let mode_clean = raw_mode
-        .trim_end_matches(":viewonce")
-        .trim_end_matches("_viewonce")
-        .trim();
-    let is_sticker_out = !is_voice_note && (mode_clean == "sticker" || raw_mode.contains("sticker"));
-    let is_gif_out = is_gif
-        || (!is_voice_note
-            && !is_sticker_out
-            && (mode_clean == "gif" || raw_mode.contains("gif")));
-    let is_view_once_out = is_view_once_flag && !is_gif_out && !is_sticker_out;
-
-    let media_type = if is_voice_note {
-        MediaType::Ptt
-    } else if is_gif_out {
-        MediaType::Gif
-    } else if is_sticker_out
-        || (mime_lower.starts_with("image/webp") && !is_view_once_out && caption.is_empty())
-    {
-        MediaType::Sticker
-    } else if !is_view_once_out && mode_clean == "original" && !mime_lower.starts_with("video/") {
-        MediaType::Document
-    } else if mime_lower.starts_with("image/") {
-        MediaType::Image
-    } else if mime_lower.starts_with("video/") {
-        MediaType::Video
-    } else if mime_lower.starts_with("audio/") {
-        MediaType::Audio
-    } else {
-        MediaType::Document
-    };
+    let (media_type, is_view_once_out, is_gif_out) =
+        resolve_outbound_media_type(mime_type, caption, quality_mode, is_voice_note, is_gif);
 
     let upload = client
         .upload(data, media_type, UploadOptions::default())
@@ -2267,4 +2236,98 @@ pub async fn pin_chat_message(
             .map_err(|e| format!("pin_message failed: {e}"))?;
     }
     Ok(())
+}
+
+fn resolve_outbound_media_type(
+    mime_type: &str,
+    caption: &str,
+    quality_mode: &str,
+    is_voice_note: bool,
+    is_gif: bool,
+) -> (MediaType, bool, bool) {
+    let mime_lower = mime_type.trim().to_ascii_lowercase();
+    let raw_mode = quality_mode.trim().to_ascii_lowercase();
+    let is_view_once_flag = raw_mode.contains("viewonce") || raw_mode.contains("view_once");
+    let mode_clean = raw_mode
+        .trim_end_matches(":viewonce")
+        .trim_end_matches("_viewonce")
+        .trim();
+    let is_sticker_out = !is_voice_note && (mode_clean == "sticker" || raw_mode.contains("sticker"));
+    let is_gif_out = is_gif
+        || (!is_voice_note
+            && !is_sticker_out
+            && (mode_clean == "gif" || raw_mode.contains("gif")));
+    let is_view_once_out = is_view_once_flag && !is_gif_out && !is_sticker_out;
+
+    let media_type = if is_voice_note {
+        MediaType::Ptt
+    } else if is_gif_out {
+        MediaType::Gif
+    } else if is_sticker_out
+        || (mime_lower.starts_with("image/webp") && !is_view_once_out && caption.is_empty())
+    {
+        MediaType::Sticker
+    } else if mime_lower.starts_with("image/") {
+        MediaType::Image
+    } else if mime_lower.starts_with("video/") {
+        MediaType::Video
+    } else if !is_view_once_out && mode_clean == "original" {
+        MediaType::Document
+    } else if mime_lower.starts_with("audio/") {
+        MediaType::Audio
+    } else {
+        MediaType::Document
+    };
+
+    (media_type, is_view_once_out, is_gif_out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn original_quality_photo_with_caption_stays_image() {
+        let (mt, vo, gif) = resolve_outbound_media_type(
+            "image/jpeg",
+            "caption text",
+            "original",
+            false,
+            false,
+        );
+        assert!(matches!(mt, MediaType::Image));
+        assert!(!vo);
+        assert!(!gif);
+
+        let (mt_png, _, _) = resolve_outbound_media_type("image/png", "hello", "original", false, false);
+        assert!(matches!(mt_png, MediaType::Image));
+    }
+
+    #[test]
+    fn webp_with_caption_sends_as_image_while_blank_caption_webp_is_sticker() {
+        let (mt_cap, _, _) = resolve_outbound_media_type("image/webp", "look", "hd", false, false);
+        assert!(matches!(mt_cap, MediaType::Image));
+
+        let (mt_stk, _, _) = resolve_outbound_media_type("image/webp", "", "standard", false, false);
+        assert!(matches!(mt_stk, MediaType::Sticker));
+    }
+
+    #[test]
+    fn documents_videos_and_view_once_resolve_correctly() {
+        let (mt_doc, _, _) = resolve_outbound_media_type(
+            "application/pdf",
+            "invoice",
+            "original",
+            false,
+            false,
+        );
+        assert!(matches!(mt_doc, MediaType::Document));
+
+        let (mt_vid, _, _) = resolve_outbound_media_type("video/mp4", "clip", "original", false, false);
+        assert!(matches!(mt_vid, MediaType::Video));
+
+        let (mt_vo, vo, _) = resolve_outbound_media_type("image/jpeg", "", "hd:viewonce", false, false);
+        assert!(matches!(mt_vo, MediaType::Image));
+        assert!(vo);
+    }
 }

@@ -34,7 +34,7 @@ import kotlin.math.sqrt
 enum class OutboundQualityMode(val wireValue: String, val label: String) {
     STANDARD("standard", "Standard (Fast)"),
     HD("hd", "HD (2560px)"),
-    ORIGINAL("original", "Original (Lossless Doc)"),
+    ORIGINAL("original", "Original (Max Quality)"),
     STICKER("sticker", "Sticker"),
     GIF("gif", "GIF")
 }
@@ -63,6 +63,7 @@ object EagerMediaVault {
             File(base, "vault/calls"),
             File(base, "vault/custom"),
             File(base, "stickers/custom"),
+            File(base, "stickers/favorites"),
             File(context.filesDir, "models")
         ).forEach { dir ->
             if (!dir.exists()) dir.mkdirs()
@@ -76,6 +77,7 @@ object EagerMediaVault {
     fun callRecordingsVaultDir(context: Context): File = File(AccountManager.dataDir(context), "vault/calls").apply { mkdirs() }
     fun customVaultRootDir(context: Context): File = File(AccountManager.dataDir(context), "vault/custom").apply { mkdirs() }
     fun customStickersDir(context: Context): File = File(AccountManager.dataDir(context), "stickers/custom").apply { mkdirs() }
+    fun favoriteStickersDir(context: Context): File = File(AccountManager.dataDir(context), "stickers/favorites").apply { mkdirs() }
 
     /** Sanitizes user-supplied custom vault folder names so paths stay strictly inside vault/custom. */
     fun sanitizeVaultFolderName(raw: String): String {
@@ -230,11 +232,26 @@ object EagerMediaVault {
             }
         }
 
-        if (mode == OutboundQualityMode.ORIGINAL || mode == OutboundQualityMode.GIF || mimeType.equals("image/webp", ignoreCase = true) || !mimeType.startsWith("image/")) {
+        val lowerMime = mimeType.lowercase()
+        val isDirectInlineImage = lowerMime == "image/jpeg" ||
+            lowerMime == "image/jpg" ||
+            lowerMime == "image/png"
+        val keepOriginalUntouched = mode == OutboundQualityMode.GIF ||
+            lowerMime == "image/webp" ||
+            !lowerMime.startsWith("image/") ||
+            (mode == OutboundQualityMode.ORIGINAL && isDirectInlineImage && sourceFile.length() in 1L..(15L * 1024L * 1024L))
+
+        if (keepOriginalUntouched) {
             val outFile = if (sourceFile.parentFile == mediaDir(context)) {
                 sourceFile
             } else {
-                val ext = sourceFile.extension.ifBlank { "bin" }
+                val ext = sourceFile.extension.ifBlank {
+                    when {
+                        lowerMime == "image/png" -> "png"
+                        lowerMime.startsWith("image/") -> "jpg"
+                        else -> "bin"
+                    }
+                }
                 File(mediaDir(context), "orig_${System.currentTimeMillis()}.$ext").also { dest ->
                     sourceFile.copyTo(dest, overwrite = true)
                 }
@@ -247,8 +264,16 @@ object EagerMediaVault {
             )
         }
 
-        val maxDim = if (mode == OutboundQualityMode.HD) 2560 else 1600
-        val quality = if (mode == OutboundQualityMode.HD) 92 else 80
+        val maxDim = when (mode) {
+            OutboundQualityMode.ORIGINAL -> 4096
+            OutboundQualityMode.HD -> 2560
+            else -> 1600
+        }
+        val quality = when (mode) {
+            OutboundQualityMode.ORIGINAL -> 95
+            OutboundQualityMode.HD -> 92
+            else -> 80
+        }
         val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(sourceFile.absolutePath, boundsOpts)
         val srcW = boundsOpts.outWidth
