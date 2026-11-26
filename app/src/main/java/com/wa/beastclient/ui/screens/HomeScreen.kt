@@ -9,7 +9,6 @@ import android.os.Build
 import android.provider.ContactsContract
 import android.widget.Toast
 import androidx.core.content.ContextCompat
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.activity.compose.BackHandler
@@ -26,7 +25,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -172,8 +173,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleFloatingActionButton
 import androidx.compose.material3.ToggleFloatingActionButtonDefaults
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -184,6 +183,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -192,6 +192,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -199,6 +201,9 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -222,6 +227,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
@@ -284,9 +290,12 @@ import com.wa.beastclient.ui.components.AccountSwitcherSheet
 import com.wa.beastclient.ui.components.GitHubFeedbackDialog
 import com.wa.beastclient.ui.components.GitHubFeedbackType
 import com.wa.beastclient.ui.MainViewModel
-import com.wa.beastclient.ui.components.ChatPeekPopupOverlay
+import com.wa.beastclient.ui.components.ChatSelectionState
 import com.wa.beastclient.ui.components.DeliveryTickIcon
+import com.wa.beastclient.ui.components.FloatingChatSelectionMenuOverlay
 import com.wa.beastclient.ui.components.MediaVaultSheet
+import com.wa.beastclient.ui.components.applyChatLongPress
+import com.wa.beastclient.ui.components.applyChatTapInSelection
 import com.wa.beastclient.ui.components.MessageHistorySheet
 import com.wa.beastclient.ui.components.PerChatQuickControlsSheet
 import com.wa.beastclient.ui.components.QuickContactDialog
@@ -484,17 +493,15 @@ fun HomeScreen(
     var quickControlsChatTarget by remember { mutableStateOf<ChatEntity?>(null) }
     var quickControlsWallpaperChat by remember { mutableStateOf<ChatEntity?>(null) }
     var showLockedChatsPinPrompt by remember { mutableStateOf(false) }
-    var selectedChatJids by remember { mutableStateOf(setOf<String>()) }
+    var chatSelectionState by remember { mutableStateOf(ChatSelectionState()) }
+    val liveSingleSelectedChat = remember(chatSelectionState.singleTarget, allChats) {
+        chatSelectionState.singleTarget?.let { target -> allChats.firstOrNull { it.jid == target.jid } ?: target }
+    }
     var selectionOverflowExpanded by remember { mutableStateOf(false) }
     var pendingDeleteJids by remember { mutableStateOf<List<String>>(emptyList()) }
-    var peekChatTarget by remember { mutableStateOf<ChatEntity?>(null) }
-    val peekChat = remember(peekChatTarget, allChats) {
-        peekChatTarget?.let { target -> allChats.firstOrNull { it.jid == target.jid } ?: target }
-    }
-    var lastPeekChat by remember { mutableStateOf<ChatEntity?>(null) }
-    LaunchedEffect(peekChat) {
-        if (peekChat != null) lastPeekChat = peekChat
-    }
+    val rowBoundsInRoot = remember { mutableStateMapOf<String, Rect>() }
+    var overlayOriginInRoot by remember { mutableStateOf(Offset.Zero) }
+    var overlaySizePx by remember { mutableStateOf(IntSize.Zero) }
     val haptics = LocalHapticFeedback.current
     val homeScope = rememberCoroutineScope()
     var showHomeCallingSetupDialog by remember { mutableStateOf(false) }
@@ -633,27 +640,25 @@ fun HomeScreen(
         }
     }
 
-    val selectedChats = remember(selectedChatJids, allChats, chats, groupsChats) {
+    val selectedChats = remember(chatSelectionState, allChats, chats, groupsChats) {
         val merged = (allChats + chats + groupsChats).associateBy { it.jid }
-        selectedChatJids.mapNotNull { merged[it] }
+        val jids = if (chatSelectionState.multiSelectedJids.isNotEmpty()) {
+            chatSelectionState.multiSelectedJids
+        } else {
+            chatSelectionState.singleTarget?.let { setOf(it.jid) }.orEmpty()
+        }
+        jids.mapNotNull { merged[it] }
     }
 
     LaunchedEffect(currentTab) {
-        if (peekChatTarget != null) {
-            peekChatTarget = null
-        }
-        if (selectedChatJids.isNotEmpty()) {
-            selectedChatJids = emptySet()
+        if (chatSelectionState.hasAnySelection) {
+            chatSelectionState = ChatSelectionState()
             selectionOverflowExpanded = false
         }
     }
 
-    BackHandler(enabled = peekChat != null) {
-        peekChatTarget = null
-    }
-
-    BackHandler(enabled = selectedChatJids.isNotEmpty()) {
-        selectedChatJids = emptySet()
+    BackHandler(enabled = chatSelectionState.hasAnySelection) {
+        chatSelectionState = ChatSelectionState()
         selectionOverflowExpanded = false
     }
 
@@ -670,159 +675,224 @@ fun HomeScreen(
     }
     var showHomeAppearanceSheet by remember { mutableStateOf(false) }
 
-    val peekBackgroundBlur by animateDpAsState(
-        targetValue = if (peekChat != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !stealth.classicWhatsAppLook && !isReducedMotion) {
-            14.dp
-        } else {
-            0.dp
-        },
-        animationSpec = tween(durationMillis = if (isReducedMotion) 0 else 180),
-        label = "home_peek_blur"
-    )
-
-    Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
-        modifier = if (peekBackgroundBlur > 0.dp) Modifier.blur(peekBackgroundBlur) else Modifier,
         containerColor = effectiveAppSurface,
         topBar = {
             val motionScheme = MaterialTheme.motionScheme
             Column(modifier = Modifier.background(colors.appSurface)) {
+                val selectionTabActive = currentTab in listOf(0, 1, 2, 4, 6)
+                val topBarState = when {
+                    selectionTabActive && chatSelectionState.multiSelectedJids.isNotEmpty() -> 2
+                    selectionTabActive && liveSingleSelectedChat != null -> 1
+                    else -> 0
+                }
                 AnimatedContent(
-                    targetState = (currentTab == 0 || currentTab == 4) && selectedChatJids.isNotEmpty(),
+                    targetState = topBarState,
                     transitionSpec = {
-                        (fadeIn(motionScheme.fastEffectsSpec()) + scaleIn(
-                            initialScale = 0.98f,
-                            animationSpec = motionScheme.fastSpatialSpec()
-                        )) togetherWith fadeOut(motionScheme.fastEffectsSpec())
+                        (fadeIn(motionScheme.fastEffectsSpec()) + slideInVertically(motionScheme.fastSpatialSpec()) { -it / 4 }) togetherWith
+                            (fadeOut(motionScheme.fastEffectsSpec()) + slideOutVertically(motionScheme.fastSpatialSpec()) { -it / 4 })
                     },
+                    contentKey = { it },
                     label = "home_topbar_mode"
-                ) { inSelectionMode ->
-                if (inSelectionMode) {
+                ) { barState ->
+                when (barState) {
+                2 -> {
+                    val selCount = chatSelectionState.multiSelectedJids.size
                     val allPinned = selectedChats.isNotEmpty() && selectedChats.all { it.isPinned }
                     val allMuted = selectedChats.isNotEmpty() && selectedChats.all { it.isMuted }
                     val allArchived = selectedChats.isNotEmpty() && selectedChats.all { it.isArchived }
                     val allFavorite = selectedChats.isNotEmpty() && selectedChats.all { it.isFavorite }
                     val anyUnread = selectedChats.any { it.unreadCount > 0 }
-                    val targetJids = selectedChatJids.toList()
+                    val targetJids = chatSelectionState.multiSelectedJids.toList()
 
-                    TopAppBar(
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = colors.elevatedBar,
-                            titleContentColor = colors.textPrimary
-                        ),
-                        navigationIcon = {
+                    WuppGlassTopBar(
+                        backdropState = backdropState,
+                        classicMode = stealth.classicWhatsAppLook,
+                        showBottomDivider = false,
+                        height = 56.dp,
+                        leading = {
                             IconButton(
                                 onClick = {
-                                    selectedChatJids = emptySet()
+                                    chatSelectionState = ChatSelectionState()
                                     selectionOverflowExpanded = false
-                                }
+                                },
+                                modifier = Modifier.size(40.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
                                     contentDescription = "Clear selection",
-                                    tint = colors.textPrimary
+                                    tint = colors.textPrimary,
+                                    modifier = Modifier.size(23.dp)
                                 )
                             }
-                        },
-                        title = {
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "${selectedChatJids.size}",
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = colors.textPrimary
+                                text = "$selCount selected",
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = colors.textPrimary,
+                                maxLines = 1
                             )
                         },
-                        actions = {
+                        trailing = {
                             IconButton(
                                 onClick = {
                                     viewModel.pinChats(targetJids, !allPinned)
-                                    selectedChatJids = emptySet()
-                                }
+                                    chatSelectionState = ChatSelectionState()
+                                },
+                                modifier = Modifier.size(40.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Rounded.PushPin,
                                     contentDescription = if (allPinned) "Unpin" else "Pin",
-                                    tint = if (allPinned) colors.brightGreen else colors.textPrimary
-                                )
-                            }
-                            IconButton(
-                                onClick = { pendingDeleteJids = targetJids }
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Delete,
-                                    contentDescription = "Delete locally",
-                                    tint = colors.textPrimary
+                                    tint = if (allPinned) colors.brightGreen else colors.textPrimary,
+                                    modifier = Modifier.size(21.dp)
                                 )
                             }
                             IconButton(
                                 onClick = {
                                     viewModel.muteChats(targetJids, !allMuted)
-                                    selectedChatJids = emptySet()
-                                }
+                                    chatSelectionState = ChatSelectionState()
+                                },
+                                modifier = Modifier.size(40.dp)
                             ) {
                                 Icon(
                                     imageVector = if (allMuted) Icons.Rounded.Notifications else Icons.Rounded.NotificationsOff,
                                     contentDescription = if (allMuted) "Unmute notifications" else "Mute notifications",
-                                    tint = colors.textPrimary
+                                    tint = colors.textPrimary,
+                                    modifier = Modifier.size(21.dp)
                                 )
                             }
                             IconButton(
                                 onClick = {
                                     viewModel.archiveChats(targetJids, !allArchived)
-                                    selectedChatJids = emptySet()
-                                }
+                                    chatSelectionState = ChatSelectionState()
+                                },
+                                modifier = Modifier.size(40.dp)
                             ) {
                                 Icon(
                                     imageVector = if (allArchived) Icons.Rounded.Unarchive else Icons.Rounded.Archive,
                                     contentDescription = if (allArchived) "Unarchive" else "Archive",
-                                    tint = colors.textPrimary
+                                    tint = colors.textPrimary,
+                                    modifier = Modifier.size(21.dp)
                                 )
                             }
-                            IconButton(onClick = { selectionOverflowExpanded = true }) {
-                                Icon(Icons.Rounded.MoreVert, "More actions", tint = colors.textPrimary)
-                            }
-                            DropdownMenu(
-                                expanded = selectionOverflowExpanded,
-                                onDismissRequest = { selectionOverflowExpanded = false }
+                            IconButton(
+                                onClick = { pendingDeleteJids = targetJids },
+                                modifier = Modifier.size(40.dp)
                             ) {
-                                DropdownMenuItem(
-                                    text = { Text(if (anyUnread) "Mark as read" else "Mark as unread") },
-                                    onClick = {
-                                        selectionOverflowExpanded = false
-                                        viewModel.setChatsUnreadLocal(targetJids, !anyUnread)
-                                        selectedChatJids = emptySet()
-                                    }
+                                Icon(
+                                    imageVector = Icons.Rounded.Delete,
+                                    contentDescription = "Delete locally",
+                                    tint = colors.antiDeleteRed,
+                                    modifier = Modifier.size(22.dp)
                                 )
-                                DropdownMenuItem(
-                                    text = { Text(if (allFavorite) "Remove from Favorites" else "Add to Favorites") },
-                                    onClick = {
-                                        selectionOverflowExpanded = false
-                                        viewModel.favoriteChats(targetJids, !allFavorite)
-                                        selectedChatJids = emptySet()
-                                    }
-                                )
-                                if (selectedChats.size == 1) {
-                                    val only = selectedChats.first()
+                            }
+                            Box {
+                                IconButton(
+                                    onClick = { selectionOverflowExpanded = true },
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.MoreVert,
+                                        contentDescription = "More actions",
+                                        tint = colors.textPrimary,
+                                        modifier = Modifier.size(21.dp)
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = selectionOverflowExpanded,
+                                    onDismissRequest = { selectionOverflowExpanded = false }
+                                ) {
                                     DropdownMenuItem(
-                                        text = { Text("View contact") },
+                                        text = { Text(if (anyUnread) "Mark as read" else "Mark as unread") },
                                         onClick = {
                                             selectionOverflowExpanded = false
-                                            selectedChatJids = emptySet()
-                                            quickContactTarget = only
+                                            viewModel.setChatsUnreadLocal(targetJids, !anyUnread)
+                                            chatSelectionState = ChatSelectionState()
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(if (allFavorite) "Remove from Favorites" else "Add to Favorites") },
+                                        onClick = {
+                                            selectionOverflowExpanded = false
+                                            viewModel.favoriteChats(targetJids, !allFavorite)
+                                            chatSelectionState = ChatSelectionState()
+                                        }
+                                    )
+                                    if (selectedChats.size == 1) {
+                                        val only = selectedChats.first()
+                                        DropdownMenuItem(
+                                            text = { Text(if (only.jid.endsWith("@newsletter", ignoreCase = true)) "Channel info" else "View contact") },
+                                            onClick = {
+                                                selectionOverflowExpanded = false
+                                                chatSelectionState = ChatSelectionState()
+                                                if (only.jid.endsWith("@newsletter", ignoreCase = true)) {
+                                                    onOpenContactInfo(only.jid)
+                                                } else {
+                                                    quickContactTarget = only
+                                                }
+                                            }
+                                        )
+                                    }
+                                    DropdownMenuItem(
+                                        text = { Text("Select all") },
+                                        onClick = {
+                                            selectionOverflowExpanded = false
+                                            val allVisible = when (currentTab) {
+                                                1, 6 -> channels
+                                                4 -> groupsChats
+                                                2 -> allChats.filter { it.isGroup && !it.isCommunityParent }
+                                                else -> chats
+                                            }
+                                            chatSelectionState = when {
+                                                allVisible.size > 1 -> ChatSelectionState(
+                                                    singleTarget = null,
+                                                    multiSelectedJids = allVisible.map { it.jid }.toSet()
+                                                )
+                                                allVisible.size == 1 -> ChatSelectionState(singleTarget = allVisible.first())
+                                                else -> ChatSelectionState()
+                                            }
                                         }
                                     )
                                 }
-                                DropdownMenuItem(
-                                    text = { Text("Select all") },
-                                    onClick = {
-                                        selectionOverflowExpanded = false
-                                        selectedChatJids = chats.map { it.jid }.toSet()
-                                    }
-                                )
                             }
                         }
                     )
-                } else {
+                }
+                1 -> {
+                    WuppGlassTopBar(
+                        backdropState = backdropState,
+                        classicMode = stealth.classicWhatsAppLook,
+                        showBottomDivider = false,
+                        height = 56.dp,
+                        leading = {
+                            IconButton(
+                                onClick = {
+                                    chatSelectionState = ChatSelectionState()
+                                    selectionOverflowExpanded = false
+                                },
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                    contentDescription = "Clear selection",
+                                    tint = colors.textPrimary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = "1 selected",
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.Normal,
+                                color = colors.textPrimary,
+                                maxLines = 1
+                            )
+                        }
+                    )
+                }
+                else -> {
                 val iosCircleBg = if (colors.isDark) Color(0xFF1F2024) else Color(0xFFEBEBF0)
                 val showCollapsedSettingsTitle = currentTab == 3 &&
                     (toolsListState.firstVisibleItemIndex > 0 || toolsListState.firstVisibleItemScrollOffset > 120)
@@ -1205,11 +1275,12 @@ fun HomeScreen(
                 }
                 }
                 }
+                }
             }
         },
         floatingActionButton = {
             val showFab = (currentTab == 0 || currentTab == 4) &&
-                selectedChatJids.isEmpty() &&
+                !chatSelectionState.hasAnySelection &&
                 (homeAppearance.newChatButtonStyle == HomeNewChatStyle.FLOATING_CIRCLE ||
                     homeAppearance.newChatButtonStyle == HomeNewChatStyle.EXTENDED_PILL ||
                     homeAppearance.newChatButtonStyle == HomeNewChatStyle.BOTH)
@@ -1258,250 +1329,281 @@ fun HomeScreen(
         }
     ) { innerPadding ->
         val contentBottomPad = innerPadding.calculateBottomPadding() + 14.dp
+        val mergedChatsByJid = remember(allChats, chats, groupsChats) {
+            (allChats + chats + groupsChats).associateBy { it.jid }
+        }
+        val toggleSelection: (ChatEntity) -> Unit = { chat ->
+            chatSelectionState = applyChatTapInSelection(
+                state = chatSelectionState,
+                target = chat,
+                allChatsByJid = mergedChatsByJid
+            )
+            selectionOverflowExpanded = false
+        }
+        val handleLongClick: (ChatEntity) -> Unit = { chat ->
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            chatSelectionState = applyChatLongPress(
+                state = chatSelectionState,
+                target = chat,
+                allChatsByJid = mergedChatsByJid
+            )
+            selectionOverflowExpanded = false
+        }
+        val handleAvatarClick: (ChatEntity) -> Unit = { chat ->
+            if (chatSelectionState.hasAnySelection) toggleSelection(chat) else quickContactTarget = chat
+        }
+        val handleChatClick: (ChatEntity) -> Unit = { chat ->
+            if (chatSelectionState.hasAnySelection) toggleSelection(chat) else onOpenChat(chat.jid)
+        }
+        val revealIfLockedFilter: (HomeFilterChip) -> Unit = { chip ->
+            if (chip == HomeFilterChip.LOCKED &&
+                appLockConfig.hideLockedChatsBehindLock &&
+                !lockedChatsRevealed
+            ) {
+                requestRevealLockedChats()
+            }
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding())
-                .then(if (!stealth.classicWhatsAppLook) Modifier.wuppBackdropSource(backdropState) else Modifier)
-                .background(effectiveAppSurface)
         ) {
-            val tabOrder = remember(stealth.separateGroupsAndChats, showChannelsTab) {
-                resolveHomeTabOrder(
-                    separateGroupsAndChats = stealth.separateGroupsAndChats,
-                    separateChannelsTab = showChannelsTab
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (!stealth.classicWhatsAppLook) Modifier.wuppBackdropSource(backdropState) else Modifier)
+                    .background(effectiveAppSurface)
+            ) {
+                val tabOrder = remember(stealth.separateGroupsAndChats, showChannelsTab) {
+                    resolveHomeTabOrder(
+                        separateGroupsAndChats = stealth.separateGroupsAndChats,
+                        separateChannelsTab = showChannelsTab
+                    )
+                }
+                val pagerState = rememberPagerState(
+                    initialPage = resolvePagerIndexForTab(tabOrder, currentTab),
+                    pageCount = { tabOrder.size }
+                )
+                val latestTabOrder by rememberUpdatedState(tabOrder)
+                val latestCurrentTab by rememberUpdatedState(currentTab)
+                val latestOnSelectTab by rememberUpdatedState(onSelectTab)
+
+                LaunchedEffect(pagerState) {
+                    snapshotFlow { pagerState.settledPage }
+                        .distinctUntilChanged()
+                        .drop(1)
+                        .collect { settled ->
+                            val resolvedTab = resolveTabIdForPagerIndex(latestTabOrder, settled)
+                            if (resolvedTab != latestCurrentTab) {
+                                latestOnSelectTab(resolvedTab)
+                            }
+                        }
+                }
+
+                LaunchedEffect(currentTab, tabOrder) {
+                    val targetPage = resolvePagerIndexForTab(tabOrder, currentTab)
+                    if (pagerState.currentPage != targetPage && pagerState.targetPage != targetPage) {
+                        pagerState.animateScrollToPage(targetPage)
+                    }
+                }
+
+                Column(modifier = Modifier.fillMaxSize()) {
+                    ActiveCallFloatingBar()
+                    HorizontalPager(
+                        state = pagerState,
+                        beyondViewportPageCount = 1,
+                        userScrollEnabled = !chatSelectionState.hasAnySelection,
+                        key = { pageIndex -> resolveTabIdForPagerIndex(tabOrder, pageIndex) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    ) { pageIndex ->
+                        when (resolveTabIdForPagerIndex(tabOrder, pageIndex)) {
+                            0, 4 -> {
+                                val tabIndex = resolveTabIdForPagerIndex(tabOrder, pageIndex)
+                                val isGroupsTab = tabIndex == 4 && stealth.separateGroupsAndChats
+                                val tabGroupFilterMode: Boolean? = when {
+                                    isGroupsTab -> true
+                                    stealth.separateGroupsAndChats -> false
+                                    else -> null
+                                }
+                                ChatsTabContent(
+                                    chats = if (isGroupsTab) groupsChats else chats,
+                                    allChats = allChats,
+                                    selectedChip = if (isGroupsTab) selectedGroupsChip else selectedChip,
+                                    ftsHits = ftsHits,
+                                    searchQuery = searchQuery,
+                                    listState = if (isGroupsTab) groupsListState else chatsListState,
+                                    selectedChatJids = chatSelectionState.multiSelectedJids,
+                                    singleSelectedChatJid = liveSingleSelectedChat?.jid,
+                                    onRowBoundsChanged = { jid, rect -> rowBoundsInRoot[jid] = rect },
+                                    onDismissSelection = { chatSelectionState = ChatSelectionState() },
+                                    bottomPadding = contentBottomPad,
+                                    archivedCount = archivedCount,
+                                    includeArchived = includeArchived,
+                                    hiddenLockedCount = hiddenLockedCount,
+                                    hideLockedBehindLock = appLockConfig.hideLockedChatsBehindLock,
+                                    hasSecretCode = appLockConfig.hasSecretCode,
+                                    lockedChatsRevealed = lockedChatsRevealed,
+                                    compactRows = stealth.compactChatRows,
+                                    homeAppearance = homeAppearance,
+                                    reducedMotion = isReducedMotion,
+                                    showSeconds = showSeconds,
+                                    hideStealthBadges = stealth.hideStealthStatusBadges,
+                                    groupFilterMode = tabGroupFilterMode,
+                                    onSearchChange = { viewModel.updateHomeSearch(it) },
+                                    heartbeat = heartbeat,
+                                    bridgeStatus = bridgeStatus,
+                                    onSelectChip = { chip ->
+                                        revealIfLockedFilter(chip)
+                                        if (isGroupsTab) viewModel.selectGroupsFilter(chip) else viewModel.selectFilter(chip)
+                                    },
+                                    onToggleIncludeArchived = { viewModel.setIncludeArchived(it) },
+                                    onRequestRevealLockedChats = { requestRevealLockedChats() },
+                                    onHideRevealedLockedChats = { viewModel.setLockedChatsRevealed(false) },
+                                    onResetHeartbeat = { viewModel.recordPrimaryHeartbeatNow() },
+                                    onSeedShowcase = { viewModel.seedShowcaseData() },
+                                    onAvatarClick = handleAvatarClick,
+                                    onChatClick = handleChatClick,
+                                    onChatLongClick = handleLongClick
+                                )
+                            }
+
+                            1 -> UpdatesStatusTab(
+                                statuses = statuses,
+                                channels = channels,
+                                allChats = allChats,
+                                allContacts = allContacts,
+                                hiddenLockedJids = hiddenLockedJids,
+                                preferPhonebookNames = stealth.preferPhonebookContactNames,
+                                ownJid = bridgeStatus.ownJid,
+                                searchQuery = searchQuery,
+                                listState = updatesListState,
+                                bottomPadding = contentBottomPad,
+                                verticalStatusLayout = stealth.statusVerticalLayout,
+                                hideChannels = stealth.hideChannels || showChannelsTab,
+                                showSeconds = showSeconds,
+                                selectedChatJids = chatSelectionState.multiSelectedJids,
+                                singleSelectedChatJid = liveSingleSelectedChat?.jid,
+                                onRowBoundsChanged = { jid, rect -> rowBoundsInRoot[jid] = rect },
+                                onChannelLongClick = handleLongClick,
+                                onDismissSelection = { chatSelectionState = ChatSelectionState() },
+                                onSearchChange = { viewModel.updateHomeSearch(it) },
+                                onOpenStatus = { activeStatusViewer = it },
+                                onAddStatus = { mode -> statusComposerInitialMode = mode },
+                                onOpenChannel = handleChatClick
+                            )
+
+                            6 -> ChannelsTabContent(
+                                channels = channels,
+                                searchQuery = searchQuery,
+                                listState = channelsListState,
+                                bottomPadding = contentBottomPad,
+                                selectedChatJids = chatSelectionState.multiSelectedJids,
+                                singleSelectedChatJid = liveSingleSelectedChat?.jid,
+                                onRowBoundsChanged = { jid, rect -> rowBoundsInRoot[jid] = rect },
+                                onChannelLongClick = handleLongClick,
+                                onDismissSelection = { chatSelectionState = ChatSelectionState() },
+                                onOpenChannel = handleChatClick
+                            )
+
+                            2 -> CommunitiesTab(
+                                allChats = allChats,
+                                listState = communitiesListState,
+                                bottomPadding = contentBottomPad,
+                                selectedChatJids = chatSelectionState.multiSelectedJids,
+                                singleSelectedChatJid = liveSingleSelectedChat?.jid,
+                                onRowBoundsChanged = { jid, rect -> rowBoundsInRoot[jid] = rect },
+                                onGroupLongClick = handleLongClick,
+                                onDismissSelection = { chatSelectionState = ChatSelectionState() },
+                                onOpenGroup = handleChatClick
+                            )
+
+                            5 -> CallsTab(
+                                ownJid = bridgeStatus.ownJid,
+                                stealth = stealth,
+                                callLogs = callLogs,
+                                allChats = allChats,
+                                allContacts = allContacts,
+                                hiddenLockedJids = hiddenLockedJids,
+                                searchQuery = searchQuery,
+                                onSearchChange = { viewModel.updateHomeSearch(it) },
+                                listState = callsListState,
+                                bottomPadding = contentBottomPad,
+                                showSeconds = showSeconds,
+                                onOpenChat = onOpenChat,
+                                onStartCall = launchHomeCall,
+                                onNewCallClick = { showQuickContactPicker = true },
+                                onOpenCallingSettings = { showHomeCallingSetupDialog = true }
+                            )
+
+                            else -> ToolsVaultTab(
+                                viewModel = viewModel,
+                                listState = toolsListState,
+                                bottomPadding = contentBottomPad,
+                                savedHistoryCount = (deletedHistory.asSequence().map { it.id } + editedHistory.asSequence().map { it.id }).toSet().size,
+                                customStickerCount = customStickers.size,
+                                editProfileRequestNonce = editProfileRequestNonce,
+                                onOpenStarredChats = {
+                                    viewModel.selectFilter(HomeFilterChip.FAVORITES)
+                                    onSelectTab(0)
+                                },
+                                onOpenMessageHistory = {
+                                    messageHistoryChatFilter = null
+                                    showMessageHistorySheet = true
+                                },
+                                onOpenMediaVault = { showMediaVaultSheet = true },
+                                onOpenStickerStudio = { showStickerStudioDialog = true },
+                                onOpenContactQr = {
+                                    contactQrInitialTab = 0
+                                    showContactQrSheet = true
+                                },
+                                onOpenFeedback = { activeFeedbackType = it }
+                            )
+                        }
+                    }
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onGloballyPositioned { coords ->
+                        overlayOriginInRoot = coords.positionInRoot()
+                        overlaySizePx = coords.size
+                    }
+            ) {
+                val activeSingle = if (currentTab in listOf(0, 1, 2, 4, 6) && chatSelectionState.multiSelectedJids.isEmpty()) {
+                    liveSingleSelectedChat
+                } else {
+                    null
+                }
+                FloatingChatSelectionMenuOverlay(
+                    targetChat = activeSingle,
+                    rowBoundsInRoot = activeSingle?.let { rowBoundsInRoot[it.jid] },
+                    overlayOriginInRoot = overlayOriginInRoot,
+                    overlaySizePx = overlaySizePx,
+                    backdropState = backdropState,
+                    classicMode = stealth.classicWhatsAppLook,
+                    onDismiss = { chatSelectionState = ChatSelectionState() },
+                    onTogglePin = { viewModel.togglePinChat(it) },
+                    onToggleMute = { viewModel.muteChats(listOf(it.jid), !it.isMuted) },
+                    onToggleUnread = { viewModel.setChatsUnreadLocal(listOf(it.jid), it.unreadCount == 0) },
+                    onToggleArchive = { viewModel.archiveChats(listOf(it.jid), !it.isArchived) },
+                    onToggleFavorite = { viewModel.toggleFavoriteChat(it) },
+                    onQuickControls = { quickControlsChatTarget = it },
+                    onOpenInfo = {
+                        if (it.jid.endsWith("@newsletter", ignoreCase = true)) {
+                            onOpenContactInfo(it.jid)
+                        } else {
+                            quickContactTarget = it
+                        }
+                    },
+                    onDeleteChat = { pendingDeleteJids = listOf(it.jid) }
                 )
             }
-            val pagerState = rememberPagerState(
-                initialPage = resolvePagerIndexForTab(tabOrder, currentTab),
-                pageCount = { tabOrder.size }
-            )
-            val latestTabOrder by rememberUpdatedState(tabOrder)
-            val latestCurrentTab by rememberUpdatedState(currentTab)
-            val latestOnSelectTab by rememberUpdatedState(onSelectTab)
-
-            LaunchedEffect(pagerState) {
-                snapshotFlow { pagerState.settledPage }
-                    .distinctUntilChanged()
-                    .drop(1)
-                    .collect { settled ->
-                        val resolvedTab = resolveTabIdForPagerIndex(latestTabOrder, settled)
-                        if (resolvedTab != latestCurrentTab) {
-                            latestOnSelectTab(resolvedTab)
-                        }
-                    }
-            }
-
-            LaunchedEffect(currentTab, tabOrder) {
-                val targetPage = resolvePagerIndexForTab(tabOrder, currentTab)
-                if (pagerState.currentPage != targetPage && pagerState.targetPage != targetPage) {
-                    pagerState.animateScrollToPage(targetPage)
-                }
-            }
-
-            val toggleSelection: (ChatEntity) -> Unit = { chat ->
-                selectedChatJids = if (chat.jid in selectedChatJids) {
-                    selectedChatJids - chat.jid
-                } else {
-                    selectedChatJids + chat.jid
-                }
-            }
-            val handleAvatarClick: (ChatEntity) -> Unit = { chat ->
-                if (selectedChatJids.isNotEmpty()) toggleSelection(chat) else quickContactTarget = chat
-            }
-            val handleChatClick: (ChatEntity) -> Unit = { chat ->
-                if (selectedChatJids.isNotEmpty()) toggleSelection(chat) else onOpenChat(chat.jid)
-            }
-            val revealIfLockedFilter: (HomeFilterChip) -> Unit = { chip ->
-                if (chip == HomeFilterChip.LOCKED &&
-                    appLockConfig.hideLockedChatsBehindLock &&
-                    !lockedChatsRevealed
-                ) {
-                    requestRevealLockedChats()
-                }
-            }
-
-            Column(modifier = Modifier.fillMaxSize()) {
-                ActiveCallFloatingBar()
-                HorizontalPager(
-                    state = pagerState,
-                    beyondViewportPageCount = 1,
-                    userScrollEnabled = selectedChatJids.isEmpty() && peekChat == null,
-                    key = { pageIndex -> resolveTabIdForPagerIndex(tabOrder, pageIndex) },
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                ) { pageIndex ->
-                when (resolveTabIdForPagerIndex(tabOrder, pageIndex)) {
-                    0, 4 -> {
-                        val tabIndex = resolveTabIdForPagerIndex(tabOrder, pageIndex)
-                        val isGroupsTab = tabIndex == 4 && stealth.separateGroupsAndChats
-                        val tabGroupFilterMode: Boolean? = when {
-                            isGroupsTab -> true
-                            stealth.separateGroupsAndChats -> false
-                            else -> null
-                        }
-                        ChatsTabContent(
-                            chats = if (isGroupsTab) groupsChats else chats,
-                            allChats = allChats,
-                            selectedChip = if (isGroupsTab) selectedGroupsChip else selectedChip,
-                            ftsHits = ftsHits,
-                            searchQuery = searchQuery,
-                            listState = if (isGroupsTab) groupsListState else chatsListState,
-                            selectedChatJids = selectedChatJids,
-                            bottomPadding = contentBottomPad,
-                            archivedCount = archivedCount,
-                            includeArchived = includeArchived,
-                            hiddenLockedCount = hiddenLockedCount,
-                            hideLockedBehindLock = appLockConfig.hideLockedChatsBehindLock,
-                            hasSecretCode = appLockConfig.hasSecretCode,
-                            lockedChatsRevealed = lockedChatsRevealed,
-                            compactRows = stealth.compactChatRows,
-                            homeAppearance = homeAppearance,
-                            reducedMotion = isReducedMotion,
-                            showSeconds = showSeconds,
-                            hideStealthBadges = stealth.hideStealthStatusBadges,
-                            groupFilterMode = tabGroupFilterMode,
-                            onSearchChange = { viewModel.updateHomeSearch(it) },
-                            heartbeat = heartbeat,
-                            bridgeStatus = bridgeStatus,
-                            onSelectChip = { chip ->
-                                revealIfLockedFilter(chip)
-                                if (isGroupsTab) viewModel.selectGroupsFilter(chip) else viewModel.selectFilter(chip)
-                            },
-                            onToggleIncludeArchived = { viewModel.setIncludeArchived(it) },
-                            onRequestRevealLockedChats = { requestRevealLockedChats() },
-                            onHideRevealedLockedChats = { viewModel.setLockedChatsRevealed(false) },
-                            onResetHeartbeat = { viewModel.recordPrimaryHeartbeatNow() },
-                            onSeedShowcase = { viewModel.seedShowcaseData() },
-                            onAvatarClick = handleAvatarClick,
-                            onChatClick = handleChatClick,
-                            onChatLongClick = { chat ->
-                                if (selectedChatJids.isNotEmpty()) {
-                                    toggleSelection(chat)
-                                } else {
-                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    peekChatTarget = chat
-                                }
-                            }
-                        )
-                    }
-
-                    1 -> UpdatesStatusTab(
-                        statuses = statuses,
-                        channels = channels,
-                        allChats = allChats,
-                        allContacts = allContacts,
-                        hiddenLockedJids = hiddenLockedJids,
-                        preferPhonebookNames = stealth.preferPhonebookContactNames,
-                        ownJid = bridgeStatus.ownJid,
-                        searchQuery = searchQuery,
-                        listState = updatesListState,
-                        bottomPadding = contentBottomPad,
-                        verticalStatusLayout = stealth.statusVerticalLayout,
-                        hideChannels = stealth.hideChannels || showChannelsTab,
-                        showSeconds = showSeconds,
-                        onSearchChange = { viewModel.updateHomeSearch(it) },
-                        onOpenStatus = { activeStatusViewer = it },
-                        onAddStatus = { mode -> statusComposerInitialMode = mode },
-                        onOpenChannel = { onOpenChat(it) }
-                    )
-
-                    6 -> ChannelsTabContent(
-                        channels = channels,
-                        searchQuery = searchQuery,
-                        listState = channelsListState,
-                        bottomPadding = contentBottomPad,
-                        onOpenChannel = { onOpenChat(it) }
-                    )
-
-                    2 -> CommunitiesTab(
-                        allChats = allChats,
-                        listState = communitiesListState,
-                        bottomPadding = contentBottomPad,
-                        onOpenGroup = onOpenChat
-                    )
-
-                    5 -> CallsTab(
-                        ownJid = bridgeStatus.ownJid,
-                        stealth = stealth,
-                        callLogs = callLogs,
-                        allChats = allChats,
-                        allContacts = allContacts,
-                        hiddenLockedJids = hiddenLockedJids,
-                        searchQuery = searchQuery,
-                        onSearchChange = { viewModel.updateHomeSearch(it) },
-                        listState = callsListState,
-                        bottomPadding = contentBottomPad,
-                        showSeconds = showSeconds,
-                        onOpenChat = onOpenChat,
-                        onStartCall = launchHomeCall,
-                        onNewCallClick = { showQuickContactPicker = true },
-                        onOpenCallingSettings = { showHomeCallingSetupDialog = true }
-                    )
-
-                    else -> ToolsVaultTab(
-                        viewModel = viewModel,
-                        listState = toolsListState,
-                        bottomPadding = contentBottomPad,
-                        savedHistoryCount = (deletedHistory.asSequence().map { it.id } + editedHistory.asSequence().map { it.id }).toSet().size,
-                        customStickerCount = customStickers.size,
-                        editProfileRequestNonce = editProfileRequestNonce,
-                        onOpenStarredChats = {
-                            viewModel.selectFilter(HomeFilterChip.FAVORITES)
-                            onSelectTab(0)
-                        },
-                        onOpenMessageHistory = {
-                            messageHistoryChatFilter = null
-                            showMessageHistorySheet = true
-                        },
-                        onOpenMediaVault = { showMediaVaultSheet = true },
-                        onOpenStickerStudio = { showStickerStudioDialog = true },
-                        onOpenContactQr = {
-                            contactQrInitialTab = 0
-                            showContactQrSheet = true
-                        },
-                        onOpenFeedback = { activeFeedbackType = it }
-                    )
-                }
-            }
-            }
         }
-    }
-
-    AnimatedVisibility(
-        visible = peekChat != null,
-        enter = fadeIn(animationSpec = tween(durationMillis = 180)),
-        exit = fadeOut(animationSpec = tween(durationMillis = 140))
-    ) {
-        lastPeekChat?.let { activePeek ->
-            val recentPeekMessages by remember(activePeek.jid) {
-                viewModel.observeRecentMessages(activePeek.jid, limit = 20)
-            }.collectAsState(initial = emptyList())
-            ChatPeekPopupOverlay(
-                chat = activePeek,
-                recentMessagesDescending = recentPeekMessages,
-                showSeconds = showSeconds,
-                backdropState = backdropState,
-                classicMode = stealth.classicWhatsAppLook,
-                onDismiss = { peekChatTarget = null },
-                onOpenChat = {
-                    val jid = activePeek.jid
-                    peekChatTarget = null
-                    onOpenChat(jid)
-                },
-                onToggleUnread = {
-                    viewModel.setChatsUnreadLocal(listOf(activePeek.jid), activePeek.unreadCount == 0)
-                },
-                onTogglePin = { viewModel.togglePinChat(activePeek) },
-                onToggleMute = { viewModel.muteChats(listOf(activePeek.jid), !activePeek.isMuted) },
-                onToggleFavorite = { viewModel.toggleFavoriteChat(activePeek) },
-                onToggleArchive = { viewModel.archiveChats(listOf(activePeek.jid), !activePeek.isArchived) },
-                onSelectChat = { selectedChatJids = setOf(activePeek.jid) },
-                onQuickControls = { quickControlsChatTarget = activePeek },
-                onDeleteChat = { pendingDeleteJids = listOf(activePeek.jid) }
-            )
-        }
-    }
     }
 
     quickContactChat?.let { target ->
@@ -2088,7 +2190,7 @@ fun HomeScreen(
                     onClick = {
                         viewModel.deleteChats(pendingDeleteJids, syncToWhatsApp = alsoDeleteOnWhatsApp && hasSyncableChats)
                         pendingDeleteJids = emptyList()
-                        selectedChatJids = emptySet()
+                        chatSelectionState = ChatSelectionState()
                     }
                 ) {
                     Text("Delete", color = colors.antiDeleteRed, fontWeight = FontWeight.SemiBold)
@@ -2805,6 +2907,9 @@ private fun ChatsTabContent(
     searchQuery: String,
     listState: LazyListState,
     selectedChatJids: Set<String> = emptySet(),
+    singleSelectedChatJid: String? = null,
+    onRowBoundsChanged: (String, Rect) -> Unit = { _, _ -> },
+    onDismissSelection: () -> Unit = {},
     bottomPadding: Dp = 96.dp,
     archivedCount: Int = 0,
     includeArchived: Boolean = false,
@@ -2883,7 +2988,17 @@ private fun ChatsTabContent(
     ) {
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .then(
+                if (singleSelectedChatJid != null && selectedChatJids.isEmpty()) {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDismissSelection
+                    )
+                } else Modifier
+            ),
         contentPadding = PaddingValues(bottom = bottomPadding)
     ) {
         // 14-Day Primary Heartbeat countdown warning banner (>= 10 days elapsed)
@@ -3274,7 +3389,7 @@ private fun ChatsTabContent(
             items(chats, key = { it.jid }) { chat ->
                 ChatListRow(
                     chat = chat,
-                    selected = chat.jid in selectedChatJids,
+                    selected = chat.jid == singleSelectedChatJid || chat.jid in selectedChatJids,
                     compactRows = compactRows,
                     homeAppearance = homeAppearance,
                     reducedMotion = reducedMotion,
@@ -3282,7 +3397,8 @@ private fun ChatsTabContent(
                     hideStealthBadges = hideStealthBadges,
                     onAvatarClick = { onAvatarClick(chat) },
                     onRowClick = { onChatClick(chat) },
-                    onRowLongClick = { onChatLongClick(chat) }
+                    onRowLongClick = { onChatLongClick(chat) },
+                    onBoundsChanged = { rect -> onRowBoundsChanged(chat.jid, rect) }
                 )
                 if (homeAppearance.showRowDividers) {
                     HorizontalDivider(
@@ -3359,7 +3475,8 @@ private fun ChatListRow(
     hideStealthBadges: Boolean = false,
     onAvatarClick: () -> Unit,
     onRowClick: () -> Unit,
-    onRowLongClick: () -> Unit = {}
+    onRowLongClick: () -> Unit = {},
+    onBoundsChanged: (Rect) -> Unit = {}
 ) {
     val chatDrafts by ChatDraftManager.drafts.collectAsState()
     val draftText = chatDrafts[chat.jid].orEmpty()
@@ -3389,6 +3506,7 @@ private fun ChatListRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .onGloballyPositioned { coords -> onBoundsChanged(coords.boundsInRoot()) }
             .then(if (reducedMotion) Modifier else Modifier.expressivePressScale(rowInteraction, pressedScale = 0.985f))
             .padding(
                 horizontal = if (selected || homeAppearance.surfaceTone == HomeSurfaceTone.ELEVATED_CARDS) 8.dp else 0.dp,
@@ -3652,7 +3770,12 @@ private fun ChannelsTabContent(
     searchQuery: String,
     listState: LazyListState,
     bottomPadding: Dp = 96.dp,
-    onOpenChannel: (String) -> Unit
+    selectedChatJids: Set<String> = emptySet(),
+    singleSelectedChatJid: String? = null,
+    onRowBoundsChanged: (String, Rect) -> Unit = { _, _ -> },
+    onChannelLongClick: (ChatEntity) -> Unit = {},
+    onDismissSelection: () -> Unit = {},
+    onOpenChannel: (ChatEntity) -> Unit
 ) {
     val colors = LocalWaColors.current
     val filteredChannels = remember(channels, searchQuery) {
@@ -3661,7 +3784,17 @@ private fun ChannelsTabContent(
 
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .then(
+                if (singleSelectedChatJid != null && selectedChatJids.isEmpty()) {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDismissSelection
+                    )
+                } else Modifier
+            ),
         contentPadding = PaddingValues(top = 8.dp, bottom = bottomPadding + 16.dp)
     ) {
         item(key = "channels_tab_header") {
@@ -3688,9 +3821,13 @@ private fun ChannelsTabContent(
             }
         } else {
             items(filteredChannels, key = { "channel_tab_${it.jid}" }) { ch ->
+                val isSelected = ch.jid == singleSelectedChatJid || ch.jid in selectedChatJids
                 ChannelListRow(
                     channel = ch,
-                    onClick = { onOpenChannel(ch.jid) }
+                    selected = isSelected,
+                    onClick = { onOpenChannel(ch) },
+                    onLongClick = { onChannelLongClick(ch) },
+                    onBoundsChanged = { rect -> onRowBoundsChanged(ch.jid, rect) }
                 )
             }
         }
@@ -3712,10 +3849,15 @@ private fun UpdatesStatusTab(
     verticalStatusLayout: Boolean = false,
     hideChannels: Boolean = false,
     showSeconds: Boolean = false,
+    selectedChatJids: Set<String> = emptySet(),
+    singleSelectedChatJid: String? = null,
+    onRowBoundsChanged: (String, Rect) -> Unit = { _, _ -> },
+    onChannelLongClick: (ChatEntity) -> Unit = {},
+    onDismissSelection: () -> Unit = {},
     onSearchChange: (String) -> Unit = {},
     onOpenStatus: (StatusEntity) -> Unit,
     onAddStatus: (StatusComposerMode) -> Unit,
-    onOpenChannel: (String) -> Unit
+    onOpenChannel: (ChatEntity) -> Unit
 ) {
     val colors = LocalWaColors.current
     val (chatsByJid, chatsByUser) = remember(allChats) { buildStatusChatLookup(allChats) }
@@ -3763,7 +3905,17 @@ private fun UpdatesStatusTab(
 
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .then(
+                if (singleSelectedChatJid != null && selectedChatJids.isEmpty()) {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDismissSelection
+                    )
+                } else Modifier
+            ),
         contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
     ) {
         item(key = "updates_ios_search") {
@@ -4061,9 +4213,13 @@ private fun UpdatesStatusTab(
                 }
             } else {
                 items(filteredChannels, key = { "channel_${it.jid}" }) { ch ->
+                    val isSelected = ch.jid == singleSelectedChatJid || ch.jid in selectedChatJids
                     ChannelListRow(
                         channel = ch,
-                        onClick = { onOpenChannel(ch.jid) }
+                        selected = isSelected,
+                        onClick = { onOpenChannel(ch) },
+                        onLongClick = { onChannelLongClick(ch) },
+                        onBoundsChanged = { rect -> onRowBoundsChanged(ch.jid, rect) }
                     )
                 }
             }
@@ -4460,27 +4616,69 @@ private fun StatusStoryCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChannelListRow(
     channel: ChatEntity,
-    onClick: () -> Unit
+    selected: Boolean = false,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {},
+    onBoundsChanged: (Rect) -> Unit = {}
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
+    val homeAppearance by HomeAppearanceManager.config.collectAsState()
+    val homeAccent = homeAppearance.accentStyle.resolve(colors.isDark)
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .onGloballyPositioned { coords -> onBoundsChanged(coords.boundsInRoot()) }
+            .padding(horizontal = if (selected) 8.dp else 0.dp, vertical = 1.dp)
+            .clip(RoundedCornerShape(if (selected) 20.dp else 14.dp))
+            .background(if (selected) homeAccent.copy(alpha = 0.16f) else Color.Transparent)
+            .then(
+                if (selected) {
+                    Modifier.border(
+                        1.dp,
+                        homeAccent.copy(alpha = 0.35f),
+                        RoundedCornerShape(20.dp)
+                    )
+                } else Modifier
+            )
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+            .padding(horizontal = if (selected) 10.dp else 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        WhatsAppAvatar(
-            jid = channel.jid,
-            avatarPath = channel.avatarPath,
-            isGroup = false,
-            size = 52.dp
-        )
+        Box(modifier = Modifier.size(52.dp)) {
+            WhatsAppAvatar(
+                jid = channel.jid,
+                avatarPath = channel.avatarPath,
+                isGroup = false,
+                size = 52.dp
+            )
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .size(21.dp)
+                        .align(Alignment.BottomEnd)
+                        .clip(CircleShape)
+                        .background(colors.brightGreen)
+                        .border(2.dp, colors.appSurface, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Check,
+                        contentDescription = "Selected",
+                        tint = colors.brightGreen.contrastingContentColor(),
+                        modifier = Modifier.size(13.dp)
+                    )
+                }
+            }
+        }
         Spacer(modifier = Modifier.width(12.dp))
         Column(
             modifier = Modifier.weight(1f),
@@ -4565,7 +4763,12 @@ private fun CommunitiesTab(
     allChats: List<ChatEntity>,
     listState: LazyListState,
     bottomPadding: Dp = 96.dp,
-    onOpenGroup: (String) -> Unit
+    selectedChatJids: Set<String> = emptySet(),
+    singleSelectedChatJid: String? = null,
+    onRowBoundsChanged: (String, Rect) -> Unit = { _, _ -> },
+    onGroupLongClick: (ChatEntity) -> Unit = {},
+    onDismissSelection: () -> Unit = {},
+    onOpenGroup: (ChatEntity) -> Unit
 ) {
     val colors = LocalWaColors.current
     var expandedCommunities by remember { mutableStateOf(setOf<String>()) }
@@ -4602,7 +4805,17 @@ private fun CommunitiesTab(
 
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .then(
+                if (singleSelectedChatJid != null && selectedChatJids.isEmpty()) {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDismissSelection
+                    )
+                } else Modifier
+            ),
         contentPadding = PaddingValues(bottom = bottomPadding + 8.dp)
     ) {
         item(key = "new_community_row") {
@@ -4715,9 +4928,9 @@ private fun CommunitiesTab(
                         .clickable {
                             val announcement = children.firstOrNull { it.isDefaultSubgroup } ?: children.firstOrNull()
                             if (announcement != null) {
-                                onOpenGroup(announcement.jid)
+                                onOpenGroup(announcement)
                             } else if (parentChat != null) {
-                                onOpenGroup(parentChat.jid)
+                                onOpenGroup(parentChat)
                             }
                         }
                         .padding(horizontal = 16.dp, vertical = 12.dp),
@@ -4759,9 +4972,13 @@ private fun CommunitiesTab(
             }
 
             items(visibleChildren, key = { "comm_${parentJid}_sub_${it.jid}" }) { sub ->
+                val isSelected = sub.jid == singleSelectedChatJid || sub.jid in selectedChatJids
                 CommunityGroupRow(
                     chat = sub,
-                    onClick = { onOpenGroup(sub.jid) }
+                    selected = isSelected,
+                    onClick = { onOpenGroup(sub) },
+                    onLongClick = { onGroupLongClick(sub) },
+                    onBoundsChanged = { rect -> onRowBoundsChanged(sub.jid, rect) }
                 )
             }
 
@@ -4822,21 +5039,31 @@ private fun CommunitiesTab(
                 )
             }
             items(standaloneGroups, key = { "standalone_${it.jid}" }) { g ->
+                val isSelected = g.jid == singleSelectedChatJid || g.jid in selectedChatJids
                 CommunityGroupRow(
                     chat = g,
-                    onClick = { onOpenGroup(g.jid) }
+                    selected = isSelected,
+                    onClick = { onOpenGroup(g) },
+                    onLongClick = { onGroupLongClick(g) },
+                    onBoundsChanged = { rect -> onRowBoundsChanged(g.jid, rect) }
                 )
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CommunityGroupRow(
     chat: ChatEntity,
-    onClick: () -> Unit
+    selected: Boolean = false,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {},
+    onBoundsChanged: (Rect) -> Unit = {}
 ) {
     val colors = LocalWaColors.current
+    val homeAppearance by HomeAppearanceManager.config.collectAsState()
+    val homeAccent = homeAppearance.accentStyle.resolve(colors.isDark)
     val title = if (chat.isDefaultSubgroup && (chat.name.isBlank() || chat.name == chat.jid.substringBefore("@"))) {
         "Announcements"
     } else {
@@ -4849,16 +5076,52 @@ private fun CommunityGroupRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .onGloballyPositioned { coords -> onBoundsChanged(coords.boundsInRoot()) }
+            .padding(horizontal = if (selected) 8.dp else 0.dp, vertical = 1.dp)
+            .clip(RoundedCornerShape(if (selected) 20.dp else 14.dp))
+            .background(if (selected) homeAccent.copy(alpha = 0.16f) else Color.Transparent)
+            .then(
+                if (selected) {
+                    Modifier.border(
+                        1.dp,
+                        homeAccent.copy(alpha = 0.35f),
+                        RoundedCornerShape(20.dp)
+                    )
+                } else Modifier
+            )
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+            .padding(horizontal = if (selected) 10.dp else 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        CommunityAvatarBox(
-            avatarPath = chat.avatarPath,
-            isRoundedSquare = chat.isDefaultSubgroup,
-            isAnnouncement = chat.isDefaultSubgroup,
-            sizeDp = 44
-        )
+        Box(modifier = Modifier.size(44.dp)) {
+            CommunityAvatarBox(
+                avatarPath = chat.avatarPath,
+                isRoundedSquare = chat.isDefaultSubgroup,
+                isAnnouncement = chat.isDefaultSubgroup,
+                sizeDp = 44
+            )
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .align(Alignment.BottomEnd)
+                        .clip(CircleShape)
+                        .background(colors.brightGreen)
+                        .border(2.dp, colors.appSurface, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Check,
+                        contentDescription = "Selected",
+                        tint = colors.brightGreen.contrastingContentColor(),
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
+            }
+        }
         Spacer(modifier = Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Row(

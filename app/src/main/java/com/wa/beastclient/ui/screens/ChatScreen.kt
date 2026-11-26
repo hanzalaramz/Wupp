@@ -1910,7 +1910,22 @@ fun ChatScreen(
                     wallpaperOffsetXOverride = effectiveWallpaper.offsetXFraction,
                     wallpaperOffsetYOverride = effectiveWallpaper.offsetYFraction,
                     backdropState = null,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(
+                            if (actionMenuTarget != null && selectedMessages.isEmpty()) {
+                                Modifier.clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    actionMenuTarget = null
+                                    showMoreReactionEmojis = false
+                                    showSelectionOverflow = false
+                                }
+                            } else {
+                                Modifier
+                            }
+                        )
                 ) {
                     LazyColumn(
                         state = listState,
@@ -2188,7 +2203,10 @@ fun ChatScreen(
                                         onOpenDocument = handleOpenDocument,
                                         onSaveDocument = handleSaveDocument,
                                         onCallBackMessage = { isVideoCall -> initiateCall(isVideoCall) },
-                                        onLongClickCallMessage = { callMessageActionTarget = msg },
+                                        onLongClickCallMessage = {
+                                            if (isInSelectionMode) toggleMessageSelection(msg)
+                                            else callMessageActionTarget = msg
+                                        },
                                         onLongPress = { toggleMessageSelection(msg) },
                                         onNavigateToChat = onNavigateToChat
                                     )
@@ -2231,7 +2249,10 @@ fun ChatScreen(
                                             onOpenDocument = handleOpenDocument,
                                             onSaveDocument = handleSaveDocument,
                                             onCallBackMessage = { isVideoCall -> initiateCall(isVideoCall) },
-                                            onLongClickCallMessage = { callMessageActionTarget = msg },
+                                            onLongClickCallMessage = {
+                                                if (isInSelectionMode) toggleMessageSelection(msg)
+                                                else callMessageActionTarget = msg
+                                            },
                                             onLongPress = { toggleMessageSelection(msg) },
                                             onNavigateToChat = onNavigateToChat
                                         )
@@ -2314,19 +2335,11 @@ fun ChatScreen(
                     var menuSizePx by remember(target?.id) { mutableStateOf(IntSize.Zero) }
 
                     Box(modifier = Modifier.fillMaxSize()) {
-                        // Whisper-light tap-outside scrim (keeps chat bright behind frosted glass)
+                        // Whisper-light tint scrim (passes taps and scrolls through so users can directly select more messages)
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .background(Color.Black.copy(alpha = if (colors.isDark) 0.04f else 0.03f))
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null
-                                ) {
-                                    actionMenuTarget = null
-                                    showMoreReactionEmojis = false
-                                    showSelectionOverflow = false
-                                }
                         )
 
                         if (target != null) {
@@ -2414,6 +2427,10 @@ fun ChatScreen(
                                 modifier = Modifier
                                     .offset { IntOffset(pillX, pillY) }
                                     .onSizeChanged { pillSizePx = it }
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
+                                    ) {}
                                     .animateEnterExit(
                                         enter = scaleIn(
                                             animationSpec = reactionMotion.fastSpatialSpec(),
@@ -2627,6 +2644,10 @@ fun ChatScreen(
                                     modifier = Modifier
                                         .offset { IntOffset(menuX, menuY) }
                                         .onSizeChanged { menuSizePx = it }
+                                        .clickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null
+                                        ) {}
                                         .animateEnterExit(
                                             enter = scaleIn(
                                                 animationSpec = reactionMotion.fastSpatialSpec(),
@@ -2759,33 +2780,6 @@ fun ChatScreen(
                                                                 overflow = TextOverflow.Ellipsis
                                                             )
                                                         }
-                                                    }
-                                                    // Enter multi-select mode right from the menu
-                                                    Row(
-                                                        modifier = Modifier
-                                                            .fillMaxWidth()
-                                                            .clickable {
-                                                                selectedMessages = linkedMapOf(target.id to target)
-                                                                actionMenuTarget = null
-                                                                showMoreReactionEmojis = false
-                                                                showSelectionOverflow = false
-                                                            }
-                                                            .padding(start = 18.dp, end = 20.dp, top = 11.5.dp, bottom = 11.5.dp),
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = Icons.Rounded.Collections,
-                                                            contentDescription = null,
-                                                            tint = menuTextColor,
-                                                            modifier = Modifier.size(21.dp)
-                                                        )
-                                                        Text(
-                                                            text = "Select multiple",
-                                                            color = menuTextColor,
-                                                            fontSize = 15.5.sp,
-                                                            fontWeight = FontWeight.Normal
-                                                        )
                                                     }
                                                 }
                                             }
@@ -5406,7 +5400,9 @@ private fun MessageBubbleRow(
                 Box(
                     modifier = Modifier
                         .padding(top = 1.dp, end = 6.dp)
-                        .clickable(onClick = onClickSenderAvatar)
+                        .clickable {
+                            if (isSelectionMode) onToggleSelect() else onClickSenderAvatar()
+                        }
                 ) {
                     WhatsAppAvatar(
                         jid = msg.senderJid,
@@ -5612,9 +5608,13 @@ private fun MessageBubbleRow(
                             .background(colors.quotedBg)
                             .combinedClickable(
                                 onClick = {
-                                    val targetId = msg.quotedId?.trim().orEmpty()
-                                    if (targetId.isNotEmpty()) {
-                                        onClickQuoted(targetId)
+                                    if (isSelectionMode) {
+                                        onToggleSelect()
+                                    } else {
+                                        val targetId = msg.quotedId?.trim().orEmpty()
+                                        if (targetId.isNotEmpty()) {
+                                            onClickQuoted(targetId)
+                                        }
                                     }
                                 },
                                 onLongClick = onLongPress
@@ -5831,11 +5831,15 @@ private fun MessageBubbleRow(
                                 .clip(RoundedCornerShape(10.dp))
                                 .combinedClickable(
                                     onClick = {
-                                        Toast.makeText(
-                                            context,
-                                            "For added privacy, you can only open this view once message on your phone",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
+                                        if (isSelectionMode) {
+                                            onToggleSelect()
+                                        } else {
+                                            Toast.makeText(
+                                                context,
+                                                "For added privacy, you can only open this view once message on your phone",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
                                     },
                                     onLongClick = onLongPress
                                 )
@@ -5896,16 +5900,30 @@ private fun MessageBubbleRow(
                                 onAutoRequestDownload()
                             }
                         }
-                        VoiceNoteBubble(
-                            msg = msg,
-                            ghostPlayedActive = ghostPlayedActive,
-                            onManualSendPlayedReceipt = onManualSendPlayedReceipt,
-                            onRequestDownload = onRequestDownload,
-                            isDownloadingMedia = isDownloadingMedia,
-                            mediaDownloadError = mediaDownloadError,
-                            avatarPath = if (msg.isFromMe) null else senderAvatarPath,
-                            onClickAvatar = if (msg.isFromMe) null else onClickSenderAvatar
-                        )
+                        Box {
+                            VoiceNoteBubble(
+                                msg = msg,
+                                ghostPlayedActive = ghostPlayedActive,
+                                onManualSendPlayedReceipt = onManualSendPlayedReceipt,
+                                onRequestDownload = onRequestDownload,
+                                isDownloadingMedia = isDownloadingMedia,
+                                mediaDownloadError = mediaDownloadError,
+                                avatarPath = if (msg.isFromMe) null else senderAvatarPath,
+                                onClickAvatar = if (msg.isFromMe) null else onClickSenderAvatar
+                            )
+                            if (isSelectionMode) {
+                                Box(
+                                    modifier = Modifier
+                                        .matchParentSize()
+                                        .combinedClickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null,
+                                            onClick = onToggleSelect,
+                                            onLongClick = onLongPress
+                                        )
+                                )
+                            }
+                        }
                     }
 
                     // Call Log Bubble ("Voice call · No answer / 1 min / 39 sec")
@@ -5952,8 +5970,14 @@ private fun MessageBubbleRow(
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(callCardBg)
                                     .combinedClickable(
-                                        onClick = { onCallBackMessage(isVideoCall) },
-                                        onLongClick = onLongClickCallMessage ?: onLongPress
+                                        onClick = {
+                                            if (isSelectionMode) onToggleSelect()
+                                            else onCallBackMessage(isVideoCall)
+                                        },
+                                        onLongClick = {
+                                            if (isSelectionMode) onLongPress()
+                                            else (onLongClickCallMessage ?: onLongPress).invoke()
+                                        }
                                     )
                                     .padding(horizontal = 10.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
@@ -6087,7 +6111,13 @@ private fun MessageBubbleRow(
                                 .clip(RoundedCornerShape(12.dp))
                                 .combinedClickable(
                                     onClick = {
-                                        if (localFile != null) onOpenMedia() else onRequestDownload()
+                                        if (isSelectionMode) {
+                                            onToggleSelect()
+                                        } else if (localFile != null) {
+                                            onOpenMedia()
+                                        } else {
+                                            onRequestDownload()
+                                        }
                                     },
                                     onLongClick = onLongPress
                                 )
@@ -6266,7 +6296,10 @@ private fun MessageBubbleRow(
                             msg = msg,
                             payload = parsedLocation,
                             colors = colors,
-                            onClick = { openLocationInMaps(context, parsedLocation) },
+                            onClick = {
+                                if (isSelectionMode) onToggleSelect()
+                                else openLocationInMaps(context, parsedLocation)
+                            },
                             onLongClick = onLongPress,
                             metaCluster = {
                                 MessageMetaCluster(
@@ -6283,18 +6316,36 @@ private fun MessageBubbleRow(
 
                     // Contact card (vCard attachment)
                     isContactCard -> {
-                        ContactMessageCard(
-                            msg = msg,
-                            colors = colors,
-                            onLongClick = onLongPress,
-                            onMessageClick = { phone ->
-                                val digits = phone.filter { it.isDigit() }
-                                if (digits.isNotBlank()) {
-                                    val targetJid = "$digits@s.whatsapp.net"
-                                    onNavigateToChat(targetJid)
+                        Box {
+                            ContactMessageCard(
+                                msg = msg,
+                                colors = colors,
+                                onLongClick = onLongPress,
+                                onMessageClick = { phone ->
+                                    if (isSelectionMode) {
+                                        onToggleSelect()
+                                    } else {
+                                        val digits = phone.filter { it.isDigit() }
+                                        if (digits.isNotBlank()) {
+                                            val targetJid = "$digits@s.whatsapp.net"
+                                            onNavigateToChat(targetJid)
+                                        }
+                                    }
                                 }
+                            )
+                            if (isSelectionMode) {
+                                Box(
+                                    modifier = Modifier
+                                        .matchParentSize()
+                                        .combinedClickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null,
+                                            onClick = onToggleSelect,
+                                            onLongClick = onLongPress
+                                        )
+                                )
                             }
-                        )
+                        }
                         Spacer(modifier = Modifier.height(4.dp))
                         Row(
                             modifier = Modifier
@@ -6331,10 +6382,12 @@ private fun MessageBubbleRow(
                             isDownloading = isDownloadingMedia,
                             errorMsg = mediaDownloadError,
                             onClick = {
-                                if (localDocFile != null) onOpenDocument() else onRequestDownload()
+                                if (isSelectionMode) onToggleSelect()
+                                else if (localDocFile != null) onOpenDocument()
+                                else onRequestDownload()
                             },
                             onLongClick = onLongPress,
-                            onSaveToDownloads = if (localDocFile != null) onSaveDocument else null
+                            onSaveToDownloads = if (localDocFile != null && !isSelectionMode) onSaveDocument else null
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Row(
@@ -6360,6 +6413,8 @@ private fun MessageBubbleRow(
                             showSeconds = showSeconds,
                             isDownloadingMedia = isDownloadingMedia,
                             mediaDownloadError = mediaDownloadError,
+                            isSelectionMode = isSelectionMode,
+                            onToggleSelect = onToggleSelect,
                             onAutoRequestDownload = onAutoRequestDownload,
                             onRequestDownload = onRequestDownload,
                             onOpenSticker = onOpenSticker,
@@ -7307,6 +7362,8 @@ private fun StickerMessageBubbleItem(
     showSeconds: Boolean,
     isDownloadingMedia: Boolean,
     mediaDownloadError: String?,
+    isSelectionMode: Boolean = false,
+    onToggleSelect: () -> Unit = {},
     onAutoRequestDownload: () -> Unit,
     onRequestDownload: () -> Unit,
     onOpenSticker: () -> Unit = {},
@@ -7330,7 +7387,9 @@ private fun StickerMessageBubbleItem(
             .sizeIn(minWidth = 120.dp, minHeight = 120.dp, maxWidth = 160.dp, maxHeight = 160.dp)
             .combinedClickable(
                 onClick = {
-                    if (localFile == null) {
+                    if (isSelectionMode) {
+                        onToggleSelect()
+                    } else if (localFile == null) {
                         onRequestDownload()
                     } else {
                         replayNonce++
