@@ -185,7 +185,7 @@ fun WuppGlassContainer(
         isDark = colors.isDark,
         renderEffectSupported = hasLiveBackdrop
     )
-    val surfaceTint = if (colors.isDark) Color(0xFF151A20) else Color(0xFFF7F9FC)
+    val surfaceTint = if (colors.isDark) Color(0xFF121519) else Color(0xFFF7F9FC)
 
     Box(
         modifier = modifier
@@ -207,14 +207,14 @@ fun WuppGlassContainer(
                 highlight = {
                     Highlight(
                         width = 0.65.dp,
-                        alpha = if (colors.isDark) 0.72f else 0.94f,
+                        alpha = if (colors.isDark) 0.52f else 0.94f,
                         style = HighlightStyle.Default
                     )
                 },
                 shadow = {
                     Shadow(
                         radius = elevation,
-                        color = Color.Black.copy(alpha = if (colors.isDark) 0.38f else 0.14f)
+                        color = Color.Black.copy(alpha = if (colors.isDark) 0.28f else 0.14f)
                     )
                 },
                 innerShadow = {
@@ -226,6 +226,11 @@ fun WuppGlassContainer(
                 onDrawSurface = {
                     drawRect(surfaceTint.copy(alpha = surfaceAlpha))
                 }
+            )
+            .border(
+                width = 0.6.dp,
+                color = if (colors.isDark) Color.White.copy(alpha = 0.10f) else Color.White.copy(alpha = 0.42f),
+                shape = shape
             ),
         contentAlignment = contentAlignment
     ) {
@@ -319,7 +324,7 @@ fun WuppGlassCircleButton(
             ),
         colors = colors,
         shape = CircleShape,
-        elevation = if (size >= 48.dp) 14.dp else 6.dp,
+        elevation = if (size >= 48.dp) 10.dp else 4.dp,
         backdropState = backdropState,
         blurRadius = if (size >= 48.dp) 9.dp else 7.dp,
         refractionHeight = if (size >= 48.dp) 12.dp else 8.dp,
@@ -363,11 +368,11 @@ fun WuppGlassTopBar(
     val colors = LocalWaColors.current
     val hasLiveBackdrop = !classicMode && backdropState != null && isRenderEffectSupported()
     val backdrop: Backdrop = backdropState?.backdrop ?: emptyBackdrop()
-    val barTint = if (colors.isDark) Color(0xFF0A0D10) else Color(0xFFF6F8FA)
+    val barTint = if (colors.isDark) Color(0xFF06080A) else Color(0xFFF6F8FA)
     val barAlpha = when {
         classicMode -> 1f
-        hasLiveBackdrop -> if (colors.isDark) 0.64f else 0.74f
-        else -> if (colors.isDark) 0.92f else 0.96f
+        hasLiveBackdrop -> if (colors.isDark) 0.78f else 0.76f
+        else -> if (colors.isDark) 0.94f else 0.96f
     }
 
     val barModifier = if (classicMode) {

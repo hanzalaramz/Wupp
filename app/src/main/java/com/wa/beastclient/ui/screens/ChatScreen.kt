@@ -114,7 +114,6 @@ import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PushPin
-import androidx.compose.material.icons.rounded.SentimentSatisfiedAlt
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Search
@@ -158,6 +157,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -177,8 +178,12 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
@@ -612,11 +617,63 @@ fun ChatScreen(
         }
     }
     val allChats by viewModel.allChats.collectAsState()
+    val unreadChatsCount = remember(allChats, stealthConfig.separateGroupsAndChats, chatJid) {
+        allChats.count {
+            !it.isCommunityParent &&
+                !it.jid.endsWith("@newsletter") &&
+                it.jid != chatJid &&
+                (!stealthConfig.separateGroupsAndChats || !it.isGroup) &&
+                !it.isLocked &&
+                it.unreadCount > 0
+        }
+    }
     val participantMeta by viewModel.participantMeta.collectAsState()
     val quotedMsgMeta by viewModel.quotedMsgMeta.collectAsState()
     val chatsByJid = remember(allChats) { allChats.associateBy { it.jid } }
     val loadedSnapshot = pagedItems.itemSnapshotList.items
     val loadedMessagesById = remember(loadedSnapshot) { loadedSnapshot.associateBy { it.id } }
+    val prevOutgoingStatusById = remember(chatJid) { mutableStateMapOf<String, String>() }
+    var statusTrackerSeeded by remember(chatJid) { mutableStateOf(false) }
+    var lastReadToastAtMs by remember(chatJid) { mutableLongStateOf(0L) }
+    var readReceiptBannerTitle by remember(chatJid) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(chatJid, loadedSnapshot) {
+        if (isChannel || loadedSnapshot.isEmpty()) return@LaunchedEffect
+        val outgoing = loadedSnapshot.filter { it.isFromMe }
+        if (!statusTrackerSeeded) {
+            outgoing.forEach { m -> prevOutgoingStatusById[m.id] = m.deliveryStatus }
+            statusTrackerSeeded = true
+            return@LaunchedEffect
+        }
+        val nowMs = System.currentTimeMillis()
+        var newlyReadMsg: MessageEntity? = null
+        outgoing.forEach { m ->
+            val prev = prevOutgoingStatusById[m.id]
+            val curr = m.deliveryStatus
+            if (prev != null &&
+                !prev.equals("READ", ignoreCase = true) &&
+                !prev.equals("PLAYED", ignoreCase = true) &&
+                curr.equals("READ", ignoreCase = true) &&
+                (nowMs - m.timestamp) <= 7_200_000L
+            ) {
+                newlyReadMsg = m
+            }
+            prevOutgoingStatusById[m.id] = curr
+        }
+        if (newlyReadMsg != null && (nowMs - lastReadToastAtMs) >= 12_000L) {
+            lastReadToastAtMs = nowMs
+            val title = chat?.name?.takeIf { it.isNotBlank() } ?: chatJid.substringBefore("@")
+            readReceiptBannerTitle = title
+        }
+    }
+
+    LaunchedEffect(readReceiptBannerTitle) {
+        if (readReceiptBannerTitle != null) {
+            delay(2600L)
+            readReceiptBannerTitle = null
+        }
+    }
+
     val senderPushByJid = remember(loadedSnapshot) {
         buildMap {
             for (m in loadedSnapshot) {
@@ -1330,18 +1387,64 @@ fun ChatScreen(
                         classicMode = stealthConfig.classicWhatsAppLook,
                         height = 58.dp,
                         leading = {
-                            WuppGlassCircleButton(
-                                onClick = onBack,
-                                contentDescription = "Back",
-                                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
-                                size = 36.dp,
-                                iconSize = 24.dp,
-                                backdropState = wallpaperBackdropState,
-                                classicMode = stealthConfig.classicWhatsAppLook
-                            )
+                            if (unreadChatsCount > 0) {
+                                val backPillInteraction = remember { MutableInteractionSource() }
+                                WuppGlassContainer(
+                                    modifier = Modifier
+                                        .height(38.dp)
+                                        .clip(CircleShape)
+                                        .clickable(
+                                            interactionSource = backPillInteraction,
+                                            indication = null,
+                                            onClick = onBack
+                                        ),
+                                    colors = colors,
+                                    shape = CircleShape,
+                                    elevation = 4.dp,
+                                    backdropState = wallpaperBackdropState,
+                                    blurRadius = 7.dp,
+                                    refractionHeight = 8.dp,
+                                    refractionAmount = 14.dp,
+                                    classicMode = stealthConfig.classicWhatsAppLook,
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(start = 5.dp, end = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(1.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
+                                            contentDescription = "Back",
+                                            tint = colors.textPrimary,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                        Text(
+                                            text = if (unreadChatsCount > 99) "99+" else unreadChatsCount.toString(),
+                                            color = colors.textPrimary,
+                                            fontSize = 13.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            } else {
+                                WuppGlassCircleButton(
+                                    onClick = onBack,
+                                    contentDescription = "Back",
+                                    imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
+                                    size = 38.dp,
+                                    iconSize = 23.dp,
+                                    backdropState = wallpaperBackdropState,
+                                    classicMode = stealthConfig.classicWhatsAppLook
+                                )
+                            }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(start = 2.dp, end = 128.dp)
+                                modifier = Modifier.padding(
+                                    start = 2.dp,
+                                    end = if (isChannel) 92.dp else 138.dp
+                                )
                             ) {
                                 Box(modifier = Modifier.clickable { showProfilePhotoLightbox = true }) {
                                     WhatsAppAvatar(
@@ -1434,7 +1537,7 @@ fun ChatScreen(
                                     onClick = { viewModel.toggleChannelMute(chatJid, chat?.isMuted == true) },
                                     contentDescription = if (chat?.isMuted == true) "Unmute channel" else "Mute channel",
                                     imageVector = if (chat?.isMuted == true) Icons.Rounded.NotificationsOff else Icons.Rounded.Notifications,
-                                    size = 36.dp,
+                                    size = 38.dp,
                                     iconSize = 19.dp,
                                     backdropState = wallpaperBackdropState,
                                     classicMode = stealthConfig.classicWhatsAppLook
@@ -1444,7 +1547,7 @@ fun ChatScreen(
                                     onClick = { initiateCall(true) },
                                     contentDescription = "Video call",
                                     imageVector = Icons.Rounded.Videocam,
-                                    size = 36.dp,
+                                    size = 38.dp,
                                     iconSize = 19.dp,
                                     backdropState = wallpaperBackdropState,
                                     classicMode = stealthConfig.classicWhatsAppLook
@@ -1453,7 +1556,7 @@ fun ChatScreen(
                                     onClick = { initiateCall(false) },
                                     contentDescription = "Voice call",
                                     imageVector = Icons.Rounded.Call,
-                                    size = 36.dp,
+                                    size = 38.dp,
                                     iconSize = 18.dp,
                                     backdropState = wallpaperBackdropState,
                                     classicMode = stealthConfig.classicWhatsAppLook
@@ -1464,7 +1567,7 @@ fun ChatScreen(
                                     onClick = { showOverflow = true },
                                     contentDescription = "More",
                                     imageVector = Icons.Rounded.MoreHoriz,
-                                    size = 36.dp,
+                                    size = 38.dp,
                                     iconSize = 19.dp,
                                     backdropState = wallpaperBackdropState,
                                     classicMode = stealthConfig.classicWhatsAppLook
@@ -1796,7 +1899,7 @@ fun ChatScreen(
                             if (showDateHeader && msg.timestamp > 0L) {
                                 DateHeaderPill(timestamp = msg.timestamp)
                             }
-                            Spacer(modifier = Modifier.height(if (isFirstInCluster || showDateHeader) 8.dp else 2.dp))
+                            Spacer(modifier = Modifier.height(if (isFirstInCluster || showDateHeader) 5.dp else 1.5.dp))
 
                             if (msg.msgType == "SYSTEM") {
                                 SystemNoticePill(text = msg.body)
@@ -1911,6 +2014,7 @@ fun ChatScreen(
                                         isChannel = isChannel,
                                         channelDisplayName = channelDisplayName,
                                         showTail = if (isChannel) false else isFirstInCluster,
+                                        isSenderAdmin = isGroupChat && isGroupAnnounceLocked && !msg.isFromMe,
                                         senderDisplay = senderDisplay,
                                         senderAvatarPath = senderAvatarPath,
                                         quotedDisplay = quotedDisplay,
@@ -2141,6 +2245,55 @@ fun ChatScreen(
                                 }
                             }
                         }
+                        }
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 24.dp, vertical = 12.dp)
+                ) {
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = readReceiptBannerTitle != null && actionMenuTarget == null,
+                        enter = fadeIn(tween(220)) + slideInVertically(tween(220)) { it / 2 },
+                        exit = fadeOut(tween(200)) + slideOutVertically(tween(200)) { it / 2 }
+                    ) {
+                        val toastBg = if (colors.isDark) Color(0xED15181C) else Color(0xF5FFFFFF)
+                        val toastBorder = if (colors.isDark) Color.White.copy(alpha = 0.11f) else Color.Black.copy(alpha = 0.08f)
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(24.dp))
+                                .background(toastBg)
+                                .border(0.65.dp, toastBorder, RoundedCornerShape(24.dp))
+                                .padding(start = 10.dp, end = 16.dp, top = 7.dp, bottom = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(9.dp)
+                        ) {
+                            Image(
+                                painter = painterResource(R.drawable.wupp_logo),
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                            )
+                            Column {
+                                Text(
+                                    text = readReceiptBannerTitle.orEmpty(),
+                                    color = colors.textPrimary,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Has read your message",
+                                    color = colors.textSecondary,
+                                    fontSize = 11.5.sp,
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
                 }
@@ -2755,14 +2908,19 @@ fun ChatScreen(
                                             },
                                             modifier = Modifier.size(34.dp)
                                         ) {
-                                            Icon(
-                                                imageVector = if (showEmojiPicker) Icons.Rounded.Keyboard else Icons.Rounded.SentimentSatisfiedAlt,
-                                                contentDescription = stringResource(
-                                                    if (showEmojiPicker) R.string.chat_switch_to_keyboard else R.string.chat_switch_to_emoji
-                                                ),
-                                                tint = if (showEmojiPicker) colors.brightGreen else colors.textSecondary,
-                                                modifier = Modifier.size(21.dp)
-                                            )
+                                            if (showEmojiPicker) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.Keyboard,
+                                                    contentDescription = stringResource(R.string.chat_switch_to_keyboard),
+                                                    tint = colors.brightGreen,
+                                                    modifier = Modifier.size(21.dp)
+                                                )
+                                            } else {
+                                                ComposerStickerIcon(
+                                                    tint = colors.textSecondary,
+                                                    modifier = Modifier.size(19.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -3865,6 +4023,7 @@ private fun MessageBubbleRow(
     isChannel: Boolean = false,
     channelDisplayName: String = "",
     showTail: Boolean,
+    isSenderAdmin: Boolean = false,
     senderDisplay: SenderDisplayInfo? = null,
     senderAvatarPath: String? = null,
     quotedDisplay: SenderDisplayInfo? = null,
@@ -3929,19 +4088,19 @@ private fun MessageBubbleRow(
         isSticker -> 0.dp
         isMediaCard -> if (!isChannel && showTail && !effectiveOutgoing) 9.dp else 3.dp
         isDocCard || isContactCard -> if (!isChannel && showTail && !effectiveOutgoing) 10.dp else 6.dp
-        else -> if (!isChannel && showTail && !effectiveOutgoing) 15.dp else 12.dp
+        else -> if (!isChannel && showTail && !effectiveOutgoing) 14.dp else 10.dp
     }
     val sideEndPad = when {
         isSticker -> 0.dp
         isMediaCard -> if (!isChannel && showTail && effectiveOutgoing) 9.dp else 3.dp
         isDocCard || isContactCard -> if (!isChannel && showTail && effectiveOutgoing) 10.dp else 6.dp
-        else -> if (!isChannel && showTail && effectiveOutgoing) 15.dp else 12.dp
+        else -> if (!isChannel && showTail && effectiveOutgoing) 14.dp else 10.dp
     }
     val topBottomPad = when {
         isSticker -> 0.dp
         isMediaCard -> 3.dp
         isDocCard || isContactCard -> 5.dp
-        else -> 8.dp
+        else -> 6.dp
     }
     val bubbleMaxW = when {
         isSticker -> 160.dp
@@ -4067,7 +4226,7 @@ private fun MessageBubbleRow(
                                     else -> Modifier.padding(bottom = 2.dp)
                                 }
                             ),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
@@ -4079,6 +4238,14 @@ private fun MessageBubbleRow(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false)
                         )
+                        if (isSenderAdmin || senderDisplay?.keyForColor == "admin") {
+                            Icon(
+                                imageVector = Icons.Rounded.Shield,
+                                contentDescription = "Group admin",
+                                tint = colors.accentGreen,
+                                modifier = Modifier.size(12.5.dp)
+                            )
+                        }
                         if (resolvedPhone.isNotBlank()) {
                             Text(
                                 text = resolvedPhone,
@@ -4137,14 +4304,20 @@ private fun MessageBubbleRow(
                     }
                     Row(
                         modifier = Modifier
-                            .fillMaxWidth()
+                            .then(
+                                if (isMediaCard || isDocCard) {
+                                    Modifier.fillMaxWidth()
+                                } else {
+                                    Modifier.widthIn(min = 148.dp)
+                                }
+                            )
                             .padding(
                                 start = if (isMediaCard) 3.dp else 0.dp,
                                 end = if (isMediaCard) 3.dp else 0.dp,
-                                bottom = 6.dp
+                                bottom = 5.dp
                             )
                             .height(IntrinsicSize.Min)
-                            .clip(RoundedCornerShape(10.dp))
+                            .clip(RoundedCornerShape(8.dp))
                             .background(colors.quotedBg)
                             .combinedClickable(
                                 onClick = {
@@ -4159,19 +4332,22 @@ private fun MessageBubbleRow(
                     ) {
                         Box(
                             modifier = Modifier
-                                .width(3.5.dp)
+                                .width(3.dp)
                                 .fillMaxHeight()
                                 .background(qAccent)
                         )
                         Column(
                             modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 9.dp, vertical = 6.5.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                .then(
+                                    if (isMediaCard || isDocCard) Modifier.weight(1f)
+                                    else Modifier.weight(1f, fill = false)
+                                )
+                                .padding(horizontal = 8.5.dp, vertical = 5.5.dp),
+                            verticalArrangement = Arrangement.spacedBy(1.5.dp)
                         ) {
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = if (isMediaCard || isDocCard) Modifier.fillMaxWidth() else Modifier,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
@@ -4184,7 +4360,6 @@ private fun MessageBubbleRow(
                                     modifier = Modifier.weight(1f, fill = false)
                                 )
                                 if (qPhone.isNotBlank()) {
-                                    Spacer(modifier = Modifier.width(8.dp))
                                     Text(
                                         text = qPhone,
                                         color = colors.textSecondary,
@@ -4203,7 +4378,7 @@ private fun MessageBubbleRow(
                             }
                             Text(
                                 text = displayQuotedText,
-                                color = colors.textSecondary,
+                                color = if (colors.isDark) Color(0xFFC5CDD4) else colors.textSecondary,
                                 fontSize = 12.5.sp,
                                 lineHeight = 16.sp,
                                 maxLines = 2,
@@ -4216,9 +4391,9 @@ private fun MessageBubbleRow(
                                 contentDescription = mediaTypeFallback.ifBlank { "Quoted media" },
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
-                                    .width(52.dp)
+                                    .width(50.dp)
                                     .fillMaxHeight()
-                                    .sizeIn(minHeight = 52.dp)
+                                    .sizeIn(minHeight = 50.dp)
                             )
                         }
                     }
@@ -4882,7 +5057,7 @@ private fun DateHeaderPill(timestamp: Long) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp),
+            .padding(vertical = 6.dp),
         contentAlignment = Alignment.Center
     ) {
         Box(
@@ -4890,15 +5065,58 @@ private fun DateHeaderPill(timestamp: Long) {
                 .clip(CircleShape)
                 .background(pillBg)
                 .border(0.65.dp, pillBorder, CircleShape)
-                .padding(horizontal = 13.dp, vertical = 5.dp)
+                .padding(horizontal = 12.dp, vertical = 4.dp)
         ) {
             Text(
                 text = formatChatDateHeader(timestamp),
                 color = colors.textSecondary,
-                fontSize = 12.sp,
+                fontSize = 11.5.sp,
                 fontWeight = FontWeight.Medium
             )
         }
+    }
+}
+
+@Composable
+private fun ComposerStickerIcon(
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val pad = w * 0.12f
+        val left = pad
+        val top = pad
+        val right = w - pad
+        val bottom = h - pad
+        val r = (right - left) * 0.26f
+        val fold = (right - left) * 0.34f
+        val stroke = Stroke(
+            width = (w * 0.085f).coerceAtLeast(1.5f),
+            cap = StrokeCap.Round,
+            join = StrokeJoin.Round
+        )
+        val outline = Path().apply {
+            moveTo(left + r, top)
+            lineTo(right - r, top)
+            quadraticTo(right, top, right, top + r)
+            lineTo(right, bottom - fold)
+            lineTo(right - fold, bottom)
+            lineTo(left + r, bottom)
+            quadraticTo(left, bottom, left, bottom - r)
+            lineTo(left, top + r)
+            quadraticTo(left, top, left + r, top)
+            close()
+        }
+        drawPath(path = outline, color = tint, style = stroke)
+        val curl = Path().apply {
+            moveTo(right - fold, bottom)
+            lineTo(right - fold, bottom - fold * 0.72f)
+            quadraticTo(right - fold, bottom - fold, right - fold * 0.72f, bottom - fold)
+            lineTo(right, bottom - fold)
+        }
+        drawPath(path = curl, color = tint, style = stroke)
     }
 }
 

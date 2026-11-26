@@ -263,7 +263,7 @@ val WaAmoledColors = WaColors(
     appSurface = Color(0xFF000000),
     elevatedBar = Color(0xFF121518),
     outgoingBubble = Color(0xFF005C4B),
-    incomingBubble = Color(0xFF1C1F24),
+    incomingBubble = Color(0xFF191C20),
     accentGreen = Color(0xFF00C49A),
     brightGreen = Color(0xFF25D366),
     blueTick = Color(0xFF53BDEB),
@@ -274,11 +274,11 @@ val WaAmoledColors = WaColors(
     pillInactiveBg = Color(0xFF16191D),
     antiDeleteRed = Color(0xFFFF5C72),
     warningAmber = Color(0xFFFFB74D),
-    quotedBg = Color(0x3D000000),
+    quotedBg = Color(0x52000000),
     divider = Color(0xFF1F2329),
     mediaScrim = Color(0x80000000),
     doodleColor = Color(0xFFCBD5E1),
-    doodleTintAlpha = 0.045f
+    doodleTintAlpha = 0.028f
 )
 
 val WaAuroraColors = WaColors(
@@ -563,7 +563,7 @@ val LocalWuppShowSeconds = staticCompositionLocalOf { false }
 val LocalWuppUse24Hour = staticCompositionLocalOf { false }
 val LocalWuppChatFontScale = staticCompositionLocalOf { 1.0f }
 val LocalWuppClassicUi = staticCompositionLocalOf { false }
-val LocalWuppBubbleRadiusDp = staticCompositionLocalOf { 17 }
+val LocalWuppBubbleRadiusDp = staticCompositionLocalOf { 15 }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -575,7 +575,7 @@ fun WhatsAppTheme(
     useSystemFont: Boolean = false,
     fontStyle: WuppFontStyle = if (useSystemFont) WuppFontStyle.SYSTEM else WuppFontStyle.ROBO_CLEAN,
     customFontPath: String = "",
-    bubbleCornerRadiusDp: Int = 17,
+    bubbleCornerRadiusDp: Int = 15,
     customOutgoingBubbleArgb: Long = 0L,
     customIncomingBubbleArgb: Long = 0L,
     showSecondsInTimestamps: Boolean = false,

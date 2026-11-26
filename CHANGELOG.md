@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.10-pre.1] - 2026-11-26
+
+### ✨ Features
+- Added an unread chats count pill on the chat back button, a green admin badge in announcement-only groups, and a subtle read-receipt toast above the composer.
+- Replaced the composer smiley button with a clean sticker icon.
+
+### 🛠️ Fixes
+- Fixed quoted replies stretching across the screen so short quotes wrap neatly around their text with darker inset contrast.
+- Slimmed chat bubble tails, padding, and cluster spacing, and darkened AMOLED doodles and header glass buttons for sharper contrast.
+
 ## [0.3.9] - 2026-11-26
 
 ### ✨ Features
