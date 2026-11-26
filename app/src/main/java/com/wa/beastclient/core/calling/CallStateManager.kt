@@ -111,7 +111,7 @@ object CallStateManager {
         val ctx = context.applicationContext
         val cfg = StealthMatrixManager.config.value
 
-        if (_uiState.value.phase != CallPhase.IDLE) {
+        if (!isCallStartAllowed(_uiState.value.phase)) {
             launchCallActivity(ctx)
             return
         }
@@ -297,6 +297,7 @@ object CallStateManager {
                 statusText = "Connecting…"
             )
         }
+        // Set MODE_IN_COMMUNICATION & voice focus synchronously and promote FGS mic type before capture starts.
         audioController?.startInCallAudio(isVideo = answerVideo)
         CallForegroundService.sync(ctx, _uiState.value)
 
@@ -573,7 +574,16 @@ object CallStateManager {
         }
         videoPipeline?.setCameraEnabled(enable && hasCameraPermission())
         if (cur.callId.isNotBlank()) {
-            ioScope.launch { runCatching { Whatsbridge.setCallVideoEnabled(cur.callId, enable) } }
+            ioScope.launch {
+                runCatching { Whatsbridge.setCallVideoEnabled(cur.callId, enable) }
+                if (enable) {
+                    mainScope.launch {
+                        ensureMediaPipelinesStarted(cur.callId, startVideo = true)
+                        videoPipeline?.requestSyncKeyframe()
+                    }
+                    runCatching { Whatsbridge.requestPeerKeyframe(cur.callId) }
+                }
+            }
         }
     }
 
@@ -591,7 +601,14 @@ object CallStateManager {
         if (cur.callId.isNotBlank()) {
             ensureMediaPipelinesStarted(cur.callId, startVideo = true)
             videoPipeline?.setCameraEnabled(hasCameraPermission())
-            ioScope.launch { runCatching { Whatsbridge.setCallVideoEnabled(cur.callId, true) } }
+            ioScope.launch {
+                runCatching { Whatsbridge.setCallVideoEnabled(cur.callId, true) }
+                mainScope.launch {
+                    ensureMediaPipelinesStarted(cur.callId, startVideo = true)
+                    videoPipeline?.requestSyncKeyframe()
+                }
+                runCatching { Whatsbridge.requestPeerKeyframe(cur.callId) }
+            }
         }
         appContext?.let { CallForegroundService.sync(it, _uiState.value) }
     }
@@ -874,6 +891,9 @@ object CallStateManager {
         )
     }
 }
+
+internal fun isCallStartAllowed(phase: CallPhase): Boolean =
+    phase == CallPhase.IDLE || phase == CallPhase.FAILED
 
 internal fun resolveIncomingCallTargetChatJid(
     chatJid: String,

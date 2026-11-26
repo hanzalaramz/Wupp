@@ -374,4 +374,15 @@ class CallingEnginePolicyTest {
         assertEquals(640, backPortrait.effectiveSourceWidth)
         assertEquals(480, backPortrait.effectiveSourceHeight)
     }
+
+    @Test
+    fun outgoingCallCanStartFromIdleOrFailedButNotActivePhases() {
+        assertTrue(isCallStartAllowed(CallPhase.IDLE))
+        assertTrue(isCallStartAllowed(CallPhase.FAILED))
+        assertFalse(isCallStartAllowed(CallPhase.DIALING))
+        assertFalse(isCallStartAllowed(CallPhase.INCOMING_RINGING))
+        assertFalse(isCallStartAllowed(CallPhase.CONNECTING))
+        assertFalse(isCallStartAllowed(CallPhase.ACTIVE))
+        assertFalse(isCallStartAllowed(CallPhase.ENDING))
+    }
 }

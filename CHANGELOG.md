@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.9-pre.10] - 2026-11-26
+
+### 🛠️ Fixes
+- Fixed incoming voice calls having no audio and dropping on the first attempt by making audio focus/mode setup synchronous, retrying AudioRecord/AudioTrack initialization, and not blocking call answer on Bluetooth permission (#155).
+- Fixed video-upgrade pipeline binding, immediate redialing after a failed call, and cleaned up duplicate audio-route items in the call controls menu.
+
 ## [0.3.9-pre.9] - 2026-11-26
 
 ### ✨ Features

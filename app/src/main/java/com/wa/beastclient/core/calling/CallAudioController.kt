@@ -43,6 +43,14 @@ class CallAudioController(
     private var currentIsVideo: Boolean = false
     private var ringingActive: Boolean = false
 
+    private inline fun runOnMain(crossinline block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
+        } else {
+            mainHandler.post { block() }
+        }
+    }
+
     fun refreshRoutes(isVideoCall: Boolean = currentIsVideo): Pair<Set<CallAudioRoute>, CallAudioRoute> {
         val available = queryAvailableRoutes()
         val chosen = if (activeRoute in available) activeRoute else chooseDefaultRoute(available, isVideoCall)
@@ -52,8 +60,8 @@ class CallAudioController(
     }
 
     fun startRinging() {
-        mainHandler.post {
-            if (ringingActive) return@post
+        runOnMain {
+            if (ringingActive) return@runOnMain
             ringingActive = true
             val ringerMode = audioManager.ringerMode
             if (ringerMode == AudioManager.RINGER_MODE_NORMAL) {
@@ -78,7 +86,7 @@ class CallAudioController(
     }
 
     fun stopRinging() {
-        mainHandler.post {
+        runOnMain {
             ringingActive = false
             runCatching { ringtone?.stop() }
             ringtone = null
@@ -87,15 +95,16 @@ class CallAudioController(
     }
 
     fun startInCallAudio(isVideo: Boolean) {
-        mainHandler.post {
+        runOnMain {
             if (inCallAudioActive) {
                 updateVideoState(isVideo)
-                return@post
+                return@runOnMain
             }
             stopRinging()
             currentIsVideo = isVideo
             inCallAudioActive = true
             requestVoiceAudioFocus()
+            runCatching { audioManager.isMicrophoneMute = false }
             audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             registerPlaybackWatcher()
             registerCommDeviceWatcher()
@@ -108,8 +117,8 @@ class CallAudioController(
     }
 
     fun updateVideoState(isVideo: Boolean) {
-        mainHandler.post {
-            if (currentIsVideo == isVideo) return@post
+        runOnMain {
+            if (currentIsVideo == isVideo) return@runOnMain
             currentIsVideo = isVideo
             if (inCallAudioActive) {
                 val available = queryAvailableRoutes()
@@ -122,7 +131,7 @@ class CallAudioController(
     }
 
     fun setAudioRoute(route: CallAudioRoute) {
-        mainHandler.post {
+        runOnMain {
             val available = queryAvailableRoutes()
             val target = if (route in available) route else chooseDefaultRoute(available, currentIsVideo)
             applyAudioRouteInternal(target, available)
@@ -131,7 +140,7 @@ class CallAudioController(
     }
 
     fun stopAll() {
-        mainHandler.post {
+        runOnMain {
             stopRinging()
             inCallAudioActive = false
             currentIsVideo = false
@@ -208,6 +217,8 @@ class CallAudioController(
                 runCatching { audioManager.setCommunicationDevice(matching) }
             } else if (route == CallAudioRoute.EARPIECE) {
                 runCatching { audioManager.clearCommunicationDevice() }
+                @Suppress("DEPRECATION")
+                runCatching { audioManager.isSpeakerphoneOn = false }
             }
         } else {
             @Suppress("DEPRECATION")

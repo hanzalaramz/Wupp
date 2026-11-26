@@ -219,6 +219,63 @@ class NativeVoipAudioPipeline(
         playoutThread = null
     }
 
+    private fun openAudioRecordWithRetry(recBufBytes: Int): AudioRecord? {
+        val sources = intArrayOf(
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+            MediaRecorder.AudioSource.MIC
+        )
+        repeat(8) { attempt ->
+            if (!running.get()) return null
+            val source = sources[if (attempt < 5) 0 else 1]
+            val candidate = runCatching {
+                AudioRecord(
+                    source,
+                    SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    recBufBytes
+                )
+            }.getOrNull()
+            if (candidate != null && candidate.state == AudioRecord.STATE_INITIALIZED) {
+                return candidate
+            }
+            runCatching { candidate?.release() }
+            Log.w(TAG, "AudioRecord init attempt ${attempt + 1} failed (source=$source), retrying…")
+            runCatching { Thread.sleep(120L) }
+        }
+        return null
+    }
+
+    private fun openAudioTrackWithRetry(trackBufBytes: Int): AudioTrack? {
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+        val format = AudioFormat.Builder()
+            .setSampleRate(SAMPLE_RATE)
+            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            .build()
+        repeat(8) { attempt ->
+            if (!running.get()) return null
+            val candidate = runCatching {
+                AudioTrack.Builder()
+                    .setAudioAttributes(attrs)
+                    .setAudioFormat(format)
+                    .setBufferSizeInBytes(trackBufBytes)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .build()
+            }.getOrNull()
+            if (candidate != null && candidate.state == AudioTrack.STATE_INITIALIZED) {
+                return candidate
+            }
+            runCatching { candidate?.release() }
+            Log.w(TAG, "AudioTrack init attempt ${attempt + 1} failed, retrying…")
+            runCatching { Thread.sleep(120L) }
+        }
+        return null
+    }
+
     private fun runCaptureLoop() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
         val minBufBytes = AudioRecord.getMinBufferSize(
@@ -232,15 +289,9 @@ class NativeVoipAudioPipeline(
         var aec: AcousticEchoCanceler? = null
         var ns: NoiseSuppressor? = null
         try {
-            recorder = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                recBufBytes
-            )
-            if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-                Log.w(TAG, "AudioRecord failed to initialize")
+            recorder = openAudioRecordWithRetry(recBufBytes)
+            if (recorder == null) {
+                Log.w(TAG, "AudioRecord failed to initialize after retries")
                 return
             }
 
@@ -303,21 +354,11 @@ class NativeVoipAudioPipeline(
 
         var track: AudioTrack? = null
         try {
-            val attrs = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .build()
-            val format = AudioFormat.Builder()
-                .setSampleRate(SAMPLE_RATE)
-                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .build()
-            track = AudioTrack.Builder()
-                .setAudioAttributes(attrs)
-                .setAudioFormat(format)
-                .setBufferSizeInBytes(trackBufBytes)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
+            track = openAudioTrackWithRetry(trackBufBytes)
+            if (track == null) {
+                Log.w(TAG, "AudioTrack failed to initialize after retries")
+                return
+            }
 
             track.play()
             val frame = ShortArray(FRAME_SAMPLES)

@@ -106,7 +106,7 @@ import com.wa.beastclient.ui.theme.LocaleHelper
 import com.wa.beastclient.ui.theme.WhatsAppTheme
 
 /**
- * Full-screen native Voice & Video call interface backed by the hidden System WebView engine.
+ * Full-screen native Voice & Video call interface backed by `whatsapp-rust` VoIP pipelines.
  * Supports lockscreen wake-up, minimize-to-banner for voice calls, and Android PiP for video calls.
  */
 class CallActivity : ComponentActivity() {
@@ -168,11 +168,6 @@ class CallActivity : ComponentActivity() {
                 }
                 if (needsCamera && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
                     needed.add(Manifest.permission.CAMERA)
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                    ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
-                ) {
-                    needed.add(Manifest.permission.BLUETOOTH_CONNECT)
                 }
                 if (needed.isEmpty()) {
                     CallStateManager.answerIncomingCall(audioOnly)
@@ -499,7 +494,7 @@ private fun CallScreenContent(
 
         if (!isInPip) {
             AnimatedVisibility(
-                visible = !showVideoFeed || showChrome,
+                visible = !showVideoFeed || showChrome || showMoreMenu || showRouteMenu,
                 enter = fadeIn(),
                 exit = fadeOut(),
                 modifier = Modifier.fillMaxSize()
@@ -787,23 +782,19 @@ private fun CallScreenContent(
                                                     }
                                                 )
                                             }
-                                            state.availableRoutes.forEach { route ->
-                                                DropdownMenuItem(
-                                                    text = {
-                                                        Text(if (route == state.audioRoute) "${route.label} ✓" else route.label)
-                                                    },
-                                                    leadingIcon = {
-                                                        Icon(
-                                                            imageVector = routeIcon(route),
-                                                            contentDescription = null
-                                                        )
-                                                    },
-                                                    onClick = {
-                                                        showMoreMenu = false
-                                                        onSelectAudioRoute(route)
-                                                    }
-                                                )
-                                            }
+                                            DropdownMenuItem(
+                                                text = { Text("Minimize call") },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.CloseFullscreen,
+                                                        contentDescription = null
+                                                    )
+                                                },
+                                                onClick = {
+                                                    showMoreMenu = false
+                                                    onMinimize()
+                                                }
+                                            )
                                         }
                                     }
 
