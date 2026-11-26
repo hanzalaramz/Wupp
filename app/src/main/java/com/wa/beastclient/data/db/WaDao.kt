@@ -1514,7 +1514,7 @@ interface WaDao {
         val hasLocalFile = !existing.localMediaPath.isNullOrBlank() &&
             java.io.File(existing.localMediaPath).let { it.exists() && it.length() > 0L }
         if (hasLocalFile) {
-            if (!existing.isViewOnce || existing.viewOnceState != "AVAILABLE") {
+            if (!existing.isViewOnce || existing.viewOnceState == "NONE" || existing.viewOnceState == "PENDING") {
                 upsertMessage(existing.copy(isViewOnce = true, viewOnceState = "AVAILABLE"))
             }
             return

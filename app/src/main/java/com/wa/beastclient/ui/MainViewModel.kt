@@ -1541,6 +1541,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         WaRealtimeService.markViewOnceOpened(appContext, msg)
     }
 
+    fun downloadViewOnceAndMarkOpened(msg: MessageEntity) {
+        WaRealtimeService.downloadViewOnceAndMarkOpened(appContext, msg)
+    }
+
     suspend fun stageMediaForPreview(uri: Uri, rawMimeType: String?): StagedOutboundMedia? {
         val detectedMime = runCatching { appContext.contentResolver.getType(uri) }.getOrNull()
         val resolvedMime = resolveEffectiveMediaMimeType(rawMimeType, detectedMime)

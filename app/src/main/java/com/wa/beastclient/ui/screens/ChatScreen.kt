@@ -936,6 +936,7 @@ fun ChatScreen(
     var showMoreReactionEmojis by remember { mutableStateOf(false) }
     var editMessageDialogTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var mediaLightboxTarget by remember { mutableStateOf<MessageEntity?>(null) }
+    var pendingViewOnceSheetTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var activeStickerActionMsg by remember { mutableStateOf<MessageEntity?>(null) }
     var pdfViewerTarget by remember { mutableStateOf<Pair<File, String>?>(null) }
     var pendingOutboundPreview by remember { mutableStateOf<StagedOutboundMedia?>(null) }
@@ -2200,6 +2201,7 @@ fun ChatScreen(
                                         onManualSendPlayedReceipt = { viewModel.markAudioPlayedExplicitly(msg) },
                                         onAutoRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = false) },
                                         onRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = true) },
+                                        onPromptViewOnceDownload = { pendingViewOnceSheetTarget = msg },
                                         onOpenMedia = {
                                             mediaLightboxTarget = msg
                                             if (msg.isViewOnce && msg.viewOnceState != "STRIPPED") {
@@ -2251,6 +2253,7 @@ fun ChatScreen(
                                             onManualSendPlayedReceipt = { viewModel.markAudioPlayedExplicitly(msg) },
                                             onAutoRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = false) },
                                             onRequestDownload = { viewModel.requestMediaDownload(msg, userInitiated = true) },
+                                            onPromptViewOnceDownload = { pendingViewOnceSheetTarget = msg },
                                             onOpenMedia = {
                                             mediaLightboxTarget = msg
                                             if (msg.isViewOnce && msg.viewOnceState != "STRIPPED") {
@@ -4747,6 +4750,56 @@ fun ChatScreen(
         )
     }
 
+    pendingViewOnceSheetTarget?.let { target ->
+        val isStub = com.wa.beastclient.core.service.WaRealtimeService.isViewOnceStubWithoutKeys(target)
+        val kindLabel = when (target.msgType.uppercase()) {
+            "VIDEO" -> "View-Once Video"
+            "PTT", "AUDIO" -> "View-Once Voice Message"
+            else -> "View-Once Photo"
+        }
+        AlertDialog(
+            onDismissRequest = { pendingViewOnceSheetTarget = null },
+            containerColor = colors.elevatedBar,
+            title = {
+                Text(
+                    text = kindLabel,
+                    color = colors.textPrimary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Text(
+                    text = if (isStub) {
+                        "WhatsApp did not include decryption keys for this linked Web session. Try requesting a recovery download from your primary phone, or open it on your original WhatsApp app."
+                    } else {
+                        "Download this View-Once media to your Gallery and mark it as opened on WhatsApp."
+                    },
+                    color = colors.textSecondary,
+                    fontSize = 13.5.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.downloadViewOnceAndMarkOpened(target)
+                        pendingViewOnceSheetTarget = null
+                    }
+                ) {
+                    Text(
+                        text = if (isStub) "Try Download & Mark Opened" else "Download & Mark Opened",
+                        color = colors.brightGreen,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingViewOnceSheetTarget = null }) {
+                    Text(text = "Cancel", color = colors.textSecondary)
+                }
+            }
+        )
+    }
+
     // Full-screen Media / View Once Lightbox
     mediaLightboxTarget?.let { target ->
         val galleryItems by remember(chatJid, target.isViewOnce) {
@@ -5292,6 +5345,7 @@ private fun MessageBubbleRow(
     onManualSendPlayedReceipt: () -> Unit,
     onAutoRequestDownload: () -> Unit = {},
     onRequestDownload: () -> Unit = {},
+    onPromptViewOnceDownload: () -> Unit = onRequestDownload,
     onOpenMedia: () -> Unit,
     onOpenSticker: () -> Unit = {},
     onOpenDocument: () -> Unit = {},
@@ -5324,23 +5378,17 @@ private fun MessageBubbleRow(
         !msg.localMediaPath.isNullOrBlank() &&
             File(msg.localMediaPath).let { it.exists() && it.length() > 0L }
     }
-    val isViewOnceOpened = msg.viewOnceState == "STRIPPED" || msg.msgType == "VIEW_ONCE_STRIPPED"
-    val isViewOnceStub = msg.msgType == "VIEW_ONCE_STRIPPED" ||
-        msg.mimeType.equals("application/x-view-once-stub", ignoreCase = true)
+    val isViewOnceOpened = msg.viewOnceState == "STRIPPED" ||
+        (msg.msgType == "VIEW_ONCE_STRIPPED" && msg.viewOnceState != "AVAILABLE")
     val handleViewOnceTap: () -> Unit = {
         when {
             !isViewOnceOpened && hasVaultFile -> onOpenMedia()
-            !isViewOnceOpened && isViewOnceStub -> Toast.makeText(
-                context,
-                "WhatsApp restricted this view-once message to your primary phone",
-                Toast.LENGTH_SHORT
-            ).show()
             !isViewOnceOpened && isDownloadingMedia -> Toast.makeText(
                 context,
                 "Downloading view-once media...",
                 Toast.LENGTH_SHORT
             ).show()
-            !isViewOnceOpened -> onRequestDownload()
+            !isViewOnceOpened -> onPromptViewOnceDownload()
             hasVaultFile -> Toast.makeText(
                 context,
                 "Opened · saved in Gallery & Media Vault",
@@ -5869,21 +5917,22 @@ private fun MessageBubbleRow(
                         val voLabel = when (msg.msgType.uppercase()) {
                             "VIDEO" -> "Video"
                             "PTT", "AUDIO" -> "Voice message"
-                            else -> "Photo"
+                            "IMAGE" -> "Photo"
+                            else -> "View once"
                         }
                         val tintColor = if (effectiveOutgoing) colors.textPrimary else colors.brightGreen
                         val subLabel = when {
-                            isViewOnceStub -> "Open on phone"
                             hasVaultFile && (msg.msgType == "PTT" || msg.msgType == "AUDIO") ->
                                 "${formatVideoDuration(msg.durationSec)} · Tap to play"
-                            hasVaultFile -> "Tap to view · Saved in Gallery"
+                            hasVaultFile -> "Saved in Gallery · Tap to view"
                             isDownloadingMedia -> "Downloading..."
+                            !mediaDownloadError.isNullOrBlank() -> mediaDownloadError
                             msg.durationSec > 0 -> "${formatVideoDuration(msg.durationSec)} · Tap to download"
                             else -> "Tap to download"
                         }
                         Row(
                             modifier = Modifier
-                                .widthIn(min = 185.dp)
+                                .widthIn(min = 195.dp)
                                 .clip(RoundedCornerShape(10.dp))
                                 .combinedClickable(
                                     onClick = {
@@ -5902,7 +5951,7 @@ private fun MessageBubbleRow(
                                     .border(0.65.dp, tintColor.copy(alpha = 0.34f), CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
-                                if (isDownloadingMedia && !hasVaultFile && !isViewOnceStub) {
+                                if (isDownloadingMedia && !hasVaultFile) {
                                     CircularProgressIndicator(
                                         strokeWidth = 2.dp,
                                         color = tintColor,
@@ -5918,7 +5967,10 @@ private fun MessageBubbleRow(
                                 }
                             }
                             Spacer(modifier = Modifier.width(10.dp))
-                            Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Column(
+                                modifier = Modifier.weight(1f, fill = false),
+                                verticalArrangement = Arrangement.spacedBy(1.dp)
+                            ) {
                                 Text(
                                     text = voLabel,
                                     color = tintColor,
@@ -5928,7 +5980,18 @@ private fun MessageBubbleRow(
                                 Text(
                                     text = subLabel,
                                     color = colors.textSecondary,
-                                    fontSize = 11.5.sp
+                                    fontSize = 11.5.sp,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (!hasVaultFile && !isDownloadingMedia) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Icon(
+                                    imageVector = Icons.Rounded.Download,
+                                    contentDescription = "Download view once",
+                                    tint = tintColor,
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }

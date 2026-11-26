@@ -1455,7 +1455,7 @@ class WaRealtimeService : Service() {
             msg.mimeType.startsWith("video/", ignoreCase = true) ||
             msg.mimeType.startsWith("audio/", ignoreCase = true) ||
             msg.mimeType.startsWith("application/", ignoreCase = true)
-        if (insertedNew && isMedia && msg.localMediaPath.isNullOrBlank() && !msg.isFromMe && !isViewOnceBlockedDownload(msg)) {
+        if (insertedNew && isMedia && msg.localMediaPath.isNullOrBlank() && !msg.isFromMe && !isViewOnceBlockedDownload(msg, userInitiated = false)) {
             if (msg.isViewOnce ||
                 StealthMatrixManager.isAutoDownloadAllowed(applicationContext, msg.msgType, msg.mimeType, chatJid = msg.chatJid)
             ) {
@@ -1748,12 +1748,21 @@ class WaRealtimeService : Service() {
         val existingHasFile = !existing?.localMediaPath.isNullOrBlank() &&
             File(existing!!.localMediaPath!!).let { it.exists() && it.length() > 0L }
         if (existingHasFile) return
+        val isUnavailableStub = json.optBoolean("isUnavailableStub", false)
+        val requestedState = json.optString("viewOnceState")
+            .takeIf { it.isNotBlank() }
+            ?: if (isUnavailableStub) "AVAILABLE" else "STRIPPED"
+        val resolvedVoState = if (existing?.viewOnceState == "STRIPPED") "STRIPPED" else requestedState
         val mediaTypeHint = json.optString("mediaType")
         val resolvedType = when {
             existing?.msgType in setOf("IMAGE", "VIDEO", "PTT", "AUDIO") -> existing!!.msgType
-            mediaTypeHint in setOf("IMAGE", "VIDEO", "PTT", "AUDIO") -> mediaTypeHint
+            mediaTypeHint in setOf("IMAGE", "VIDEO", "PTT", "AUDIO", "VIEW_ONCE_STUB") -> mediaTypeHint
+            isUnavailableStub -> "VIEW_ONCE_STUB"
             else -> "VIEW_ONCE_STRIPPED"
         }
+        val resolvedMime = existing?.mimeType?.takeIf {
+            it.isNotBlank() && !it.equals("application/x-view-once-stub", ignoreCase = true)
+        } ?: "application/x-view-once-stub"
         val msg = MessageEntity(
             id = id,
             chatJid = json.optString("chatJid").ifBlank { existing?.chatJid.orEmpty() },
@@ -1761,13 +1770,13 @@ class WaRealtimeService : Service() {
             senderName = json.optString("pushName").ifBlank { existing?.senderName.orEmpty() },
             isFromMe = json.optBoolean("isFromMe", existing?.isFromMe ?: false),
             timestamp = json.optLong("timestamp", existing?.timestamp ?: System.currentTimeMillis()),
-            body = json.optString("reason", existing?.body.orEmpty()),
+            body = if (isUnavailableStub) "" else json.optString("reason", existing?.body.orEmpty()),
             msgType = resolvedType,
-            mimeType = existing?.mimeType?.ifBlank { "application/x-view-once-stub" } ?: "application/x-view-once-stub",
+            mimeType = resolvedMime,
             durationSec = existing?.durationSec ?: 0,
             fileSize = existing?.fileSize ?: 0L,
             isViewOnce = true,
-            viewOnceState = "STRIPPED",
+            viewOnceState = resolvedVoState,
             deliveryStatus = existing?.deliveryStatus?.ifBlank { "DELIVERED" } ?: "DELIVERED"
         )
         dao.upsertIncomingMessageAndRefreshChat(
@@ -1887,6 +1896,9 @@ class WaRealtimeService : Service() {
                 isHistorical = isHistorical,
                 isFromMe = isFromMe
             )
+            if (msg.isViewOnce && markOpenedAfterDownloadIds.remove(messageId)) {
+                markViewOnceOpened(applicationContext, msg)
+            }
         }
     }
 
@@ -1918,6 +1930,9 @@ class WaRealtimeService : Service() {
             }
             dao.updateDeliveryStatus(id, receiptType, timestamp)
             val msgRow = dao.getMessage(id)
+            if (msgRow?.isViewOnce == true && (receiptType == "PLAYED" || receiptType == "PLAYED_SELF")) {
+                dao.markViewOnceOpened(id)
+            }
             if (msgRow != null && msgRow.timestamp > maxMatchedTs) {
                 maxMatchedTs = msgRow.timestamp
             }
@@ -3245,11 +3260,23 @@ class WaRealtimeService : Service() {
         }
 
         private val downloadingStartedAtMs = ConcurrentHashMap<String, Long>()
+        private val markOpenedAfterDownloadIds = ConcurrentHashMap.newKeySet<String>()
 
-        internal fun isViewOnceBlockedDownload(msg: MessageEntity): Boolean =
-            msg.msgType == "VIEW_ONCE_STRIPPED" ||
-                msg.mimeType.equals("application/x-view-once-stub", ignoreCase = true) ||
-                (msg.isViewOnce && msg.viewOnceState == "STRIPPED")
+        internal fun isViewOnceStubWithoutKeys(msg: MessageEntity): Boolean =
+            msg.msgType == "VIEW_ONCE_STUB" ||
+                msg.msgType == "VIEW_ONCE_STRIPPED" ||
+                msg.mimeType.equals("application/x-view-once-stub", ignoreCase = true)
+
+        internal fun isViewOnceBlockedDownload(msg: MessageEntity, userInitiated: Boolean = false): Boolean =
+            (msg.isViewOnce && msg.viewOnceState == "STRIPPED") ||
+                (msg.msgType == "VIEW_ONCE_STRIPPED" && msg.viewOnceState == "STRIPPED") ||
+                (!userInitiated && isViewOnceStubWithoutKeys(msg))
+
+        fun downloadViewOnceAndMarkOpened(context: Context, msg: MessageEntity) {
+            if (msg.id.isBlank() || !msg.isViewOnce) return
+            markOpenedAfterDownloadIds.add(msg.id)
+            requestMediaDownload(context, msg, userInitiated = true)
+        }
 
         internal suspend fun exportIncomingMediaToGalleryIfEligible(
             context: Context,
@@ -3292,7 +3319,7 @@ class WaRealtimeService : Service() {
 
         fun requestMediaDownload(context: Context, msg: MessageEntity, userInitiated: Boolean = true) {
             if (msg.id.isBlank()) return
-            if (isViewOnceBlockedDownload(msg)) return
+            if (isViewOnceBlockedDownload(msg, userInitiated = userInitiated)) return
             val nowMs = System.currentTimeMillis()
             val alreadyDownloading = _downloadingMediaIds.value.contains(msg.id)
             val elapsedMs = downloadingStartedAtMs[msg.id]?.let { nowMs - it } ?: Long.MAX_VALUE
@@ -3310,14 +3337,30 @@ class WaRealtimeService : Service() {
             }
             companionScope.launch {
                 val dao = WaUiDatabase.getInstance(appCtx).waDao()
-                val existingLocal = dao.getMessage(msg.id)?.localMediaPath
+                val existingMsg = dao.getMessage(msg.id)
+                val existingLocal = existingMsg?.localMediaPath
                 if (!existingLocal.isNullOrBlank() && File(existingLocal).let { it.exists() && it.length() > 0L }) {
                     downloadingStartedAtMs.remove(msg.id)
                     _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
                     _failedMediaIds.value = _failedMediaIds.value - msg.id
+                    if (existingMsg.isViewOnce) {
+                        exportIncomingMediaToGalleryIfEligible(
+                            context = appCtx,
+                            msg = existingMsg,
+                            localPath = existingLocal,
+                            mediaType = existingMsg.msgType,
+                            mimeType = existingMsg.mimeType,
+                            isHistorical = false,
+                            isFromMe = existingMsg.isFromMe
+                        )
+                        if (markOpenedAfterDownloadIds.remove(msg.id)) {
+                            markViewOnceOpened(appCtx, existingMsg)
+                        }
+                    }
                     return@launch
                 }
                 if (StealthMatrixManager.config.value.offlineMode) {
+                    markOpenedAfterDownloadIds.remove(msg.id)
                     downloadingStartedAtMs.remove(msg.id)
                     _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
                     if (userInitiated) {
@@ -3326,6 +3369,7 @@ class WaRealtimeService : Service() {
                     return@launch
                 }
                 if (!runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+                    markOpenedAfterDownloadIds.remove(msg.id)
                     downloadingStartedAtMs.remove(msg.id)
                     _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
                     return@launch
@@ -3344,13 +3388,20 @@ class WaRealtimeService : Service() {
                         _downloadingMediaIds.value.contains(msg.id) &&
                         downloadingStartedAtMs[msg.id] == nowMs
                     ) {
+                        markOpenedAfterDownloadIds.remove(msg.id)
                         downloadingStartedAtMs.remove(msg.id)
                         _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
                         if (refreshed?.viewOnceState != "STRIPPED") {
-                            _failedMediaIds.value = _failedMediaIds.value + (msg.id to "Tap to retry")
+                            val failMsg = if (isViewOnceStubWithoutKeys(msg)) {
+                                "WhatsApp withheld keys on primary phone"
+                            } else {
+                                "Tap to retry"
+                            }
+                            _failedMediaIds.value = _failedMediaIds.value + (msg.id to failMsg)
                         }
                     }
                 }.onFailure {
+                    markOpenedAfterDownloadIds.remove(msg.id)
                     downloadingStartedAtMs.remove(msg.id)
                     _downloadingMediaIds.value = _downloadingMediaIds.value - msg.id
                     _failedMediaIds.value = _failedMediaIds.value + (msg.id to (it.message ?: "Download failed"))
@@ -4225,6 +4276,7 @@ class WaRealtimeService : Service() {
                 ) {
                     val senderParam = if (msg.chatJid.endsWith("@g.us")) msg.senderJid else ""
                     runCatching {
+                        Whatsbridge.markReadManual(msg.chatJid, senderParam, msg.id)
                         Whatsbridge.sendPlayedReceiptManual(msg.chatJid, senderParam, msg.id)
                     }.onFailure {
                         Log.w(TAG, "markViewOnceOpened receipt failed for ${msg.id}: ${it.message}")

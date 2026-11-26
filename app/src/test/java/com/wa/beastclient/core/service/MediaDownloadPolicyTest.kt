@@ -18,7 +18,7 @@ class MediaDownloadPolicyTest {
     }
 
     @Test
-    fun viewOnceDownloadAllowedWhenKeysAvailableAndBlockedOnlyForStubsOrOpened() {
+    fun viewOnceDownloadAllowedWhenUnopenedAndBlockedOnceOpened() {
         val base = MessageEntity(
             id = "vo-1",
             chatJid = "123@s.whatsapp.net",
@@ -29,11 +29,15 @@ class MediaDownloadPolicyTest {
             isViewOnce = true,
             viewOnceState = "AVAILABLE"
         )
-        assertFalse(WaRealtimeService.isViewOnceBlockedDownload(base))
-        assertFalse(WaRealtimeService.isViewOnceBlockedDownload(base.copy(viewOnceState = "PENDING")))
-        assertTrue(WaRealtimeService.isViewOnceBlockedDownload(base.copy(viewOnceState = "STRIPPED")))
-        assertTrue(WaRealtimeService.isViewOnceBlockedDownload(base.copy(mimeType = "application/x-view-once-stub")))
-        assertTrue(WaRealtimeService.isViewOnceBlockedDownload(base.copy(msgType = "VIEW_ONCE_STRIPPED")))
+        assertFalse(WaRealtimeService.isViewOnceBlockedDownload(base, userInitiated = false))
+        assertFalse(WaRealtimeService.isViewOnceBlockedDownload(base.copy(viewOnceState = "PENDING"), userInitiated = false))
+        // Unavailable stub skips silent auto-download loops, but allows explicit user tap download.
+        val stub = base.copy(msgType = "VIEW_ONCE_STUB", mimeType = "application/x-view-once-stub")
+        assertTrue(WaRealtimeService.isViewOnceBlockedDownload(stub, userInitiated = false))
+        assertFalse(WaRealtimeService.isViewOnceBlockedDownload(stub, userInitiated = true))
+        // Once truly opened, both auto and manual download stay blocked.
+        assertTrue(WaRealtimeService.isViewOnceBlockedDownload(base.copy(viewOnceState = "STRIPPED"), userInitiated = true))
+        assertTrue(WaRealtimeService.isViewOnceBlockedDownload(base.copy(msgType = "VIEW_ONCE_STRIPPED", viewOnceState = "STRIPPED"), userInitiated = true))
     }
 
     @Test

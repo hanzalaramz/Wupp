@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.10-pre.13] - 2026-11-26
+
+### 🛠️ Fixes
+- Stopped fresh unopened View-Once messages from wrongly showing `"Opened"` on arrival when WhatsApp withholds keys from Web sessions, keeping them active until opened here or on your primary phone.
+- Added an explicit **Download & Mark Opened** option on View-Once bubbles to request/download media, save it to Gallery, and sync real Opened receipts back to WhatsApp.
+
 ## [0.3.10-pre.12] - 2026-11-26
 
 ### Fixed

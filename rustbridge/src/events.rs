@@ -574,8 +574,10 @@ pub async fn handle_sdk_event(runtime: Arc<BridgeRuntime>, event: Arc<Event>, cl
                         "pushName": und.info.push_name.as_str(),
                         "isFromMe": und.info.source.is_from_me,
                         "timestamp": und.info.timestamp.as_millis(),
-                        "mediaType": "VIEW_ONCE_STRIPPED",
-                        "reason": "Opened",
+                        "mediaType": "VIEW_ONCE_STUB",
+                        "isUnavailableStub": true,
+                        "viewOnceState": "AVAILABLE",
+                        "reason": "",
                     }),
                 );
             } else if !und.is_unavailable {
