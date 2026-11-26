@@ -3818,7 +3818,10 @@ class WaRealtimeService : Service() {
                         EagerMediaVault.extract40BarWaveform(prepared.file).joinToString(",")
                     }
                 } else ""
-                val voActive = isViewOnce && effectiveQuality != OutboundQualityMode.GIF && (msgType == "IMAGE" || msgType == "VIDEO")
+                val voActive = isViewOnce && isViewOnceSupportedForMediaType(
+                    msgType = msgType,
+                    isGif = effectiveQuality == OutboundQualityMode.GIF
+                )
                 val wireModeWithVo = if (voActive) {
                     "${wireQualityMode}:viewonce"
                 } else {
@@ -4995,4 +4998,15 @@ internal fun shouldAllowMediaDownloadRequest(
 ): Boolean {
     if (!isAlreadyDownloading) return true
     return userInitiated && elapsedSinceStartMs >= manualRetryGraceMs
+}
+
+internal fun isViewOnceSupportedForMediaType(
+    msgType: String,
+    isGif: Boolean = false
+): Boolean {
+    if (isGif) return false
+    return when (msgType.trim().uppercase()) {
+        "IMAGE", "VIDEO", "PTT", "AUDIO" -> true
+        else -> false
+    }
 }

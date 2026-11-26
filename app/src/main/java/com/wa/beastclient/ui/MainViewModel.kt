@@ -225,10 +225,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isRecordingVoice = MutableStateFlow(false)
     val isRecordingVoice: StateFlow<Boolean> = _isRecordingVoice.asStateFlow()
+    private val _isVoiceRecordingPaused = MutableStateFlow(false)
+    val isVoiceRecordingPaused: StateFlow<Boolean> = _isVoiceRecordingPaused.asStateFlow()
     private var activeRecorder: MediaRecorder? = null
     private var activeOpusRecorder: OpusOggVoiceRecorder? = null
     private var activeRecordingFile: File? = null
     private var recordingStartMs: Long = 0L
+    private var accumulatedRecordingMs: Long = 0L
 
     private val pagerFlowCache = object : LinkedHashMap<String, Flow<PagingData<MessageEntity>>>(16, 0.75f, true) {
         override fun removeEldestEntry(
@@ -593,6 +596,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun observeReactionsFor(messageId: String): Flow<List<MessageReactionEntity>> =
         activeDaoFlow.flatMapLatest { it.observeReactionsFor(messageId) }
+
+    fun observeChatReactionCounts(chatJid: String): Flow<Map<String, List<Pair<String, Int>>>> =
+        activeDaoFlow.flatMapLatest { dao ->
+            dao.observeChatReactionCounts(chatJid).map { rows ->
+                rows.groupBy(
+                    keySelector = { it.messageId },
+                    valueTransform = { it.emoji to it.count }
+                )
+            }
+        }
 
     fun observeChatGalleryMedia(chatJid: String): Flow<List<MessageEntity>> =
         activeDaoFlow.flatMapLatest { it.observeChatGalleryMedia(chatJid) }
@@ -1691,11 +1704,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun toggleVoiceRecording(chatJid: String, hasRecordPermission: Boolean, allowUnsavedColdStart: Boolean = false) {
+    fun toggleVoiceRecording(
+        chatJid: String,
+        hasRecordPermission: Boolean,
+        allowUnsavedColdStart: Boolean = false,
+        isViewOnce: Boolean = false
+    ) {
         if (_isRecordingVoice.value) {
-            stopAndSendVoiceRecording(chatJid, allowUnsavedColdStart = allowUnsavedColdStart)
+            stopAndSendVoiceRecording(
+                chatJid = chatJid,
+                allowUnsavedColdStart = allowUnsavedColdStart,
+                isViewOnce = isViewOnce
+            )
         } else {
             startVoiceRecording(hasRecordPermission)
+        }
+    }
+
+    fun pauseOrResumeVoiceRecording() {
+        if (!_isRecordingVoice.value) return
+        val opusRec = activeOpusRecorder
+        val rec = activeRecorder
+        if (!resolveVoicePauseSupported(Build.VERSION.SDK_INT, opusRec != null)) {
+            showToast("Pause requires Android 7 or newer")
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (_isVoiceRecordingPaused.value) {
+            val resumedOk = when {
+                opusRec != null -> {
+                    opusRec.resume()
+                    true
+                }
+                rec != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N -> {
+                    runCatching { rec.resume() }.isSuccess
+                }
+                else -> false
+            }
+            if (resumedOk) {
+                recordingStartMs = now
+                _isVoiceRecordingPaused.value = false
+            }
+        } else {
+            val pausedOk = when {
+                opusRec != null -> {
+                    opusRec.pause()
+                    true
+                }
+                rec != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N -> {
+                    runCatching { rec.pause() }.isSuccess
+                }
+                else -> false
+            }
+            if (pausedOk) {
+                accumulatedRecordingMs = computeRecordedElapsedMs(
+                    isPaused = false,
+                    accumulatedMs = accumulatedRecordingMs,
+                    segmentStartMs = recordingStartMs,
+                    nowMs = now
+                )
+                _isVoiceRecordingPaused.value = true
+            }
         }
     }
 
@@ -1706,6 +1775,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val mediaDir = EagerMediaVault.mediaDir(appContext)
         val ts = System.currentTimeMillis()
+        accumulatedRecordingMs = 0L
+        _isVoiceRecordingPaused.value = false
 
         // Prefer deterministic AudioRecord + MediaCodec(audio/opus) + RFC 7845 OggOpus muxing on Android 10+
         // so Official WhatsApp always receives spec-compliant Ogg/Opus PTT frames.
@@ -1791,19 +1862,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         activeRecorder = null
         activeRecordingFile?.delete()
         activeRecordingFile = null
+        accumulatedRecordingMs = 0L
+        _isVoiceRecordingPaused.value = false
         _isRecordingVoice.value = false
     }
 
-    private fun stopAndSendVoiceRecording(chatJid: String, allowUnsavedColdStart: Boolean = false) {
+    private fun stopAndSendVoiceRecording(
+        chatJid: String,
+        allowUnsavedColdStart: Boolean = false,
+        isViewOnce: Boolean = false
+    ) {
         val opusRec = activeOpusRecorder
         activeOpusRecorder = null
         val rec = activeRecorder
         activeRecorder = null
         val file = activeRecordingFile
         activeRecordingFile = null
+        val wasPaused = _isVoiceRecordingPaused.value
+        val elapsedMs = computeRecordedElapsedMs(
+            isPaused = wasPaused,
+            accumulatedMs = accumulatedRecordingMs,
+            segmentStartMs = recordingStartMs,
+            nowMs = System.currentTimeMillis()
+        )
+        accumulatedRecordingMs = 0L
+        _isVoiceRecordingPaused.value = false
         _isRecordingVoice.value = false
 
-        val elapsedMs = (System.currentTimeMillis() - recordingStartMs).coerceAtLeast(0L)
         val stopSucceeded = when {
             opusRec != null -> opusRec.stopAndFinalize()
             rec != null -> {
@@ -1847,6 +1932,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 qualityMode = OutboundQualityMode.STANDARD,
                 isVoiceNote = dispatch.isVoiceNote,
                 durationSec = validatedDurationSec,
+                isViewOnce = isViewOnce,
                 waveformCsvOverride = if (dispatch.isVoiceNote) recordedWaveformCsv else "",
                 allowUnsavedColdStart = allowUnsavedColdStart
             ).onFailure { err ->
@@ -2303,3 +2389,18 @@ private fun probeValidRecordedAudioDurationSec(file: File, fallbackElapsedSec: I
     if (durationMs == 0L) return fallbackElapsedSec.coerceIn(1, 300)
     return ((durationMs + 500L) / 1000L).toInt().coerceIn(1, 300)
 }
+
+internal fun computeRecordedElapsedMs(
+    isPaused: Boolean,
+    accumulatedMs: Long,
+    segmentStartMs: Long,
+    nowMs: Long
+): Long {
+    val safeAcc = accumulatedMs.coerceAtLeast(0L)
+    if (isPaused) return safeAcc
+    val segmentMs = if (segmentStartMs > 0L) (nowMs - segmentStartMs).coerceAtLeast(0L) else 0L
+    return safeAcc + segmentMs
+}
+
+internal fun resolveVoicePauseSupported(sdkInt: Int, isOpusRecorder: Boolean): Boolean =
+    isOpusRecorder || sdkInt >= Build.VERSION_CODES.N

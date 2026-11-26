@@ -1692,6 +1692,9 @@ pub async fn send_media_message(
                 mime_type.into()
             });
             aud.ptt = Some(is_voice_note);
+            if is_view_once_out {
+                aud.view_once = Some(true);
+            }
             if duration_sec > 0 {
                 aud.seconds = Some(duration_sec as u32);
             }
@@ -1728,7 +1731,13 @@ pub async fn send_media_message(
         }
     }
 
-    let final_message = if is_view_once_out && matches!(media_type, MediaType::Image | MediaType::Video) {
+    let final_message = if is_view_once_out && matches!(media_type, MediaType::Audio | MediaType::Ptt) {
+        let mut fpm = wa::message::FutureProofMessage::default();
+        fpm.message = buffa::MessageField::from_box(Box::new(message));
+        let mut wrapper = wa::Message::default();
+        wrapper.view_once_message_v2_extension = buffa::MessageField::some(fpm);
+        wrapper
+    } else if is_view_once_out && matches!(media_type, MediaType::Image | MediaType::Video) {
         let mut fpm = wa::message::FutureProofMessage::default();
         fpm.message = buffa::MessageField::from_box(Box::new(message));
         let mut wrapper = wa::Message::default();

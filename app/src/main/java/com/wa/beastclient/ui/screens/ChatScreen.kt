@@ -86,6 +86,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.automirrored.rounded.Forward
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.Reply
@@ -126,7 +127,9 @@ import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.NotificationsOff
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PushPin
@@ -414,67 +417,92 @@ fun ChatScreen(
         runWithGhostGuardOnly(afterGhost)
     }
     val isRecordingVoice by viewModel.isRecordingVoice.collectAsState()
+    val isVoiceRecordingPaused by viewModel.isVoiceRecordingPaused.collectAsState()
     val bridgeStatus by viewModel.bridgeStatus.collectAsState()
     val downloadingMediaIds by viewModel.downloadingMediaIds.collectAsState()
     val failedMediaIds by viewModel.failedMediaIds.collectAsState()
+    val chatReactionCounts by remember(chatJid) { viewModel.observeChatReactionCounts(chatJid) }
+        .collectAsState(initial = emptyMap())
     val pagedItems = remember(chatJid) { viewModel.pagedMessages(chatJid) }.collectAsLazyPagingItems()
     var showCallingSetupDialog by remember(chatJid) { mutableStateOf(false) }
     var pendingSetupOfficialFallbackDigits by remember(chatJid) { mutableStateOf("") }
     var pendingColdCallVideo by remember(chatJid) { mutableStateOf<Boolean?>(null) }
     var pendingPermissionCallIsVideo by remember(chatJid) { mutableStateOf<Boolean?>(null) }
+    var pendingParticipantCall by remember(chatJid) { mutableStateOf<Pair<ParticipantPopupTarget, Boolean>?>(null) }
 
-    val resolvePhoneDigitsForChat: suspend () -> String = {
+    val resolvePhoneDigitsForJid: suspend (String) -> String = { targetJid ->
         withContext(Dispatchers.IO) {
-            val direct = extractDialablePhoneDigits(chatJid)
+            val direct = extractDialablePhoneDigits(targetJid)
             if (direct.isNotEmpty()) {
                 direct
             } else {
-                val rawJson = WaRealtimeService.resolveParticipantNamesJson(chatJid)
-                val entry = runCatching { JSONObject(rawJson).optJSONObject(chatJid) }.getOrNull()
+                val rawJson = WaRealtimeService.resolveParticipantNamesJson(targetJid)
+                val entry = runCatching { JSONObject(rawJson).optJSONObject(targetJid) }.getOrNull()
                 val altJid = entry?.optString("altJid").orEmpty()
                 val resolvedPhone = entry?.optString("phone").orEmpty()
-                extractDialablePhoneDigits(chatJid, altJid, resolvedPhone)
+                extractDialablePhoneDigits(targetJid, altJid, resolvedPhone)
             }
         }
     }
+
+    val resolvePhoneDigitsForChat: suspend () -> String = { resolvePhoneDigitsForJid(chatJid) }
+
+    val launchPeerCallFlow: (String, String, String?, Boolean, Boolean) -> Unit =
+        { peerJid, peerName, peerAvatarPath, isGroupPeer, isVideo ->
+            scope.launch {
+                val digits = if (isGroupPeer) "" else resolvePhoneDigitsForJid(peerJid)
+                if (stealthConfig.offlineMode) {
+                    Toast.makeText(context, "Disable Offline Mode to place calls", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                if (stealthConfig.callBackendMode == CallBackendMode.OFF) {
+                    pendingSetupOfficialFallbackDigits = digits
+                    showCallingSetupDialog = true
+                    return@launch
+                }
+                if (!isGroupPeer && digits.isEmpty()) {
+                    Toast.makeText(context, "Unable to resolve contact phone number for calling", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                CallStateManager.startOutgoingCall(
+                    context = context,
+                    peerJid = peerJid,
+                    peerName = peerName,
+                    peerAvatarPath = peerAvatarPath,
+                    phoneDigits = digits,
+                    isVideo = isVideo,
+                    isGroup = isGroupPeer
+                )
+            }
+        }
 
     val launchOutgoingCallFlow: (Boolean) -> Unit = { isVideo ->
         val displayTitle = chat?.name?.ifBlank { chatJid.substringBefore("@") }
             ?: chatJid.substringBefore("@")
         val isGroup = chatJid.endsWith("@g.us")
-        scope.launch {
-            val digits = if (isGroup) "" else resolvePhoneDigitsForChat()
-            if (stealthConfig.offlineMode) {
-                Toast.makeText(context, "Disable Offline Mode to place calls", Toast.LENGTH_SHORT).show()
-                return@launch
-            }
-            if (stealthConfig.callBackendMode == CallBackendMode.OFF) {
-                pendingSetupOfficialFallbackDigits = digits
-                showCallingSetupDialog = true
-                return@launch
-            }
-            if (!isGroup && digits.isEmpty()) {
-                Toast.makeText(context, "Unable to resolve contact phone number for calling", Toast.LENGTH_SHORT).show()
-                return@launch
-            }
-            CallStateManager.startOutgoingCall(
-                context = context,
-                peerJid = chatJid,
-                peerName = displayTitle,
-                peerAvatarPath = chat?.avatarPath,
-                phoneDigits = digits,
-                isVideo = isVideo,
-                isGroup = isGroup
-            )
-        }
+        launchPeerCallFlow(chatJid, displayTitle, chat?.avatarPath, isGroup, isVideo)
     }
 
     val proceedWithGuardsAndCall: (Boolean) -> Unit = { isVideo ->
-        runWithGhostGuardOnly {
-            if (isColdCallBlocked(contact?.isSaved == true, pagedItems.itemCount, chatJid.endsWith("@g.us"))) {
-                pendingColdCallVideo = isVideo
-            } else {
-                launchOutgoingCallFlow(isVideo)
+        val participantCall = pendingParticipantCall
+        if (participantCall != null) {
+            pendingParticipantCall = null
+            runWithGhostGuardOnly {
+                launchPeerCallFlow(
+                    participantCall.first.jid,
+                    participantCall.first.name,
+                    participantCall.first.avatarPath,
+                    false,
+                    participantCall.second
+                )
+            }
+        } else {
+            runWithGhostGuardOnly {
+                if (isColdCallBlocked(contact?.isSaved == true, pagedItems.itemCount, chatJid.endsWith("@g.us"))) {
+                    pendingColdCallVideo = isVideo
+                } else {
+                    launchOutgoingCallFlow(isVideo)
+                }
             }
         }
     }
@@ -482,7 +510,7 @@ fun ChatScreen(
     val callPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
-        val requestedVideo = pendingPermissionCallIsVideo ?: false
+        val requestedVideo = pendingPermissionCallIsVideo ?: pendingParticipantCall?.second ?: false
         pendingPermissionCallIsVideo = null
         val micGranted = grants[Manifest.permission.RECORD_AUDIO] == true ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -491,6 +519,7 @@ fun ChatScreen(
         if (micGranted && camGranted) {
             proceedWithGuardsAndCall(requestedVideo)
         } else {
+            pendingParticipantCall = null
             Toast.makeText(
                 context,
                 if (requestedVideo) "Microphone & camera permissions are required for video calls"
@@ -500,15 +529,17 @@ fun ChatScreen(
         }
     }
 
-    val initiateCall: (Boolean) -> Unit = { isVideo ->
+    val initiateCallFor: (ParticipantPopupTarget?, Boolean) -> Unit = { participantTarget, isVideo ->
         if (stealthConfig.offlineMode) {
             Toast.makeText(context, "Disable Offline Mode to place calls", Toast.LENGTH_SHORT).show()
         } else if (stealthConfig.callBackendMode == CallBackendMode.OFF) {
             scope.launch {
-                pendingSetupOfficialFallbackDigits = if (chatJid.endsWith("@g.us")) "" else resolvePhoneDigitsForChat()
+                val targetJid = participantTarget?.jid ?: chatJid
+                pendingSetupOfficialFallbackDigits = if (targetJid.endsWith("@g.us")) "" else resolvePhoneDigitsForJid(targetJid)
                 showCallingSetupDialog = true
             }
         } else {
+            pendingParticipantCall = participantTarget?.let { it to isVideo }
             val missing = buildList {
                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                     add(Manifest.permission.RECORD_AUDIO)
@@ -529,6 +560,10 @@ fun ChatScreen(
                 callPermissionLauncher.launch(missing.toTypedArray())
             }
         }
+    }
+
+    val initiateCall: (Boolean) -> Unit = { isVideo ->
+        initiateCallFor(null, isVideo)
     }
     val listState = remember(chatJid) { LazyListState() }
     var scrollToBottomPending by remember(chatJid) { mutableStateOf(false) }
@@ -842,6 +877,7 @@ fun ChatScreen(
         chatJid,
         draftValue.text,
         isRecordingVoice,
+        isVoiceRecordingPaused,
         stealthConfig.offlineMode,
         stealthConfig.ghostPresence,
         stealthConfig.hideTypingRecording,
@@ -854,9 +890,12 @@ fun ChatScreen(
             lastComposingSentMs = 0L
             return@LaunchedEffect
         }
-        if (isRecordingVoice) {
+        if (isRecordingVoice && !isVoiceRecordingPaused) {
             viewModel.sendChatPresence(chatJid, isComposing = true, isAudio = true)
             lastComposingSentMs = System.currentTimeMillis()
+        } else if (isRecordingVoice && isVoiceRecordingPaused && lastComposingSentMs > 0L) {
+            viewModel.sendChatPresence(chatJid, isComposing = false, isAudio = false)
+            lastComposingSentMs = 0L
         } else if (draftValue.text.isNotEmpty()) {
             val now = System.currentTimeMillis()
             if (now - lastComposingSentMs >= 2_500L) {
@@ -895,6 +934,7 @@ fun ChatScreen(
     var pendingOutboundPreview by remember { mutableStateOf<StagedOutboundMedia?>(null) }
     var showProfilePhotoLightbox by remember { mutableStateOf(false) }
     var participantAvatarTarget by remember { mutableStateOf<Triple<String, String, String?>?>(null) }
+    var participantPopupTarget by remember { mutableStateOf<ParticipantPopupTarget?>(null) }
     var showWallpaperDialog by remember { mutableStateOf(false) }
     var showScheduleDialog by remember { mutableStateOf(false) }
     var showScheduledSheet by remember { mutableStateOf(false) }
@@ -2035,11 +2075,34 @@ fun ChatScreen(
                                     } else {
                                         null
                                     }
+                                val isAdminSender = (isGroupChat && isGroupAnnounceLocked && !msg.isFromMe) ||
+                                    senderDisplay.keyForColor == "admin"
                                 val clickAvatar: () -> Unit = {
-                                    participantAvatarTarget = Triple(
-                                        msg.senderJid,
-                                        senderDisplay.primary,
-                                        senderAvatarPath
+                                    if (isGroupChat && !msg.isFromMe) {
+                                        val cleanName = senderDisplay.primary.removePrefix("~ ").trim()
+                                            .ifBlank { msg.senderJid.substringBefore("@") }
+                                        val resolvedAltJid = altJid.takeIf { it.isNotBlank() }
+                                            ?: senderDisplay.secondaryPhone.takeIf { it.isNotBlank() }
+                                        participantPopupTarget = ParticipantPopupTarget(
+                                            jid = msg.senderJid,
+                                            name = cleanName,
+                                            avatarPath = senderAvatarPath,
+                                            phoneDisplay = senderDisplay.secondaryPhone,
+                                            altJid = resolvedAltJid.orEmpty(),
+                                            isAdmin = isAdminSender
+                                        )
+                                    } else {
+                                        participantAvatarTarget = Triple(
+                                            msg.senderJid,
+                                            senderDisplay.primary,
+                                            senderAvatarPath
+                                        )
+                                    }
+                                }
+                                val badgeText = remember(msg.reactionSummary, chatReactionCounts[msg.id]) {
+                                    formatReactionBadgeSummary(
+                                        legacySummary = msg.reactionSummary,
+                                        counts = chatReactionCounts[msg.id].orEmpty()
                                     )
                                 }
                                 val handleOpenDocument: () -> Unit = {
@@ -2106,6 +2169,7 @@ fun ChatScreen(
                                         onBubbleBoundsChanged = reportBubbleBounds,
                                         onQuickForward = handleQuickForward,
                                         onClickReaction = { reactionDetailsTarget = msg },
+                                        reactionBadgeText = badgeText,
                                         onClickEditBadge = { editHistoryTarget = msg },
                                         onClickQuoted = jumpToQuotedMessage,
                                         onManualSendPlayedReceipt = { viewModel.markAudioPlayedExplicitly(msg) },
@@ -2146,6 +2210,7 @@ fun ChatScreen(
                                             onBubbleBoundsChanged = reportBubbleBounds,
                                             onQuickForward = handleQuickForward,
                                             onClickReaction = { reactionDetailsTarget = msg },
+                                            reactionBadgeText = badgeText,
                                             onClickEditBadge = { editHistoryTarget = msg },
                                             onClickQuoted = jumpToQuotedMessage,
                                             onManualSendPlayedReceipt = { viewModel.markAudioPlayedExplicitly(msg) },
@@ -2822,22 +2887,26 @@ fun ChatScreen(
                     }
                 } else if (!isChannel) {
 
-                // Live Voice Recording Elapsed Timer (ticks cleanly while recording)
-                var recordingElapsedSec by remember { mutableIntStateOf(0) }
+                // Live Voice Recording Elapsed Timer (ticks cleanly while active & not paused)
+                var recordingElapsedSec by remember(chatJid) { mutableIntStateOf(0) }
+                var voiceViewOnceEnabled by remember(chatJid) { mutableStateOf(false) }
                 LaunchedEffect(isRecordingVoice) {
-                    if (isRecordingVoice) {
+                    if (!isRecordingVoice) {
                         recordingElapsedSec = 0
+                        voiceViewOnceEnabled = false
+                    }
+                }
+                LaunchedEffect(isRecordingVoice, isVoiceRecordingPaused) {
+                    if (isRecordingVoice && !isVoiceRecordingPaused) {
                         while (true) {
                             delay(1_000L)
                             recordingElapsedSec += 1
                         }
-                    } else {
-                        recordingElapsedSec = 0
                     }
                 }
 
                 // Chat Composer Area:
-                // - When recording: Full 2-row Voice Note Recorder card (Row 1: timer + tall live scrolling waveform; Row 2: Red Trash, Stop, Green Send)
+                // - When recording: Full 2-row Voice Note Recorder card (Row 1: timer + tall live scrolling waveform + View Once toggle; Row 2: Red Trash, Pause/Resume pill, Green Send)
                 // - Normal: (+) Attach left + Unified Capsule (Embedded Quote Preview w/ thumbnail + Message left + Emoji/Sticker inside right) + Camera & Mic (or Send) right
                 AnimatedContent(
                     targetState = isRecordingVoice,
@@ -2846,7 +2915,7 @@ fun ChatScreen(
                 ) { recording ->
                     if (recording) {
                         val infiniteWave = rememberInfiniteTransition(label = "voice_rec_wave")
-                        val wavePhase by infiniteWave.animateFloat(
+                        val animatedWavePhase by infiniteWave.animateFloat(
                             initialValue = 0f,
                             targetValue = 6.2831855f,
                             animationSpec = infiniteRepeatable(
@@ -2855,7 +2924,7 @@ fun ChatScreen(
                             ),
                             label = "voice_rec_phase"
                         )
-                        val dotPulse by infiniteWave.animateFloat(
+                        val animatedDotPulse by infiniteWave.animateFloat(
                             initialValue = 0.35f,
                             targetValue = 1f,
                             animationSpec = infiniteRepeatable(
@@ -2864,6 +2933,8 @@ fun ChatScreen(
                             ),
                             label = "voice_rec_dot"
                         )
+                        val wavePhase = if (isVoiceRecordingPaused) 0.8f else animatedWavePhase
+                        val dotPulse = if (isVoiceRecordingPaused) 0.45f else animatedDotPulse
                         WuppGlassContainer(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -2880,7 +2951,7 @@ fun ChatScreen(
                                     .padding(horizontal = 14.dp, vertical = 12.dp),
                                 verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                // Row 1: Pulsing dot + 18sp timer + tall 40dp live scrolling 34-bar waveform
+                                // Row 1: Pulsing dot + 18sp timer + tall 40dp live scrolling waveform + View Once toggle
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically
@@ -2915,19 +2986,58 @@ fun ChatScreen(
                                             val w2 = sin(wavePhase * 1.7f - i * 0.31f)
                                             val w3 = sin(wavePhase * 0.7f + i * 0.85f)
                                             val norm = ((w1 * 0.45f + w2 * 0.35f + w3 * 0.20f) + 1f) / 2f
-                                            val barH = (maxH * (0.18f + norm * 0.82f)).coerceAtLeast(3.dp.toPx())
+                                            val barH = if (isVoiceRecordingPaused) {
+                                                (maxH * (0.16f + norm * 0.28f)).coerceAtLeast(3.dp.toPx())
+                                            } else {
+                                                (maxH * (0.18f + norm * 0.82f)).coerceAtLeast(3.dp.toPx())
+                                            }
                                             val x = i * slotW + (slotW - barW) / 2f
                                             drawRoundRect(
-                                                color = colors.textSecondary.copy(alpha = 0.45f + norm * 0.50f),
+                                                color = if (isVoiceRecordingPaused) {
+                                                    colors.textSecondary.copy(alpha = 0.42f)
+                                                } else {
+                                                    colors.textSecondary.copy(alpha = 0.45f + norm * 0.50f)
+                                                },
                                                 topLeft = Offset(x, centerY - barH / 2f),
                                                 size = Size(barW, barH),
                                                 cornerRadius = CornerRadius(barW / 2f, barW / 2f)
                                             )
                                         }
                                     }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    val voVoiceInteraction = remember { MutableInteractionSource() }
+                                    Box(
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .expressivePressScale(voVoiceInteraction, pressedScale = 0.88f)
+                                            .clip(CircleShape)
+                                            .background(
+                                                if (voiceViewOnceEnabled) colors.brightGreen
+                                                else Color.Transparent
+                                            )
+                                            .border(
+                                                1.dp,
+                                                if (voiceViewOnceEnabled) colors.brightGreen else colors.textSecondary.copy(alpha = 0.45f),
+                                                CircleShape
+                                            )
+                                            .clickable(
+                                                interactionSource = voVoiceInteraction,
+                                                indication = null
+                                            ) {
+                                                voiceViewOnceEnabled = !voiceViewOnceEnabled
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(R.drawable.vec_ic_view_once),
+                                            contentDescription = if (voiceViewOnceEnabled) "View once enabled" else "Enable view once",
+                                            tint = if (voiceViewOnceEnabled) colors.brightGreen.contrastingContentColor() else colors.textSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 }
 
-                                // Row 2: Red Trash (Discard) | Center Stop Circle | Green Send Orb
+                                // Row 2: Red Trash (Discard) | Center Pause/Resume Pill | Green Send Orb
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically,
@@ -2954,32 +3064,44 @@ fun ChatScreen(
                                         )
                                     }
 
-                                    val stopInteraction = remember { MutableInteractionSource() }
-                                    Box(
+                                    val pauseInteraction = remember { MutableInteractionSource() }
+                                    val pauseTint = if (isVoiceRecordingPaused) colors.brightGreen else colors.textPrimary
+                                    val pauseBg = if (isVoiceRecordingPaused) {
+                                        colors.brightGreen.copy(alpha = 0.15f)
+                                    } else {
+                                        colors.pillInactiveBg
+                                    }
+                                    Row(
                                         modifier = Modifier
-                                            .size(44.dp)
-                                            .expressivePressScale(stopInteraction, pressedScale = 0.88f)
+                                            .height(42.dp)
+                                            .expressivePressScale(pauseInteraction, pressedScale = 0.92f)
                                             .clip(CircleShape)
-                                            .border(1.5.dp, colors.antiDeleteRed.copy(alpha = 0.75f), CircleShape)
+                                            .background(pauseBg)
+                                            .border(
+                                                1.dp,
+                                                if (isVoiceRecordingPaused) colors.brightGreen.copy(alpha = 0.55f)
+                                                else colors.textSecondary.copy(alpha = 0.25f),
+                                                CircleShape
+                                            )
                                             .clickable(
-                                                interactionSource = stopInteraction,
+                                                interactionSource = pauseInteraction,
                                                 indication = null
-                                            ) {
-                                                scrollToBottomPending = true
-                                                viewModel.toggleVoiceRecording(
-                                                    chatJid,
-                                                    true,
-                                                    allowUnsavedColdStart = allowUnsavedColdStartFlag
-                                                )
-                                                scope.launch { listState.animateScrollToItem(0) }
-                                            },
-                                        contentAlignment = Alignment.Center
+                                            ) { viewModel.pauseOrResumeVoiceRecording() }
+                                            .padding(horizontal = 20.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Rounded.Stop,
-                                            contentDescription = "Stop and send",
-                                            tint = colors.antiDeleteRed,
-                                            modifier = Modifier.size(22.dp)
+                                            imageVector = if (isVoiceRecordingPaused) Icons.Rounded.Mic else Icons.Rounded.Pause,
+                                            contentDescription = if (isVoiceRecordingPaused) "Resume recording" else "Pause recording",
+                                            tint = if (isVoiceRecordingPaused) colors.brightGreen else colors.antiDeleteRed,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Text(
+                                            text = if (isVoiceRecordingPaused) "Resume" else "Pause",
+                                            color = pauseTint,
+                                            fontSize = 14.5.sp,
+                                            fontWeight = FontWeight.SemiBold
                                         )
                                     }
 
@@ -2996,9 +3118,10 @@ fun ChatScreen(
                                             ) {
                                                 scrollToBottomPending = true
                                                 viewModel.toggleVoiceRecording(
-                                                    chatJid,
-                                                    true,
-                                                    allowUnsavedColdStart = allowUnsavedColdStartFlag
+                                                    chatJid = chatJid,
+                                                    hasRecordPermission = true,
+                                                    allowUnsavedColdStart = allowUnsavedColdStartFlag,
+                                                    isViewOnce = voiceViewOnceEnabled
                                                 )
                                                 scope.launch { listState.animateScrollToItem(0) }
                                             },
@@ -4171,6 +4294,16 @@ fun ChatScreen(
                                     ?: altJid.takeIf { it.isNotBlank() }?.let { chatsByJid[it]?.avatarPath?.takeIf { p -> p.isNotBlank() } }
                                     ?: if (chat?.isGroup != true) chat?.avatarPath?.takeIf { it.isNotBlank() } else null
                             }
+                            val reactorDisplay = if (!isMe && !isLegacy) {
+                                resolveSenderDisplayInfo(
+                                    rawJidOrText = item.actor,
+                                    explicitName = "",
+                                    isSelf = false,
+                                    participantMeta = participantMeta,
+                                    chatsByJid = chatsByJid,
+                                    senderPushByJid = senderPushByJid
+                                )
+                            } else null
                             val reactorName = when {
                                 isMe -> "You"
                                 isLegacy -> if (chat?.isGroup != true) {
@@ -4178,22 +4311,17 @@ fun ChatScreen(
                                 } else {
                                     "Participant"
                                 }
-                                else -> resolveSenderDisplayInfo(
-                                    rawJidOrText = item.actor,
-                                    explicitName = "",
-                                    isSelf = false,
-                                    participantMeta = participantMeta,
-                                    chatsByJid = chatsByJid,
-                                    senderPushByJid = senderPushByJid
-                                ).primary.removePrefix("~ ").trim().ifBlank { item.actor.substringBefore("@") }
+                                else -> reactorDisplay?.primary?.removePrefix("~ ")?.trim()
+                                    ?.ifBlank { item.actor.substringBefore("@") }
+                                    ?: item.actor.substringBefore("@")
                             }
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(14.dp))
                                     .then(
-                                        if (isMe && !isChannel && !isGroupAnnounceLocked) {
-                                            Modifier.clickable {
+                                        when {
+                                            isMe && !isChannel && !isGroupAnnounceLocked -> Modifier.clickable {
                                                 runWithOutboundGuard {
                                                     viewModel.sendReaction(chatJid, target, "")
                                                 }
@@ -4201,8 +4329,18 @@ fun ChatScreen(
                                                     reactionDetailsTarget = null
                                                 }
                                             }
-                                        } else {
-                                            Modifier
+                                            !isMe && !isLegacy && chat?.isGroup == true && !isChannel -> Modifier.clickable {
+                                                reactionDetailsTarget = null
+                                                participantPopupTarget = ParticipantPopupTarget(
+                                                    jid = item.actor,
+                                                    name = reactorName,
+                                                    avatarPath = reactorAvatar,
+                                                    phoneDisplay = reactorDisplay?.secondaryPhone.orEmpty(),
+                                                    altJid = altJid,
+                                                    isAdmin = reactorDisplay?.keyForColor == "admin"
+                                                )
+                                            }
+                                            else -> Modifier
                                         }
                                     )
                                     .padding(vertical = 8.dp, horizontal = 4.dp),
@@ -4352,6 +4490,73 @@ fun ChatScreen(
             onRequestFullAvatar = { viewModel.requestFullProfilePicture(chatJid) },
             onSaveAvatar = {
                 viewModel.exportMediaToGallery(chat?.avatarPath, "${avatarTitle}_avatar.jpg", "image/jpeg")
+            }
+        )
+    }
+
+    participantPopupTarget?.let { popup ->
+        var resolvedDigits by remember(popup.jid, popup.altJid, popup.phoneDisplay) {
+            mutableStateOf(
+                extractDialablePhoneDigits(popup.jid, popup.altJid, popup.phoneDisplay)
+            )
+        }
+        LaunchedEffect(popup.jid) {
+            if (resolvedDigits.isEmpty()) {
+                resolvedDigits = resolvePhoneDigitsForJid(popup.jid)
+            }
+        }
+        val formattedPhone = remember(resolvedDigits, popup.phoneDisplay) {
+            when {
+                resolvedDigits.isNotEmpty() -> "+$resolvedDigits"
+                popup.phoneDisplay.isNotBlank() -> popup.phoneDisplay
+                else -> popup.jid.substringBefore("@")
+            }
+        }
+        val resolveDirectChatJid: () -> String = {
+            when {
+                popup.altJid.endsWith("@s.whatsapp.net", ignoreCase = true) -> popup.altJid
+                resolvedDigits.isNotEmpty() -> "$resolvedDigits@s.whatsapp.net"
+                else -> popup.jid
+            }
+        }
+        GroupParticipantActionSheet(
+            target = popup,
+            formattedPhone = formattedPhone,
+            onDismiss = { participantPopupTarget = null },
+            onCall = {
+                participantPopupTarget = null
+                initiateCallFor(popup, false)
+            },
+            onVideoCall = {
+                participantPopupTarget = null
+                initiateCallFor(popup, true)
+            },
+            onMessage = {
+                val dmJid = resolveDirectChatJid()
+                participantPopupTarget = null
+                onNavigateToChat(dmJid)
+            },
+            onSaveContact = {
+                participantPopupTarget = null
+                val insertIntent = Intent(ContactsContract.Intents.Insert.ACTION).apply {
+                    type = ContactsContract.RawContacts.CONTENT_TYPE
+                    putExtra(ContactsContract.Intents.Insert.NAME, popup.name)
+                    if (resolvedDigits.isNotEmpty()) {
+                        putExtra(ContactsContract.Intents.Insert.PHONE, "+$resolvedDigits")
+                    }
+                }
+                runCatching { context.startActivity(insertIntent) }.onFailure {
+                    Toast.makeText(context, "No Contacts app available", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onViewProfilePhoto = {
+                participantPopupTarget = null
+                participantAvatarTarget = Triple(popup.jid, popup.name, popup.avatarPath)
+            },
+            onOpenContactInfo = {
+                val infoJid = resolveDirectChatJid()
+                participantPopupTarget = null
+                onOpenContactInfo(infoJid)
             }
         )
     }
@@ -4908,6 +5113,7 @@ private fun MessageBubbleRow(
     onBubbleBoundsChanged: ((androidx.compose.ui.geometry.Rect) -> Unit)? = null,
     onQuickForward: (() -> Unit)? = null,
     onClickReaction: (() -> Unit)? = null,
+    reactionBadgeText: String = msg.reactionSummary,
     onClickEditBadge: () -> Unit,
     onClickQuoted: (String) -> Unit = {},
     onManualSendPlayedReceipt: () -> Unit,
@@ -5118,6 +5324,17 @@ private fun MessageBubbleRow(
                     val resolvedPhone = senderDisplay?.secondaryPhone.orEmpty()
                     Row(
                         modifier = Modifier
+                            .then(
+                                if (!isSelectionMode) {
+                                    Modifier.clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                        onClick = onClickSenderAvatar
+                                    )
+                                } else {
+                                    Modifier
+                                }
+                            )
                             .then(
                                 when {
                                     isMediaCard -> Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
@@ -5994,7 +6211,8 @@ private fun MessageBubbleRow(
             }
         }
         // Clickable overlapping Reaction pill underneath the bubble/card
-        if (msg.reactionSummary.isNotBlank()) {
+        val resolvedReactionText = reactionBadgeText.ifBlank { msg.reactionSummary }
+        if (resolvedReactionText.isNotBlank()) {
             val reactInteraction = remember { MutableInteractionSource() }
             Box(
                 modifier = Modifier
@@ -6019,7 +6237,7 @@ private fun MessageBubbleRow(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = msg.reactionSummary,
+                    text = resolvedReactionText,
                     color = colors.textPrimary,
                     fontSize = 14.5.sp
                 )
@@ -7000,5 +7218,228 @@ private fun StickerMessageBubbleItem(
                 tintOverride = Color.White.copy(alpha = 0.92f)
             )
         }
+    }
+}
+
+private data class ParticipantPopupTarget(
+    val jid: String,
+    val name: String,
+    val avatarPath: String?,
+    val phoneDisplay: String = "",
+    val altJid: String = "",
+    val isAdmin: Boolean = false
+)
+
+internal fun formatReactionBadgeSummary(
+    legacySummary: String,
+    counts: List<Pair<String, Int>>
+): String {
+    if (counts.isEmpty()) return legacySummary
+    val emojis = counts.map { it.first }.filter { it.isNotBlank() }.distinct()
+    if (emojis.isEmpty()) return legacySummary
+    val total = counts.sumOf { it.second }
+    return if (total > 1) "${emojis.joinToString("")} $total" else emojis.joinToString(" ")
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun GroupParticipantActionSheet(
+    target: ParticipantPopupTarget,
+    formattedPhone: String,
+    onDismiss: () -> Unit,
+    onCall: () -> Unit,
+    onVideoCall: () -> Unit,
+    onMessage: () -> Unit,
+    onSaveContact: () -> Unit,
+    onViewProfilePhoto: () -> Unit,
+    onOpenContactInfo: () -> Unit
+) {
+    val colors = LocalWaColors.current
+    val sheetBg = if (colors.isDark) Color(0xFF14181B) else colors.elevatedBar
+    val cardBg = if (colors.isDark) Color(0xFF1F2428) else colors.appSurface
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = sheetBg
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 26.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable(onClick = onViewProfilePhoto)
+            ) {
+                WhatsAppAvatar(
+                    jid = target.jid,
+                    avatarPath = target.avatarPath,
+                    isGroup = false,
+                    size = 76.dp,
+                    initialChar = extractAvatarInitialChar(target.name)
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = target.name.ifBlank { target.jid.substringBefore("@") },
+                    color = colors.textPrimary,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (target.isAdmin) {
+                    Icon(
+                        imageVector = Icons.Rounded.Shield,
+                        contentDescription = "Group admin",
+                        tint = colors.accentGreen,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+            if (formattedPhone.isNotBlank() && formattedPhone != target.name) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = formattedPhone,
+                    color = colors.textSecondary,
+                    fontSize = 13.5.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.Top
+            ) {
+                ParticipantQuickActionButton(
+                    icon = Icons.Rounded.Call,
+                    label = "Call",
+                    onClick = onCall
+                )
+                ParticipantQuickActionButton(
+                    icon = Icons.Rounded.Videocam,
+                    label = "Video",
+                    onClick = onVideoCall
+                )
+                ParticipantQuickActionButton(
+                    icon = Icons.AutoMirrored.Rounded.Chat,
+                    label = "Message",
+                    onClick = onMessage
+                )
+                ParticipantQuickActionButton(
+                    icon = Icons.Rounded.PersonAdd,
+                    label = "Save",
+                    onClick = onSaveContact
+                )
+                ParticipantQuickActionButton(
+                    icon = Icons.Rounded.Person,
+                    label = "Photo",
+                    onClick = onViewProfilePhoto
+                )
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(cardBg)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onOpenContactInfo)
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Info,
+                        contentDescription = null,
+                        tint = colors.textSecondary,
+                        modifier = Modifier.size(21.dp)
+                    )
+                    Text(
+                        text = "Contact info",
+                        color = colors.textPrimary,
+                        fontSize = 15.5.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                HorizontalDivider(color = colors.divider.copy(alpha = 0.5f), thickness = 0.5.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onDismiss)
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = null,
+                        tint = colors.textSecondary,
+                        modifier = Modifier.size(21.dp)
+                    )
+                    Text(
+                        text = "Close",
+                        color = colors.textPrimary,
+                        fontSize = 15.5.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ParticipantQuickActionButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    val colors = LocalWaColors.current
+    Column(
+        modifier = Modifier
+            .widthIn(min = 56.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(46.dp)
+                .clip(CircleShape)
+                .background(colors.brightGreen.copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = colors.brightGreen,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+        Text(
+            text = label,
+            color = colors.textPrimary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1
+        )
     }
 }

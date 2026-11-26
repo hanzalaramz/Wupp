@@ -15,6 +15,9 @@ import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.SecureRandom
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -286,10 +289,15 @@ internal class OpusOggVoiceRecorder(
     private var running = false
 
     @Volatile
+    private var paused = false
+
+    @Volatile
     private var failed = false
 
     private val rmsBuckets = ArrayList<Int>(512)
     private val lock = Any()
+    private val pauseLock = ReentrantLock()
+    private val pauseCondition = pauseLock.newCondition()
 
     @SuppressLint("MissingPermission")
     fun start(): Boolean {
@@ -352,8 +360,29 @@ internal class OpusOggVoiceRecorder(
         }
     }
 
+    fun isPaused(): Boolean = paused
+
+    fun pause() {
+        if (!running || paused) return
+        paused = true
+        runCatching { audioRecord?.stop() }
+    }
+
+    fun resume() {
+        if (!running || !paused) return
+        pauseLock.withLock {
+            runCatching { audioRecord?.startRecording() }
+            paused = false
+            pauseCondition.signalAll()
+        }
+    }
+
     fun stopAndFinalize(): Boolean {
         running = false
+        pauseLock.withLock {
+            paused = false
+            pauseCondition.signalAll()
+        }
         runCatching { workerThread?.join(5_000L) }
         workerThread = null
         runCatching { audioRecord?.stop() }
@@ -367,6 +396,10 @@ internal class OpusOggVoiceRecorder(
 
     fun cancelAndDelete() {
         running = false
+        pauseLock.withLock {
+            paused = false
+            pauseCondition.signalAll()
+        }
         runCatching { workerThread?.join(2_000L) }
         workerThread = null
         runCatching { audioRecord?.stop() }
@@ -402,6 +435,14 @@ internal class OpusOggVoiceRecorder(
             muxer.writeHeaders()
 
             while (!eosSeen) {
+                if (running && paused) {
+                    pauseLock.withLock {
+                        while (running && paused) {
+                            runCatching { pauseCondition.await(250L, TimeUnit.MILLISECONDS) }
+                        }
+                    }
+                    continue
+                }
                 if (!eosQueued) {
                     val inIdx = enc.dequeueInputBuffer(10_000L)
                     if (inIdx >= 0) {
@@ -410,12 +451,14 @@ internal class OpusOggVoiceRecorder(
                             inBuf.clear()
                             if (running) {
                                 var offset = 0
-                                while (running && offset < frameBytes) {
+                                while (running && !paused && offset < frameBytes) {
                                     val n = rec.read(pcmBuf, offset, frameBytes - offset)
                                     if (n <= 0) break
                                     offset += n
                                 }
-                                if (offset > 0) {
+                                if (paused && offset == 0) {
+                                    enc.queueInputBuffer(inIdx, 0, 0, (totalSamples * 1_000_000L) / sampleRateHz, 0)
+                                } else if (offset > 0) {
                                     val evenBytes = offset and 1.inv()
                                     if (evenBytes > 0) {
                                         recordRmsSample(pcmBuf, evenBytes)

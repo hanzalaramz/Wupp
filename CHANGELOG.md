@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.10-pre.4] - 2026-11-26
+
+### ✨ Features
+- Added a Pause/Resume button and a View Once toggle directly inside the voice note recorder.
+- Added a quick profile action sheet when tapping any group member's name or photo, with one-tap Call, Video, Message, Save contact, and View photo shortcuts.
+- Added reaction counts directly on group message reaction badges so multiple reactions show cleanly at a glance.
+
 ## [0.3.10-pre.3] - 2026-11-26
 
 ### ✨ Features

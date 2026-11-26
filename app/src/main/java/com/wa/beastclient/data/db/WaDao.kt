@@ -14,6 +14,12 @@ data class UnreadMessageSenderTuple(
     @ColumnInfo(name = "sender_jid") val senderJid: String
 )
 
+data class ChatReactionCountRow(
+    @ColumnInfo(name = "message_id") val messageId: String,
+    val emoji: String,
+    val count: Int
+)
+
 @Dao
 interface WaDao {
 
@@ -802,6 +808,18 @@ interface WaDao {
 
     @Query("SELECT * FROM message_reactions WHERE message_id = :messageId ORDER BY updated_at DESC, actor ASC")
     fun observeReactionsFor(messageId: String): Flow<List<MessageReactionEntity>>
+
+    @Query(
+        """
+        SELECT mr.message_id AS message_id, mr.emoji AS emoji, COUNT(*) AS count
+        FROM message_reactions mr
+        INNER JOIN messages m ON m.id = mr.message_id
+        WHERE m.chat_jid = :chatJid
+        GROUP BY mr.message_id, mr.emoji
+        ORDER BY MIN(mr.updated_at) ASC, mr.emoji ASC
+        """
+    )
+    fun observeChatReactionCounts(chatJid: String): Flow<List<ChatReactionCountRow>>
 
     @Query("SELECT emoji FROM message_reactions WHERE message_id = :messageId AND actor = 'me' LIMIT 1")
     suspend fun getMyReaction(messageId: String): String?
