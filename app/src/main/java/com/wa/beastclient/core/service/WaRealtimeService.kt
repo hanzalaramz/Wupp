@@ -1911,7 +1911,7 @@ class WaRealtimeService : Service() {
             if (isStatusReadReceipt) {
                 dao.markStatusViewed(id)
             }
-            dao.updateDeliveryStatus(id, receiptType)
+            dao.updateDeliveryStatus(id, receiptType, timestamp)
             val msgRow = dao.getMessage(id)
             if (msgRow != null && msgRow.timestamp > maxMatchedTs) {
                 maxMatchedTs = msgRow.timestamp
@@ -1933,10 +1933,10 @@ class WaRealtimeService : Service() {
             val cascadeStatus = if (receiptType == "PLAYED") "READ" else receiptType
             val cascadeRank = WaDao.deliveryRank(cascadeStatus)
             if (cascadeRank >= 2) {
-                dao.markDmOutgoingStatusUpTo(chatJid, maxMatchedTs, cascadeStatus, cascadeRank)
+                dao.markDmOutgoingStatusUpTo(chatJid, maxMatchedTs, cascadeStatus, cascadeRank, timestamp)
                 dao.markDmChatLastStatusIfHigher(chatJid, maxMatchedTs, cascadeStatus, cascadeRank)
                 if (altChatJid.isNotBlank() && altChatJid != chatJid) {
-                    dao.markDmOutgoingStatusUpTo(altChatJid, maxMatchedTs, cascadeStatus, cascadeRank)
+                    dao.markDmOutgoingStatusUpTo(altChatJid, maxMatchedTs, cascadeStatus, cascadeRank, timestamp)
                     dao.markDmChatLastStatusIfHigher(altChatJid, maxMatchedTs, cascadeStatus, cascadeRank)
                 }
             }
@@ -3636,7 +3636,7 @@ class WaRealtimeService : Service() {
                 require(targets.isNotEmpty()) { "Select at least one chat to forward to" }
 
                 val upper = msg.msgType.uppercase()
-                val sourceFile = if (upper != "TEXT") {
+                val sourceFile = if (upper != "TEXT" && upper != "CONTACT") {
                     msg.localMediaPath?.takeIf { it.isNotBlank() }?.let(::File)
                         ?.takeIf { it.exists() && it.length() > 0L }
                         ?: error("Download this media before forwarding")

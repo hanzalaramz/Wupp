@@ -1364,6 +1364,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun forwardMessages(msgs: List<MessageEntity>, targetChatJids: List<String>) {
+        if (msgs.isEmpty() || targetChatJids.isEmpty()) return
+        viewModelScope.launch {
+            var forwardedCount = 0
+            var firstErr: Throwable? = null
+            msgs.forEachIndexed { index, msg ->
+                if (index > 0) kotlinx.coroutines.delay(500L)
+                WaRealtimeService.forwardMessageToChats(appContext, msg, targetChatJids)
+                    .onSuccess { forwardedCount++ }
+                    .onFailure { if (firstErr == null) firstErr = it }
+            }
+            if (forwardedCount > 0) {
+                showToast(
+                    if (msgs.size == 1) "Forwarded message"
+                    else "Forwarded $forwardedCount/${msgs.size} messages"
+                )
+            } else {
+                showToast(firstErr?.message ?: "Forward failed")
+            }
+        }
+    }
+
     fun sendStatusReply(
         status: StatusEntity,
         text: String,
@@ -1428,6 +1450,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .onFailure { err ->
                     showToast(err.message ?: "Delete failed")
                 }
+        }
+    }
+
+    fun deleteMessagesFromDevice(messageIds: List<String>) {
+        if (messageIds.isEmpty()) return
+        viewModelScope.launch {
+            var deletedCount = 0
+            var firstErr: Throwable? = null
+            for (id in messageIds) {
+                WaRealtimeService.deleteMessagePermanently(appContext, id)
+                    .onSuccess { deletedCount++ }
+                    .onFailure { if (firstErr == null) firstErr = it }
+            }
+            if (deletedCount > 0) {
+                showToast("Deleted $deletedCount ${if (deletedCount == 1) "message" else "messages"} from device")
+            } else {
+                showToast(firstErr?.message ?: "Delete failed")
+            }
+        }
+    }
+
+    fun revokeMessagesForEveryone(chatJid: String, messageIds: List<String>) {
+        if (messageIds.isEmpty()) return
+        val antiDeleteOn = stealthConfig.value.antiDeleteEnabled
+        viewModelScope.launch {
+            var revokedCount = 0
+            var firstErr: Throwable? = null
+            messageIds.forEachIndexed { index, id ->
+                if (index > 0) kotlinx.coroutines.delay(350L)
+                WaRealtimeService.revokeMessageForEveryone(appContext, chatJid, id)
+                    .onSuccess { revokedCount++ }
+                    .onFailure { if (firstErr == null) firstErr = it }
+            }
+            if (revokedCount > 0) {
+                showToast(
+                    if (antiDeleteOn) "Deleted $revokedCount for everyone · Local copies kept"
+                    else "Deleted $revokedCount ${if (revokedCount == 1) "message" else "messages"} for everyone"
+                )
+            } else {
+                showToast(firstErr?.message ?: "Delete for everyone failed")
+            }
         }
     }
 

@@ -26,8 +26,13 @@ class MessageSelectionBarLayoutTest {
         isEdited = isEdited
     )
 
+    // MESSAGE_INFO is now placed right after FORWARD so it appears directly in the top bar.
+    // For short lists (<=6) every action is direct; for longer lists the first 4 non-Delete
+    // actions are direct plus Delete, the rest overflow.
+
     @Test
-    fun outgoingTextInDmKeepsDirectBarCappedAndIncludesMessageInfoInOverflow() {
+    fun outgoingTextInDmHasMessageInfoDirectlyVisible() {
+        // available: REPLY, FORWARD, MESSAGE_INFO, PIN_UNPIN, EDIT, COPY, DELETE (7 items → overflow)
         val layout = resolveSelectionBarLayout(
             msg = msg(isFromMe = true, msgType = "TEXT", body = "hi"),
             isChannel = false,
@@ -39,23 +44,24 @@ class MessageSelectionBarLayoutTest {
             listOf(
                 SelectionBarAction.REPLY,
                 SelectionBarAction.FORWARD,
+                SelectionBarAction.MESSAGE_INFO,
                 SelectionBarAction.PIN_UNPIN,
-                SelectionBarAction.EDIT,
                 SelectionBarAction.DELETE
             ),
             layout.directActions
         )
         assertEquals(
             listOf(
-                SelectionBarAction.COPY,
-                SelectionBarAction.MESSAGE_INFO
+                SelectionBarAction.EDIT,
+                SelectionBarAction.COPY
             ),
             layout.overflowActions
         )
     }
 
     @Test
-    fun incomingMediaWithoutCaptionShowsForwardPinSaveAndInfoDirectly() {
+    fun incomingMediaWithoutCaptionShowsMessageInfoDirectly() {
+        // available: REPLY, FORWARD, MESSAGE_INFO, PIN_UNPIN, SAVE_MEDIA, DELETE (6 items → all direct)
         val layout = resolveSelectionBarLayout(
             msg = msg(isFromMe = false, msgType = "IMAGE", body = "", localMediaPath = "/tmp/a.jpg"),
             isChannel = false,
@@ -67,9 +73,9 @@ class MessageSelectionBarLayoutTest {
             listOf(
                 SelectionBarAction.REPLY,
                 SelectionBarAction.FORWARD,
+                SelectionBarAction.MESSAGE_INFO,
                 SelectionBarAction.PIN_UNPIN,
                 SelectionBarAction.SAVE_MEDIA,
-                SelectionBarAction.MESSAGE_INFO,
                 SelectionBarAction.DELETE
             ),
             layout.directActions
@@ -79,6 +85,7 @@ class MessageSelectionBarLayoutTest {
 
     @Test
     fun groupEditedOutgoingTextKeepsFiveDirectIconsIncludingDeleteAndOverflowsExtras() {
+        // available: REPLY, FORWARD, MESSAGE_INFO, PIN_UNPIN, EDIT, COPY, EDIT_HISTORY, DELETE (8 items)
         val layout = resolveSelectionBarLayout(
             msg = msg(isFromMe = true, msgType = "TEXT", body = "edited", isEdited = true),
             isChannel = false,
@@ -90,16 +97,16 @@ class MessageSelectionBarLayoutTest {
             listOf(
                 SelectionBarAction.REPLY,
                 SelectionBarAction.FORWARD,
+                SelectionBarAction.MESSAGE_INFO,
                 SelectionBarAction.PIN_UNPIN,
-                SelectionBarAction.EDIT,
                 SelectionBarAction.DELETE
             ),
             layout.directActions
         )
         assertEquals(
             listOf(
+                SelectionBarAction.EDIT,
                 SelectionBarAction.COPY,
-                SelectionBarAction.MESSAGE_INFO,
                 SelectionBarAction.EDIT_HISTORY
             ),
             layout.overflowActions
@@ -107,7 +114,8 @@ class MessageSelectionBarLayoutTest {
     }
 
     @Test
-    fun documentWithCaptionInDmKeepsDirectBarCappedAndIncludesForward() {
+    fun documentWithCaptionInDmKeepsDirectBarCappedAndOverflowsLowerPriorityActions() {
+        // available: REPLY, FORWARD, MESSAGE_INFO, PIN_UNPIN, SAVE_MEDIA, COPY, OPEN_DOCUMENT, DELETE (8 items)
         val layout = resolveSelectionBarLayout(
             msg = msg(isFromMe = false, msgType = "DOCUMENT", body = "report.pdf", localMediaPath = "/tmp/report.pdf"),
             isChannel = false,
@@ -115,11 +123,22 @@ class MessageSelectionBarLayoutTest {
             isGroup = false,
             isDocument = true
         )
-        assertEquals(5, layout.directActions.size)
-        assertTrue(layout.directActions.contains(SelectionBarAction.FORWARD))
-        assertTrue(layout.directActions.contains(SelectionBarAction.SAVE_MEDIA))
         assertEquals(
-            listOf(SelectionBarAction.COPY, SelectionBarAction.OPEN_DOCUMENT, SelectionBarAction.MESSAGE_INFO),
+            listOf(
+                SelectionBarAction.REPLY,
+                SelectionBarAction.FORWARD,
+                SelectionBarAction.MESSAGE_INFO,
+                SelectionBarAction.PIN_UNPIN,
+                SelectionBarAction.DELETE
+            ),
+            layout.directActions
+        )
+        assertEquals(
+            listOf(
+                SelectionBarAction.SAVE_MEDIA,
+                SelectionBarAction.COPY,
+                SelectionBarAction.OPEN_DOCUMENT
+            ),
             layout.overflowActions
         )
     }

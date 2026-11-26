@@ -201,6 +201,30 @@ internal fun MessageInfoSheet(
                 ) {
                     if (!isGroup) {
                         if (msg.isFromMe) {
+                            val deliveredClock = formatReceiptStatusValue(
+                                timestampMs = msg.deliveredAt,
+                                isReached = rank >= 2,
+                                reachedFallback = "Delivered",
+                                pendingLabel = "Waiting for device",
+                                showSeconds = showSeconds,
+                                use24Hour = use24Hour
+                            )
+                            val readClock = formatReceiptStatusValue(
+                                timestampMs = msg.readAt,
+                                isReached = rank >= 3,
+                                reachedFallback = "Read",
+                                pendingLabel = "Not read yet",
+                                showSeconds = showSeconds,
+                                use24Hour = use24Hour
+                            )
+                            val playedClock = formatReceiptStatusValue(
+                                timestampMs = msg.playedAt,
+                                isReached = rank >= 4,
+                                reachedFallback = "Played",
+                                pendingLabel = "Not played yet",
+                                showSeconds = showSeconds,
+                                use24Hour = use24Hour
+                            )
                             MessageReceiptRow(
                                 icon = if (rank >= 1) Icons.Rounded.Done else Icons.Rounded.Schedule,
                                 iconTint = if (rank >= 1) colors.brightGreen else colors.textSecondary,
@@ -214,7 +238,7 @@ internal fun MessageInfoSheet(
                                 icon = Icons.Rounded.DoneAll,
                                 iconTint = if (rank >= 2) colors.textPrimary else colors.textSecondary.copy(alpha = 0.45f),
                                 label = "Delivered",
-                                value = if (rank >= 2) "Delivered" else "Waiting for device",
+                                value = deliveredClock,
                                 colors = colors,
                                 mono = mono
                             )
@@ -223,7 +247,7 @@ internal fun MessageInfoSheet(
                                 icon = Icons.Rounded.DoneAll,
                                 iconTint = if (rank >= 3) colors.blueTick else colors.textSecondary.copy(alpha = 0.45f),
                                 label = "Read",
-                                value = if (rank >= 3) "Read" else "Not read yet",
+                                value = readClock,
                                 colors = colors,
                                 mono = mono
                             )
@@ -233,7 +257,7 @@ internal fun MessageInfoSheet(
                                     icon = Icons.Rounded.DoneAll,
                                     iconTint = if (rank >= 4) colors.blueTick else colors.textSecondary.copy(alpha = 0.45f),
                                     label = "Played",
-                                    value = if (rank >= 4) "Played" else "Not played yet",
+                                    value = playedClock,
                                     colors = colors,
                                     mono = mono
                                 )
@@ -412,6 +436,20 @@ private fun MessageReceiptRow(
             fontSize = 12.5.sp
         )
     }
+}
+
+internal fun formatReceiptStatusValue(
+    timestampMs: Long,
+    isReached: Boolean,
+    reachedFallback: String,
+    pendingLabel: String,
+    showSeconds: Boolean,
+    use24Hour: Boolean
+): String {
+    if (timestampMs > 0L) {
+        return formatMessageDateTime(timestampMs, showSeconds = showSeconds, use24Hour = use24Hour)
+    }
+    return if (isReached) reachedFallback else pendingLabel
 }
 
 internal fun formatMessageDateTime(

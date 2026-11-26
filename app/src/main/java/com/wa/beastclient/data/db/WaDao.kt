@@ -717,12 +717,21 @@ interface WaDao {
 
     @Query(
         """
-        UPDATE messages SET delivery_status = :status
+        UPDATE messages
+        SET delivery_status = :status,
+            delivered_at = CASE WHEN :newRank >= 2 AND delivered_at = 0 THEN :receiptTs ELSE delivered_at END,
+            read_at = CASE WHEN :newRank >= 3 AND read_at = 0 THEN :receiptTs ELSE read_at END,
+            played_at = CASE WHEN :newRank >= 4 AND played_at = 0 THEN :receiptTs ELSE played_at END
         WHERE id = :messageId
           AND (CASE delivery_status WHEN 'PLAYED' THEN 4 WHEN 'READ' THEN 3 WHEN 'DELIVERED' THEN 2 WHEN 'SENT' THEN 1 ELSE 0 END) < :newRank
         """
     )
-    suspend fun updateMessageDeliveryStatusIfHigher(messageId: String, status: String, newRank: Int)
+    suspend fun updateMessageDeliveryStatusIfHigher(
+        messageId: String,
+        status: String,
+        newRank: Int,
+        receiptTs: Long = System.currentTimeMillis()
+    )
 
     @Query(
         """
@@ -735,14 +744,24 @@ interface WaDao {
 
     @Query(
         """
-        UPDATE messages SET delivery_status = :status
+        UPDATE messages
+        SET delivery_status = :status,
+            delivered_at = CASE WHEN :newRank >= 2 AND delivered_at = 0 THEN :receiptTs ELSE delivered_at END,
+            read_at = CASE WHEN :newRank >= 3 AND read_at = 0 THEN :receiptTs ELSE read_at END,
+            played_at = CASE WHEN :newRank >= 4 AND played_at = 0 THEN :receiptTs ELSE played_at END
         WHERE chat_jid = :chatJid
           AND is_from_me = 1
           AND timestamp <= :maxTs
           AND (CASE delivery_status WHEN 'PLAYED' THEN 4 WHEN 'READ' THEN 3 WHEN 'DELIVERED' THEN 2 WHEN 'SENT' THEN 1 ELSE 0 END) < :newRank
         """
     )
-    suspend fun markDmOutgoingStatusUpTo(chatJid: String, maxTs: Long, status: String, newRank: Int)
+    suspend fun markDmOutgoingStatusUpTo(
+        chatJid: String,
+        maxTs: Long,
+        status: String,
+        newRank: Int,
+        receiptTs: Long = System.currentTimeMillis()
+    )
 
     @Query(
         """
@@ -756,9 +775,13 @@ interface WaDao {
     suspend fun markDmChatLastStatusIfHigher(chatJid: String, maxTs: Long, status: String, newRank: Int)
 
     @Transaction
-    suspend fun updateDeliveryStatus(messageId: String, status: String) {
+    suspend fun updateDeliveryStatus(
+        messageId: String,
+        status: String,
+        receiptTs: Long = System.currentTimeMillis()
+    ) {
         val rank = deliveryRank(status)
-        updateMessageDeliveryStatusIfHigher(messageId, status, rank)
+        updateMessageDeliveryStatusIfHigher(messageId, status, rank, receiptTs)
         updateChatLastMessageStatusIfHigher(messageId, status, rank)
     }
 

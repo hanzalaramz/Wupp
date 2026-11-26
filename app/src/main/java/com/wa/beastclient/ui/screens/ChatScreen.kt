@@ -786,6 +786,11 @@ fun ChatScreen(
     var showScheduleDialog by remember { mutableStateOf(false) }
     var showScheduledSheet by remember { mutableStateOf(false) }
     var editingScheduledMessage by remember { mutableStateOf<ScheduledMessage?>(null) }
+    // Multi-selection: keyed by message id so toggling is O(1).
+    var selectedMessages by remember(chatJid) { mutableStateOf<Map<String, MessageEntity>>(emptyMap()) }
+    // Bulk delete/forward targets (populated when the user triggers the action from multi-select bar).
+    var deleteConfirmTargets by remember { mutableStateOf<List<MessageEntity>>(emptyList()) }
+    var forwardTargets by remember { mutableStateOf<List<MessageEntity>>(emptyList()) }
 
     BackHandler(enabled = showEmojiPicker) {
         if (isDockExpanded) {
@@ -796,10 +801,46 @@ fun ChatScreen(
         }
     }
 
+    BackHandler(enabled = selectedMessages.isNotEmpty()) {
+        selectedMessages = emptyMap()
+    }
+
     BackHandler(enabled = actionMenuTarget != null) {
         actionMenuTarget = null
         showMoreReactionEmojis = false
         showSelectionOverflow = false
+    }
+
+    val toggleMessageSelection: (MessageEntity) -> Unit = { tapped ->
+        showMoreReactionEmojis = false
+        showSelectionOverflow = false
+        val single = actionMenuTarget
+        when {
+            selectedMessages.isNotEmpty() -> {
+                val next = if (selectedMessages.containsKey(tapped.id)) {
+                    selectedMessages - tapped.id
+                } else {
+                    selectedMessages + (tapped.id to tapped)
+                }
+                if (next.size == 1) {
+                    actionMenuTarget = next.values.first()
+                    selectedMessages = emptyMap()
+                } else {
+                    selectedMessages = next
+                }
+            }
+            single != null -> {
+                if (single.id == tapped.id) {
+                    actionMenuTarget = null
+                } else {
+                    selectedMessages = linkedMapOf(single.id to single, tapped.id to tapped)
+                    actionMenuTarget = null
+                }
+            }
+            else -> {
+                actionMenuTarget = tapped
+            }
+        }
     }
 
     val typingComposition by rememberLottieComposition(
@@ -891,16 +932,110 @@ fun ChatScreen(
         topBar = {
             val topMotion = MaterialTheme.motionScheme
             Column {
+                // Determine which top-bar state we're in:
+                // 0 = normal, 1 = single-message action, 2 = multi-select
+                val topBarState = when {
+                    selectedMessages.isNotEmpty() -> 2
+                    actionMenuTarget != null -> 1
+                    else -> 0
+                }
                 AnimatedContent(
-                    targetState = actionMenuTarget,
+                    targetState = topBarState,
                     transitionSpec = {
                         (fadeIn(topMotion.fastEffectsSpec()) + slideInVertically(topMotion.fastSpatialSpec()) { -it / 4 }) togetherWith
                             (fadeOut(topMotion.fastEffectsSpec()) + slideOutVertically(topMotion.fastSpatialSpec()) { -it / 4 })
                     },
-                    contentKey = { it?.id ?: "chat_normal_topbar" },
+                    contentKey = { it },
                     label = "chat_topbar_transition"
-                ) { selectedMsg ->
-                    if (selectedMsg != null) {
+                ) { barState ->
+                    when (barState) {
+                    2 -> {
+                        // Multi-select bar
+                        val selCount = selectedMessages.size
+                        WuppGlassTopBar(
+                            backdropState = wallpaperBackdropState,
+                            classicMode = stealthConfig.classicWhatsAppLook,
+                            height = 58.dp,
+                            leading = {
+                                WuppGlassCircleButton(
+                                    onClick = { selectedMessages = emptyMap() },
+                                    contentDescription = "Clear selection",
+                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                    size = 36.dp,
+                                    iconSize = 19.dp,
+                                    backdropState = wallpaperBackdropState,
+                                    classicMode = stealthConfig.classicWhatsAppLook
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .background(colors.pillActiveBg)
+                                        .padding(horizontal = 11.dp, vertical = 4.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "$selCount",
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = colors.pillActiveText
+                                    )
+                                }
+                            },
+                            trailing = {
+                                val msgs = selectedMessages.values.toList()
+                                val hasText = msgs.any { it.body.isNotBlank() }
+                                val canFwd = msgs.all { com.wa.beastclient.core.service.WaRealtimeService.isForwardableMessageType(it) }
+                                if (hasText) {
+                                    WuppGlassCircleButton(
+                                        onClick = {
+                                            val text = msgs.sortedBy { it.timestamp }
+                                                .joinToString("\n") { it.body }
+                                            clipboard.setText(AnnotatedString(text))
+                                            Toast.makeText(context, "${msgs.size} message(s) copied", Toast.LENGTH_SHORT).show()
+                                            selectedMessages = emptyMap()
+                                        },
+                                        contentDescription = "Copy",
+                                        imageVector = Icons.Rounded.ContentCopy,
+                                        size = 36.dp,
+                                        iconSize = 18.dp,
+                                        backdropState = wallpaperBackdropState,
+                                        classicMode = stealthConfig.classicWhatsAppLook
+                                    )
+                                }
+                                if (canFwd) {
+                                    WuppGlassCircleButton(
+                                        onClick = {
+                                            forwardTargets = msgs.sortedBy { it.timestamp }
+                                            selectedMessages = emptyMap()
+                                        },
+                                        contentDescription = "Forward",
+                                        imageVector = Icons.AutoMirrored.Rounded.Forward,
+                                        size = 36.dp,
+                                        iconSize = 18.dp,
+                                        backdropState = wallpaperBackdropState,
+                                        classicMode = stealthConfig.classicWhatsAppLook
+                                    )
+                                }
+                                WuppGlassCircleButton(
+                                    onClick = {
+                                        deleteConfirmTargets = msgs.sortedBy { it.timestamp }
+                                        selectedMessages = emptyMap()
+                                    },
+                                    contentDescription = "Delete",
+                                    imageVector = Icons.Rounded.Delete,
+                                    size = 36.dp,
+                                    iconSize = 18.dp,
+                                    tint = colors.antiDeleteRed,
+                                    backdropState = wallpaperBackdropState,
+                                    classicMode = stealthConfig.classicWhatsAppLook
+                                )
+                            }
+                        )
+                    }
+                    1 -> {
+                    val selectedMsg = actionMenuTarget ?: return@AnimatedContent
+                    if (true) {
                     val isSelectedDoc = remember(
                         selectedMsg.id,
                         selectedMsg.msgType,
@@ -1163,7 +1298,9 @@ fun ChatScreen(
                             }
                         }
                     )
-                    } else {
+                    } // end single-action bar (barState == 1)
+                    } // end if(true) + 1->
+                    0 -> {
                     WuppGlassTopBar(
                         backdropState = wallpaperBackdropState,
                         classicMode = stealthConfig.classicWhatsAppLook,
@@ -1395,8 +1532,9 @@ fun ChatScreen(
                             }
                         }
                     )
-                    }
-                }
+                    } // end 0 ->
+                } // end when(barState)
+                } // end AnimatedContent
 
                 AnimatedVisibility(visible = showSearchInChat && actionMenuTarget == null) {
                     var inChatMatchIndex by remember(inChatMatches) { mutableStateOf(0) }
@@ -1740,6 +1878,8 @@ fun ChatScreen(
                                         viewModel.requestMediaDownload(msg, userInitiated = true)
                                     }
                                 }
+                                val isInSelectionMode = actionMenuTarget != null || selectedMessages.isNotEmpty()
+                                val isMsgSelected = actionMenuTarget?.id == msg.id || selectedMessages.containsKey(msg.id)
                                 if (isChannel || isGroupAnnounceLocked) {
                                     MessageBubbleRow(
                                         msg = msg,
@@ -1758,6 +1898,9 @@ fun ChatScreen(
                                         ghostPlayedActive = effectivePrivacy?.sendPlayedReceipts == false,
                                         isDownloadingMedia = downloadingMediaIds.contains(msg.id),
                                         mediaDownloadError = failedMediaIds[msg.id],
+                                        isSelectionMode = isInSelectionMode,
+                                        isSelected = isMsgSelected,
+                                        onToggleSelect = { toggleMessageSelection(msg) },
                                         onClickEditBadge = { editHistoryTarget = msg },
                                         onClickQuoted = jumpToQuotedMessage,
                                         onManualSendPlayedReceipt = { viewModel.markAudioPlayedExplicitly(msg) },
@@ -1767,10 +1910,7 @@ fun ChatScreen(
                                         onOpenSticker = { activeStickerActionMsg = msg },
                                         onOpenDocument = handleOpenDocument,
                                         onSaveDocument = handleSaveDocument,
-                                        onLongPress = {
-                                            showMoreReactionEmojis = false
-                                            actionMenuTarget = msg
-                                        },
+                                        onLongPress = { toggleMessageSelection(msg) },
                                         onNavigateToChat = onNavigateToChat
                                     )
                                 } else {
@@ -1792,6 +1932,9 @@ fun ChatScreen(
                                             ghostPlayedActive = effectivePrivacy?.sendPlayedReceipts == false,
                                             isDownloadingMedia = downloadingMediaIds.contains(msg.id),
                                             mediaDownloadError = failedMediaIds[msg.id],
+                                            isSelectionMode = isInSelectionMode,
+                                            isSelected = isMsgSelected,
+                                            onToggleSelect = { toggleMessageSelection(msg) },
                                             onClickEditBadge = { editHistoryTarget = msg },
                                             onClickQuoted = jumpToQuotedMessage,
                                             onManualSendPlayedReceipt = { viewModel.markAudioPlayedExplicitly(msg) },
@@ -1801,10 +1944,7 @@ fun ChatScreen(
                                             onOpenSticker = { activeStickerActionMsg = msg },
                                             onOpenDocument = handleOpenDocument,
                                             onSaveDocument = handleSaveDocument,
-                                            onLongPress = {
-                                                showMoreReactionEmojis = false
-                                                actionMenuTarget = msg
-                                            },
+                                            onLongPress = { toggleMessageSelection(msg) },
                                             onNavigateToChat = onNavigateToChat
                                         )
                                     }
@@ -1821,22 +1961,14 @@ fun ChatScreen(
                 }
                 val reactionMotion = MaterialTheme.motionScheme
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = actionMenuTarget != null,
+                    visible = actionMenuTarget != null && selectedMessages.isEmpty(),
+                    modifier = Modifier.align(Alignment.BottomCenter),
                     enter = fadeIn(reactionMotion.fastEffectsSpec()),
                     exit = fadeOut(reactionMotion.fastEffectsSpec())
                 ) {
                     val target = actionMenuTarget ?: lastReactionTarget
                     Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null
-                            ) {
-                                actionMenuTarget = null
-                                showMoreReactionEmojis = false
-                                showSelectionOverflow = false
-                            },
+                        modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.BottomCenter
                     ) {
                         if (target != null) {
@@ -3545,6 +3677,60 @@ fun ChatScreen(
             }
         )
     }
+
+    // Bulk-forward dialog (from multi-select)
+    if (forwardTargets.isNotEmpty()) {
+        val lockedGroups by com.wa.beastclient.core.service.WaRealtimeService.announceLockedGroups.collectAsState()
+        ForwardMessageDialog(
+            allChats = allChats,
+            announceLockedGroups = lockedGroups,
+            currentChatJid = chatJid,
+            colors = colors,
+            onDismiss = { forwardTargets = emptyList() },
+            onConfirmForward = { targetJids ->
+                viewModel.forwardMessages(forwardTargets, targetJids)
+                forwardTargets = emptyList()
+            }
+        )
+    }
+
+    // Bulk-delete dialog (from multi-select)
+    if (deleteConfirmTargets.isNotEmpty()) {
+        val hasOutgoing = deleteConfirmTargets.any { it.isFromMe && !it.isDeletedBySender }
+        AlertDialog(
+            onDismissRequest = { deleteConfirmTargets = emptyList() },
+            containerColor = colors.elevatedBar,
+            titleContentColor = colors.textPrimary,
+            textContentColor = colors.textSecondary,
+            title = { Text("Delete ${deleteConfirmTargets.size} message(s)?", fontWeight = FontWeight.SemiBold) },
+            text = { Text("Choose how to delete the selected messages.", fontSize = 14.sp) },
+            confirmButton = {
+                Column(horizontalAlignment = Alignment.End, modifier = Modifier.fillMaxWidth()) {
+                    if (hasOutgoing) {
+                        TextButton(onClick = {
+                            val outgoing = deleteConfirmTargets.filter { it.isFromMe && !it.isDeletedBySender }
+                            viewModel.revokeMessagesForEveryone(chatJid, outgoing.map { it.id })
+                            val others = deleteConfirmTargets.filter { !it.isFromMe || it.isDeletedBySender }
+                            if (others.isNotEmpty()) viewModel.deleteMessagesFromDevice(others.map { it.id })
+                            deleteConfirmTargets = emptyList()
+                        }) {
+                            Text(text = stringResource(R.string.chat_delete_for_everyone), color = colors.antiDeleteRed, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    TextButton(onClick = {
+                        viewModel.deleteMessagesFromDevice(deleteConfirmTargets.map { it.id })
+                        deleteConfirmTargets = emptyList()
+                    }) {
+                        Text(text = stringResource(R.string.chat_delete_for_me), color = colors.accentGreen, fontWeight = FontWeight.SemiBold)
+                    }
+                    TextButton(onClick = { deleteConfirmTargets = emptyList() }) {
+                        Text("Cancel", color = colors.textSecondary)
+                    }
+                }
+            },
+            dismissButton = null
+        )
+    }
 }
 
 internal fun findLoadedQuotedItemIndex(
@@ -3599,6 +3785,7 @@ internal fun resolveSelectionBarLayout(
         if (com.wa.beastclient.core.service.WaRealtimeService.isForwardableMessageType(msg)) {
             add(SelectionBarAction.FORWARD)
         }
+        add(SelectionBarAction.MESSAGE_INFO)
         add(SelectionBarAction.PIN_UNPIN)
         if (msg.isFromMe && msg.msgType == "TEXT") add(SelectionBarAction.EDIT)
         if (!msg.localMediaPath.isNullOrBlank()) {
@@ -3608,7 +3795,6 @@ internal fun resolveSelectionBarLayout(
         if (!msg.localMediaPath.isNullOrBlank() && isDocument) {
             add(SelectionBarAction.OPEN_DOCUMENT)
         }
-        add(SelectionBarAction.MESSAGE_INFO)
         if (msg.isEdited) add(SelectionBarAction.EDIT_HISTORY)
         add(SelectionBarAction.DELETE)
     }
@@ -3664,6 +3850,9 @@ private fun MessageBubbleRow(
     ghostPlayedActive: Boolean,
     isDownloadingMedia: Boolean = false,
     mediaDownloadError: String? = null,
+    isSelectionMode: Boolean = false,
+    isSelected: Boolean = false,
+    onToggleSelect: () -> Unit = {},
     onClickEditBadge: () -> Unit,
     onClickQuoted: (String) -> Unit = {},
     onManualSendPlayedReceipt: () -> Unit,
@@ -3740,6 +3929,16 @@ private fun MessageBubbleRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .background(if (isSelected) colors.brightGreen.copy(alpha = 0.18f) else Color.Transparent)
+            .then(
+                if (isSelectionMode) {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onToggleSelect
+                    )
+                } else Modifier
+            )
             .padding(
                 start = when {
                     isChannel -> 4.dp
@@ -3791,6 +3990,10 @@ private fun MessageBubbleRow(
                 .background(bubbleColor)
                 .combinedClickable(
                     onClick = {
+                        if (isSelectionMode) {
+                            onToggleSelect()
+                            return@combinedClickable
+                        }
                         when {
                             msg.isEdited -> onClickEditBadge()
                             msg.isViewOnce || msg.msgType == "VIEW_ONCE_STRIPPED" || msg.viewOnceState == "STRIPPED" -> {

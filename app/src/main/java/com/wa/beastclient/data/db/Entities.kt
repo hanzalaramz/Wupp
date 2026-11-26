@@ -156,7 +156,13 @@ data class MessageEntity(
     @ColumnInfo(name = "pinned_until", defaultValue = "0")
     val pinnedUntil: Long = 0L,
     @ColumnInfo(name = "pinned_at", defaultValue = "0")
-    val pinnedAt: Long = 0L
+    val pinnedAt: Long = 0L,
+    @ColumnInfo(name = "delivered_at", defaultValue = "0")
+    val deliveredAt: Long = 0L,
+    @ColumnInfo(name = "read_at", defaultValue = "0")
+    val readAt: Long = 0L,
+    @ColumnInfo(name = "played_at", defaultValue = "0")
+    val playedAt: Long = 0L
 )
 
 @Fts4(contentEntity = MessageEntity::class)

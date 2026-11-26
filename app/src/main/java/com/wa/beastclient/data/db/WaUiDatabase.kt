@@ -23,7 +23,7 @@ import java.io.File
         ContactEntity::class,
         MessageReactionEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = true
 )
 abstract class WaUiDatabase : RoomDatabase() {
@@ -118,6 +118,14 @@ abstract class WaUiDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN delivered_at INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE messages ADD COLUMN read_at INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE messages ADD COLUMN played_at INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): WaUiDatabase {
             AccountManager.init(context)
             return INSTANCE ?: synchronized(this) {
@@ -126,7 +134,16 @@ abstract class WaUiDatabase : RoomDatabase() {
                     WaUiDatabase::class.java,
                     AccountManager.roomDatabaseFile(context).absolutePath
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                    .addMigrations(
+                        MIGRATION_1_2,
+                        MIGRATION_2_3,
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                        MIGRATION_5_6,
+                        MIGRATION_6_7,
+                        MIGRATION_7_8,
+                        MIGRATION_8_9
+                    )
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
                     .addCallback(object : Callback() {
                         override fun onOpen(db: SupportSQLiteDatabase) {

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.9-pre.9] - 2026-11-26
+
+### ✨ Features
+- Added multi-message selection in chat — long-press any message, then tap more to select them all at once, with bulk Copy, Forward, and Delete actions in the top bar (#164).
+- Moved the Message info (ⓘ) button directly onto the top bar for every selected message so you no longer have to dig into the overflow menu to see it.
+- Message info now shows the real time a message was delivered, read, and played — not just a status label.
+
 ## [0.3.9-pre.8] - 2026-11-26
 
 ### ✨ Features
