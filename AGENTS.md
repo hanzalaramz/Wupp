@@ -50,11 +50,12 @@ Whenever drafting GitHub issue/PR comments, social or community replies, release
 2. **Strip classic AI tells:** Avoid filler phrases (`"it is important to note"`, `"additionally"`, `"leverage"`, `"seamless"`, `"comprehensive"`), heavy em-dash chains, and padded bullet-point fluff.
 3. **Keep comments & replies sharp:** Get straight to the point, sound conversational and grounded, and state real trade-offs honestly without fake guarantees.
 
-## Hard Rule: Always Open a Pull Request & Check Active Workflows First
+## Hard Rule: Always `git pull`, Open a Pull Request & Check Active Workflows First
 
-Whenever pushing code, merging changes, or creating a release/pre-release in Wupp:
+Whenever changing code, pushing code, merging changes, or creating a release/pre-release in Wupp:
 
-1. **Never push directly to `main`:** Always create a dedicated branch, push that branch, open a Pull Request targeting `main`, wait for CI checks to pass, and merge through the Pull Request.
-2. **Always check recent commits and tags first:** Before branching, rebasing, merging a PR, or bumping `CHANGELOG.md` / release tags, run `git fetch origin --tags` and inspect `git log --oneline -n 10 origin/main` plus recent tags so collaborator work and shipped versions are never overwritten or collided with.
-3. **Always check active GitHub Actions runs before merging or tagging:** Run `gh run list --limit 10` before merging to `main` or pushing any release tag. If another `Release APK` or `main` `CI` build is currently `in_progress` or `queued`, wait for it to finish cleanly, pull/rebase onto the latest `origin/main`, and then merge or tag.
+1. **Always `git pull` BEFORE changing any code:** Before editing files or branching, run `git fetch origin --tags` and update local `main` cleanly (`git pull --ff-only origin main`), then branch off the latest `origin/main` so collaborator work is never missed or overwritten.
+2. **Always `git pull` / rebase BEFORE pushing:** Before running `git push`, opening/updating a PR, merging, or tagging a release, run `git fetch origin --tags`, pull/rebase your branch cleanly onto the latest `origin/main`, and inspect `git log --oneline -n 10 origin/main` plus recent tags.
+3. **Never push directly to `main`:** Always create a dedicated branch, push that branch, open a Pull Request targeting `main`, wait for CI checks to pass, and merge through the Pull Request.
+4. **Always check active GitHub Actions runs before merging or tagging:** Run `gh run list --limit 10` before merging to `main` or pushing any release tag. If another `Release APK` or `main` `CI` build is currently `in_progress` or `queued`, wait for it to finish cleanly, pull/rebase onto the latest `origin/main`, and then merge or tag.
 
