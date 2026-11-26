@@ -25,6 +25,7 @@ import com.wa.bridge.whatsbridge.Whatsbridge
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 
@@ -78,6 +79,14 @@ internal fun selectBestCameraCaptureSize(
     ) ?: (targetWidth to targetHeight)
 }
 
+internal fun isCaptureSessionCallbackStale(
+    running: Boolean,
+    sendEnabled: Boolean,
+    sameCameraInstance: Boolean,
+    callbackSessionGen: Long,
+    activeSessionGen: Long
+): Boolean = !running || !sendEnabled || !sameCameraInstance || callbackSessionGen != activeSessionGen
+
 /**
  * Hardware MediaCodec H.264 Annex-B video encoder (Camera2 -> GL upright portrait relay ->
  * Rust VoIP) and decoder (Rust VoIP -> remote Surface) supporting front/back switching and PLI.
@@ -124,6 +133,8 @@ class NativeVoipVideoPipeline(
 
     private var codecConfigAnnexB: ByteArray? = null
     private val cameraLock = Any()
+    private val cameraGeneration = AtomicLong(0L)
+    private val sessionGeneration = AtomicLong(0L)
 
     fun start(enableSendCamera: Boolean) {
         if (!running.compareAndSet(false, true)) return
@@ -161,20 +172,24 @@ class NativeVoipVideoPipeline(
     }
 
     fun setCameraEnabled(enabled: Boolean) {
-        val was = sendEnabled.getAndSet(enabled)
-        if (!running.get() || was == enabled) return
-        if (enabled) {
-            startCameraAndEncoder()
-        } else {
-            stopCameraAndEncoder()
+        synchronized(cameraLock) {
+            val was = sendEnabled.getAndSet(enabled)
+            if (!running.get() || was == enabled) return
+            if (enabled) {
+                startCameraAndEncoder()
+            } else {
+                stopCameraAndEncoder()
+            }
         }
     }
 
     fun switchCamera() {
-        useFrontCamera.set(!useFrontCamera.get())
-        if (running.get() && sendEnabled.get()) {
-            stopCameraAndEncoder()
-            startCameraAndEncoder()
+        synchronized(cameraLock) {
+            useFrontCamera.set(!useFrontCamera.get())
+            if (running.get() && sendEnabled.get()) {
+                stopCameraAndEncoder()
+                startCameraAndEncoder()
+            }
         }
     }
 
@@ -319,12 +334,13 @@ class NativeVoipVideoPipeline(
                 val handler = Handler(thread.looper)
                 cameraThread = thread
                 cameraHandler = handler
+                val myCamGen = cameraGeneration.incrementAndGet()
 
                 cm.openCamera(camId, object : CameraDevice.StateCallback() {
                     override fun onOpened(camera: CameraDevice) {
                         synchronized(cameraLock) {
-                            if (!running.get() || !sendEnabled.get()) {
-                                camera.close()
+                            if (!running.get() || !sendEnabled.get() || myCamGen != cameraGeneration.get()) {
+                                runCatching { camera.close() }
                                 return
                             }
                             cameraDevice = camera
@@ -333,12 +349,39 @@ class NativeVoipVideoPipeline(
                     }
 
                     override fun onDisconnected(camera: CameraDevice) {
-                        runCatching { camera.close() }
+                        synchronized(cameraLock) {
+                            if (cameraDevice === camera) {
+                                sessionGeneration.incrementAndGet()
+                                runCatching { captureSession?.close() }
+                                captureSession = null
+                                cameraDevice = null
+                            }
+                            runCatching { camera.close() }
+                        }
                     }
 
                     override fun onError(camera: CameraDevice, error: Int) {
                         Log.w(TAG, "CameraDevice error=$error")
-                        runCatching { camera.close() }
+                        AppLogManager.log("WARN", TAG, "CameraDevice error=$error")
+                        synchronized(cameraLock) {
+                            if (cameraDevice === camera) {
+                                sessionGeneration.incrementAndGet()
+                                runCatching { captureSession?.close() }
+                                captureSession = null
+                                cameraDevice = null
+                            }
+                            runCatching { camera.close() }
+                        }
+                    }
+
+                    override fun onClosed(camera: CameraDevice) {
+                        synchronized(cameraLock) {
+                            if (cameraDevice === camera) {
+                                sessionGeneration.incrementAndGet()
+                                captureSession = null
+                                cameraDevice = null
+                            }
+                        }
                     }
                 }, handler)
             } catch (t: Throwable) {
@@ -350,9 +393,15 @@ class NativeVoipVideoPipeline(
 
     private fun restartCaptureSessionOnly() {
         synchronized(cameraLock) {
+            if (!running.get() || !sendEnabled.get()) return
             val cam = cameraDevice ?: return
-            runCatching { captureSession?.close() }
+            sessionGeneration.incrementAndGet()
+            val prevSession = captureSession
             captureSession = null
+            if (prevSession != null) {
+                runCatching { prevSession.stopRepeating() }
+                runCatching { prevSession.close() }
+            }
             createCaptureSessionLocked(cam)
         }
     }
@@ -373,52 +422,137 @@ class NativeVoipVideoPipeline(
         camera: CameraDevice,
         includeLocalSurface: Boolean = true
     ) {
-        val encSurf = glCameraSurface ?: encoderInputSurface ?: return
+        if (!running.get() || !sendEnabled.get() || cameraDevice !== camera) return
+        val encSurf = (glCameraSurface ?: encoderInputSurface)?.takeIf { it.isValid } ?: return
+        val handler = cameraHandler ?: return
+        if (cameraThread?.isAlive != true) return
         val targets = buildList {
             add(encSurf)
             if (includeLocalSurface) {
                 localSurfaceRef.get()?.takeIf { it.isValid }?.let { add(it) }
             }
         }
-        val handler = cameraHandler
+        val mySessionGen = sessionGeneration.incrementAndGet()
         runCatching {
             camera.createCaptureSession(
                 targets,
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         synchronized(cameraLock) {
-                            if (!running.get() || !sendEnabled.get()) {
+                            if (isCaptureSessionCallbackStale(
+                                    running = running.get(),
+                                    sendEnabled = sendEnabled.get(),
+                                    sameCameraInstance = cameraDevice === camera,
+                                    callbackSessionGen = mySessionGen,
+                                    activeSessionGen = sessionGeneration.get()
+                                )
+                            ) {
                                 runCatching { session.close() }
                                 return
                             }
-                            captureSession = session
-                            val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                                targets.forEach { addTarget(it) }
-                                set(
-                                    CaptureRequest.CONTROL_MODE,
-                                    CaptureRequest.CONTROL_MODE_AUTO
-                                )
+                            val activeTargets = targets.filter { it.isValid }
+                            val activeHandler = cameraHandler
+                            if (activeTargets.isEmpty() || activeHandler == null || cameraThread?.isAlive != true) {
+                                runCatching { session.close() }
+                                return
                             }
-                            session.setRepeatingRequest(req.build(), null, handler)
+                            val reqResult = runCatching {
+                                val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+                                    activeTargets.forEach { addTarget(it) }
+                                    set(
+                                        CaptureRequest.CONTROL_MODE,
+                                        CaptureRequest.CONTROL_MODE_AUTO
+                                    )
+                                }
+                                session.setRepeatingRequest(req.build(), null, activeHandler)
+                            }
+                            reqResult.onSuccess {
+                                captureSession = session
+                            }.onFailure { err ->
+                                Log.w(
+                                    TAG,
+                                    "setRepeatingRequest failed (targets=${activeTargets.size}): ${err.message}"
+                                )
+                                AppLogManager.log(
+                                    "WARN",
+                                    TAG,
+                                    "setRepeatingRequest failed (targets=${activeTargets.size}): ${err.message}",
+                                    err
+                                )
+                                runCatching { session.close() }
+                                if (captureSession === session) {
+                                    captureSession = null
+                                }
+                                if (includeLocalSurface && activeTargets.size > 1 &&
+                                    !isCaptureSessionCallbackStale(
+                                        running = running.get(),
+                                        sendEnabled = sendEnabled.get(),
+                                        sameCameraInstance = cameraDevice === camera,
+                                        callbackSessionGen = mySessionGen,
+                                        activeSessionGen = sessionGeneration.get()
+                                    )
+                                ) {
+                                    createCaptureSessionLocked(camera, includeLocalSurface = false)
+                                }
+                            }
                         }
                     }
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
-                        Log.w(TAG, "Camera capture session configure failed (targets=${targets.size})")
-                        if (includeLocalSurface && targets.size > 1) {
-                            synchronized(cameraLock) {
-                                if (cameraDevice === camera && running.get() && sendEnabled.get()) {
-                                    createCaptureSessionLocked(camera, includeLocalSurface = false)
-                                }
+                        synchronized(cameraLock) {
+                            runCatching { session.close() }
+                            if (captureSession === session) {
+                                captureSession = null
+                            }
+                            if (isCaptureSessionCallbackStale(
+                                    running = running.get(),
+                                    sendEnabled = sendEnabled.get(),
+                                    sameCameraInstance = cameraDevice === camera,
+                                    callbackSessionGen = mySessionGen,
+                                    activeSessionGen = sessionGeneration.get()
+                                )
+                            ) {
+                                return
+                            }
+                            Log.w(TAG, "Camera capture session configure failed (targets=${targets.size})")
+                            AppLogManager.log(
+                                "WARN",
+                                TAG,
+                                "Camera capture session configure failed (targets=${targets.size})"
+                            )
+                            if (includeLocalSurface && targets.size > 1) {
+                                createCaptureSessionLocked(camera, includeLocalSurface = false)
+                            }
+                        }
+                    }
+
+                    override fun onClosed(session: CameraCaptureSession) {
+                        synchronized(cameraLock) {
+                            if (captureSession === session) {
+                                captureSession = null
                             }
                         }
                     }
                 },
                 handler
             )
-        }.onFailure {
-            Log.w(TAG, "createCaptureSession failed (targets=${targets.size}): ${it.message}")
-            if (includeLocalSurface && targets.size > 1) {
+        }.onFailure { err ->
+            Log.w(TAG, "createCaptureSession failed (targets=${targets.size}): ${err.message}")
+            AppLogManager.log(
+                "WARN",
+                TAG,
+                "createCaptureSession failed (targets=${targets.size}): ${err.message}",
+                err
+            )
+            if (includeLocalSurface && targets.size > 1 &&
+                !isCaptureSessionCallbackStale(
+                    running = running.get(),
+                    sendEnabled = sendEnabled.get(),
+                    sameCameraInstance = cameraDevice === camera,
+                    callbackSessionGen = mySessionGen,
+                    activeSessionGen = sessionGeneration.get()
+                )
+            ) {
                 createCaptureSessionLocked(camera, includeLocalSurface = false)
             }
         }
@@ -426,8 +560,14 @@ class NativeVoipVideoPipeline(
 
     private fun stopCameraAndEncoder() {
         synchronized(cameraLock) {
-            runCatching { captureSession?.close() }
+            cameraGeneration.incrementAndGet()
+            sessionGeneration.incrementAndGet()
+            val prevSession = captureSession
             captureSession = null
+            if (prevSession != null) {
+                runCatching { prevSession.stopRepeating() }
+                runCatching { prevSession.close() }
+            }
             runCatching { cameraDevice?.close() }
             cameraDevice = null
             runCatching { cameraThread?.quitSafely() }

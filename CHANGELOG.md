@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.10-pre.7] - 2026-11-26
+
+### Fixed
+- Fixed a crash during video calls when the local camera preview updated or reopened while a capture session was closing.
+
 ## [0.3.10-pre.6] - 2026-11-26
 
 ### ✨ Features

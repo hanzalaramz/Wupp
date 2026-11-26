@@ -76,4 +76,53 @@ class NativeVoipVideoPolicyTest {
         assertFalse(isSoftwareAvcCodec("c2.mtk.avc.encoder"))
         assertFalse(isSoftwareAvcCodec("OMX.qcom.video.encoder.avc"))
     }
+
+    @Test
+    fun isCaptureSessionCallbackStaleDetectsStaleAndInactiveCallbacks() {
+        assertFalse(
+            isCaptureSessionCallbackStale(
+                running = true,
+                sendEnabled = true,
+                sameCameraInstance = true,
+                callbackSessionGen = 3L,
+                activeSessionGen = 3L
+            )
+        )
+        assertTrue(
+            isCaptureSessionCallbackStale(
+                running = false,
+                sendEnabled = true,
+                sameCameraInstance = true,
+                callbackSessionGen = 3L,
+                activeSessionGen = 3L
+            )
+        )
+        assertTrue(
+            isCaptureSessionCallbackStale(
+                running = true,
+                sendEnabled = false,
+                sameCameraInstance = true,
+                callbackSessionGen = 3L,
+                activeSessionGen = 3L
+            )
+        )
+        assertTrue(
+            isCaptureSessionCallbackStale(
+                running = true,
+                sendEnabled = true,
+                sameCameraInstance = false,
+                callbackSessionGen = 3L,
+                activeSessionGen = 3L
+            )
+        )
+        assertTrue(
+            isCaptureSessionCallbackStale(
+                running = true,
+                sendEnabled = true,
+                sameCameraInstance = true,
+                callbackSessionGen = 2L,
+                activeSessionGen = 3L
+            )
+        )
+    }
 }
