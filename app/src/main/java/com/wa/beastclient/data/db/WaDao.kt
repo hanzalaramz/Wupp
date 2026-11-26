@@ -718,12 +718,21 @@ interface WaDao {
     @Query(
         """
         UPDATE messages
-        SET delivery_status = :status,
+        SET delivery_status = CASE
+                WHEN (CASE delivery_status WHEN 'PLAYED' THEN 4 WHEN 'READ' THEN 3 WHEN 'DELIVERED' THEN 2 WHEN 'SENT' THEN 1 ELSE 0 END) < :newRank
+                THEN :status
+                ELSE delivery_status
+            END,
             delivered_at = CASE WHEN :newRank >= 2 AND delivered_at = 0 THEN :receiptTs ELSE delivered_at END,
             read_at = CASE WHEN :newRank >= 3 AND read_at = 0 THEN :receiptTs ELSE read_at END,
             played_at = CASE WHEN :newRank >= 4 AND played_at = 0 THEN :receiptTs ELSE played_at END
         WHERE id = :messageId
-          AND (CASE delivery_status WHEN 'PLAYED' THEN 4 WHEN 'READ' THEN 3 WHEN 'DELIVERED' THEN 2 WHEN 'SENT' THEN 1 ELSE 0 END) < :newRank
+          AND (
+            (CASE delivery_status WHEN 'PLAYED' THEN 4 WHEN 'READ' THEN 3 WHEN 'DELIVERED' THEN 2 WHEN 'SENT' THEN 1 ELSE 0 END) < :newRank
+            OR (:newRank >= 2 AND delivered_at = 0)
+            OR (:newRank >= 3 AND read_at = 0)
+            OR (:newRank >= 4 AND played_at = 0)
+          )
         """
     )
     suspend fun updateMessageDeliveryStatusIfHigher(

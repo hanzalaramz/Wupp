@@ -192,6 +192,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
@@ -650,8 +651,30 @@ fun ChatScreen(
         if (quotedIds.isNotEmpty()) viewModel.resolveQuotedSendersLocally(quotedIds)
     }
 
+    val initialDraft = remember(chatJid) { viewModel.getChatDraft(chatJid) }
     var draftValue by rememberSaveable(chatJid, stateSaver = TextFieldValue.Saver) {
-        mutableStateOf(TextFieldValue(""))
+        mutableStateOf(
+            TextFieldValue(
+                text = initialDraft,
+                selection = TextRange(initialDraft.length)
+            )
+        )
+    }
+    val latestDraftText by androidx.compose.runtime.rememberUpdatedState(draftValue.text)
+    LaunchedEffect(chatJid, draftValue.text) {
+        viewModel.saveChatDraft(chatJid, draftValue.text)
+    }
+    DisposableEffect(chatJid, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
+                viewModel.saveChatDraft(chatJid, latestDraftText)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.saveChatDraft(chatJid, latestDraftText)
+        }
     }
     var replyTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var ghostMentionEveryone by remember { mutableStateOf(false) }
@@ -866,6 +889,7 @@ fun ChatScreen(
                     allowUnsavedColdStart = allowUnsavedColdStartFlag
                 )
                 draftValue = TextFieldValue("")
+                viewModel.saveChatDraft(chatJid, "")
                 scope.launch { listState.animateScrollToItem(0) }
             }
         }
@@ -2683,6 +2707,7 @@ fun ChatScreen(
                                                             allowUnsavedColdStart = allowUnsavedColdStartFlag
                                                         )
                                                         draftValue = TextFieldValue("")
+                                                        viewModel.saveChatDraft(chatJid, "")
                                                         replyTarget = null
                                                         ghostMentionEveryone = false
                                                         scope.launch { listState.animateScrollToItem(0) }
@@ -2783,6 +2808,7 @@ fun ChatScreen(
                                                             allowUnsavedColdStart = allowUnsavedColdStartFlag
                                                         )
                                                         draftValue = TextFieldValue("")
+                                                        viewModel.saveChatDraft(chatJid, "")
                                                         replyTarget = null
                                                         ghostMentionEveryone = false
                                                         scope.launch { listState.animateScrollToItem(0) }

@@ -1896,7 +1896,12 @@ class WaRealtimeService : Service() {
         val chatJid = canonicalizeAndMergeAlias(rawChat, altChatJid).ifBlank { rawChat }
         val senderJid = json.optString("senderJid")
         val receiptType = json.optString("receiptType", "DELIVERED")
-        val timestamp = json.optLong("timestamp", System.currentTimeMillis())
+        val rawReceiptTs = json.optLong("timestamp", 0L)
+        val timestamp = when {
+            rawReceiptTs <= 0L -> System.currentTimeMillis()
+            rawReceiptTs < 10_000_000_000L -> rawReceiptTs * 1000L
+            else -> rawReceiptTs
+        }
         val isPrimaryActive = json.optBoolean("isPrimaryActive", false)
         if (isPrimaryActive) {
             StealthMatrixManager.recordPrimaryHeartbeat(timestamp)

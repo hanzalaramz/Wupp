@@ -67,7 +67,7 @@ internal fun MessageInfoSheet(
     val context = LocalContext.current
     @Suppress("DEPRECATION")
     val clipboard = LocalClipboardManager.current
-    val dateClock = formatMessageDateTime(msg.timestamp, showSeconds = showSeconds, use24Hour = use24Hour)
+    val dateClock = formatMessageDateTime(msg.timestamp, showSeconds = true, use24Hour = use24Hour)
     val rank = WaDao.deliveryRank(msg.deliveryStatus)
     val isVoiceOrAudio = msg.msgType.uppercase() in setOf("PTT", "AUDIO")
 
@@ -206,7 +206,7 @@ internal fun MessageInfoSheet(
                                 isReached = rank >= 2,
                                 reachedFallback = "Delivered",
                                 pendingLabel = "Waiting for device",
-                                showSeconds = showSeconds,
+                                showSeconds = true,
                                 use24Hour = use24Hour
                             )
                             val readClock = formatReceiptStatusValue(
@@ -214,7 +214,7 @@ internal fun MessageInfoSheet(
                                 isReached = rank >= 3,
                                 reachedFallback = "Read",
                                 pendingLabel = "Not read yet",
-                                showSeconds = showSeconds,
+                                showSeconds = true,
                                 use24Hour = use24Hour
                             )
                             val playedClock = formatReceiptStatusValue(
@@ -222,7 +222,7 @@ internal fun MessageInfoSheet(
                                 isReached = rank >= 4,
                                 reachedFallback = "Played",
                                 pendingLabel = "Not played yet",
-                                showSeconds = showSeconds,
+                                showSeconds = true,
                                 use24Hour = use24Hour
                             )
                             MessageReceiptRow(
@@ -458,8 +458,9 @@ internal fun formatMessageDateTime(
     use24Hour: Boolean
 ): String {
     if (epochMs <= 0L) return ""
-    val dateStr = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(epochMs))
-    val clockStr = formatMessageClock(epochMs, includeSeconds = showSeconds, use24Hour = use24Hour)
+    val normalizedMs = if (epochMs < 10_000_000_000L) epochMs * 1000L else epochMs
+    val dateStr = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(normalizedMs))
+    val clockStr = formatMessageClock(normalizedMs, includeSeconds = showSeconds, use24Hour = use24Hour)
     return if (clockStr.isNotBlank()) "$dateStr · $clockStr" else dateStr
 }
 

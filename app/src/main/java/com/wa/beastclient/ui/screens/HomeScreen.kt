@@ -196,8 +196,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
+import com.wa.beastclient.domain.drafts.ChatDraftManager
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -3140,6 +3144,8 @@ private fun ChatListRow(
     onRowClick: () -> Unit,
     onRowLongClick: () -> Unit = {}
 ) {
+    val chatDrafts by ChatDraftManager.drafts.collectAsState()
+    val draftText = chatDrafts[chat.jid].orEmpty()
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
     val rowInteraction = remember { MutableInteractionSource() }
@@ -3264,7 +3270,8 @@ private fun ChatListRow(
                 val isViewOncePreview = chat.lastMessageType.startsWith("VIEW_ONCE") ||
                     chat.lastMessagePreview.startsWith("View once")
 
-                if (chat.chatPresence.isBlank()) {
+                val showDraft = draftText.isNotBlank() && chat.chatPresence.isBlank()
+                if (chat.chatPresence.isBlank() && !showDraft) {
                     if (chat.lastMessageIsDeleted) {
                         Icon(
                             painter = painterResource(R.drawable.vec_ic_delete_sweep),
@@ -3293,19 +3300,35 @@ private fun ChatListRow(
                     }
                 }
 
-                val subtitle = resolveChatSubtitlePreview(chat)
-                Text(
-                    text = subtitle,
-                    color = when {
-                        chat.chatPresence.isNotBlank() -> colors.brightGreen
-                        chat.lastMessageIsDeleted -> colors.antiDeleteRed
-                        else -> colors.textSecondary
-                    },
-                    fontSize = 13.5.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
+                if (showDraft) {
+                    Text(
+                        text = buildAnnotatedString {
+                            withStyle(SpanStyle(color = colors.brightGreen, fontWeight = FontWeight.Medium)) {
+                                append("Draft: ")
+                            }
+                            append(draftText.replace('\n', ' ').trim())
+                        },
+                        color = colors.textSecondary,
+                        fontSize = 13.5.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                } else {
+                    val subtitle = resolveChatSubtitlePreview(chat)
+                    Text(
+                        text = subtitle,
+                        color = when {
+                            chat.chatPresence.isNotBlank() -> colors.brightGreen
+                            chat.lastMessageIsDeleted -> colors.antiDeleteRed
+                            else -> colors.textSecondary
+                        },
+                        fontSize = 13.5.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

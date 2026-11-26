@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.9] - 2026-11-26
+
+### ✨ Features
+- Saved unsent message drafts per chat across app restarts and screen exits, with a green "Draft:" preview in the chat list (#156).
+- Added multi-message selection in chat with bulk Copy, Forward, and Delete actions, plus a direct Message info (ⓘ) button and real sent, delivered, read, and played timestamps (#164).
+- Added manual "Mark viewed" for statuses so contacts only see you viewed their status after you tap it (#161).
+- Added scheduled and recurring messages with repeat options and dedicated management (#144).
+- Added per-chat media auto-download overrides in Chat Info (#145).
+- Added in-app contact picker and native WhatsApp contact cards with direct message and add-contact shortcuts (#146).
+- Set pure black AMOLED as the default theme and redesigned Home tabs, chat headers, composer, voice waveforms, media sending, Settings, Contact Info, and linking screens with rounded glass controls.
+
+### 🛠️ Fixes
+- Fixed incoming voice calls having no audio and dropping on the first attempt, plus video-upgrade pipeline binding and call UI cleanups (#155).
+- Fixed voice notes cutting off when scrolling or leaving a chat, and added background playback with notification controls (#159).
+- Fixed Error 463 Guard blocking saved contacts, phonebook contacts, and alias-linked chats, and replaced the composer lock with an unsaved-number confirmation warning (#143, #154, #157).
+- Fixed contact sharing sending raw `.vcf` files instead of native WhatsApp contact cards.
+- Fixed per-chat media auto-download rules, removed duplicate scheduler menu items, and improved scheduled message pacing.
+
 ## [0.3.9-pre.10] - 2026-11-26
 
 ### 🛠️ Fixes

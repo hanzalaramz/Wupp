@@ -39,6 +39,7 @@ import com.wa.beastclient.data.media.hasExtractableAudioTrack
 import com.wa.beastclient.data.media.SoundPoolManager
 import com.wa.beastclient.data.media.StickerFavoritesStore
 import com.wa.beastclient.domain.accounts.AccountManager
+import com.wa.beastclient.domain.drafts.ChatDraftManager
 import com.wa.beastclient.domain.scheduling.ScheduledMessage
 import com.wa.beastclient.domain.scheduling.ScheduledMessageManager
 import com.wa.beastclient.domain.accounts.WuppAccount
@@ -192,6 +193,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .map { WaUiDatabase.getInstance(appContext).waDao() }
 
     val stealthConfig: StateFlow<GlobalStealthConfig> = StealthMatrixManager.config
+    val chatDrafts: StateFlow<Map<String, String>> = ChatDraftManager.drafts
     val appLockConfig: StateFlow<AppLockConfig> = AppLockManager.config
     val isAppLocked: StateFlow<Boolean> = AppLockManager.isLocked
     val bridgeStatus: StateFlow<BridgeStatus> = WaRealtimeService.bridgeStatus
@@ -240,6 +242,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         AccountManager.init(appContext)
+        ChatDraftManager.init(appContext)
         StealthMatrixManager.init(appContext)
         AppLockManager.init(appContext)
         WuppUpdater.init(appContext)
@@ -274,6 +277,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _homeSearchQuery.value = ""
                 _bulkVerifyOutput.value = null
                 AppLockManager.setLockedChatsRevealed(false)
+                ChatDraftManager.reloadForActiveAccount()
                 _selectedFilter.value = HomeFilterChip.ALL
                 _selectedGroupsFilter.value = HomeFilterChip.ALL
                 _participantMeta.value = emptyMap()
@@ -955,6 +959,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             StealthMatrixManager.clearChatPrivacyOverride(dao, chatJid)
         }
     }
+
+    fun getChatDraft(chatJid: String): String = ChatDraftManager.getDraft(chatJid)
+
+    fun saveChatDraft(chatJid: String, text: String) = ChatDraftManager.saveDraft(chatJid, text)
 
     fun toggleFavoriteChat(chat: ChatEntity) {
         viewModelScope.launch(Dispatchers.IO) {
