@@ -146,7 +146,7 @@ data class GlobalStealthConfig(
     val dynamicMaterialYou: Boolean = false,
     val fontStyle: WuppFontStyle = WuppFontStyle.ROBO_CLEAN,
     val customFontPath: String = "",
-    val bubbleCornerRadiusDp: Int = 17,
+    val bubbleCornerRadiusDp: Int = 15,
     val customOutgoingBubbleArgb: Long = 0L,
     val customIncomingBubbleArgb: Long = 0L,
     val vaultLockEnabled: Boolean = false,
@@ -371,7 +371,7 @@ object StealthMatrixManager {
                 prefs.getBoolean(KEY_USE_SYSTEM_FONT, false)
             ),
             customFontPath = prefs.getString(KEY_CUSTOM_FONT_PATH, "") ?: "",
-            bubbleCornerRadiusDp = prefs.getInt(KEY_BUBBLE_CORNER_RADIUS_DP, 17).coerceIn(4, 24),
+            bubbleCornerRadiusDp = prefs.getInt(KEY_BUBBLE_CORNER_RADIUS_DP, 15).coerceIn(4, 24),
             customOutgoingBubbleArgb = prefs.getLong(KEY_CUSTOM_OUTGOING_BUBBLE_ARGB, 0L),
             customIncomingBubbleArgb = prefs.getLong(KEY_CUSTOM_INCOMING_BUBBLE_ARGB, 0L),
             vaultLockEnabled = prefs.getBoolean(KEY_VAULT_LOCK_ENABLED, false),
