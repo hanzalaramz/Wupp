@@ -2695,7 +2695,7 @@ class WaRealtimeService : Service() {
             val upper = msg.msgType.uppercase()
             if (upper in setOf("CALL", "SYSTEM", "UNDECRYPTABLE", "UNKNOWN")) return false
             if (upper == "TEXT") return msg.body.isNotBlank()
-            return upper in setOf("IMAGE", "VIDEO", "AUDIO", "PTT", "DOCUMENT", "STICKER")
+            return upper in setOf("IMAGE", "VIDEO", "AUDIO", "PTT", "DOCUMENT", "STICKER", "LOCATION")
         }
 
         internal fun normalizeForwardTargetJids(rawTargets: Collection<String>): List<String> =
@@ -3537,6 +3537,87 @@ class WaRealtimeService : Service() {
             }
         }
 
+        suspend fun sendLocationMessage(
+            context: Context,
+            chatJid: String,
+            latitude: Double,
+            longitude: Double,
+            name: String = "",
+            address: String = "",
+            url: String = "",
+            quoted: MessageEntity? = null,
+            requireLinkedSession: Boolean = false,
+            allowUnsavedColdStart: Boolean = false
+        ): Result<MessageEntity> = withContext(Dispatchers.IO) {
+            runCatching {
+                ensureOnlineForOutbound()
+                val dao = WaUiDatabase.getInstance(context).waDao()
+                val effectiveChatJid = resolveCanonicalOutboundChatJid(context, dao, chatJid)
+                val aliases = findKnownAliasesFor(context, effectiveChatJid)
+                if (!allowUnsavedColdStart &&
+                    !StealthMatrixManager.canInitiateOutboundMessage(
+                        dao = dao,
+                        chatJid = effectiveChatJid,
+                        ownJid = _bridgeStatus.value.ownJid,
+                        context = context,
+                        aliasJids = aliases
+                    )
+                ) {
+                    error("ERROR_463_GUARD: First message to unsaved contact blocked to protect companion Error 463 ban. Confirm cold-start send first.")
+                }
+                val ownJid = _bridgeStatus.value.ownJid.ifBlank { "me@s.whatsapp.net" }
+                val cleanName = name.trim()
+                val cleanAddr = address.trim()
+                val stanzaId = if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
+                    Whatsbridge.sendLocationMessage(
+                        effectiveChatJid,
+                        latitude,
+                        longitude,
+                        cleanName,
+                        cleanAddr,
+                        url.trim(),
+                        quoted?.id ?: "",
+                        quoted?.senderJid ?: "",
+                        quoted?.body ?: ""
+                    )
+                } else if (requireLinkedSession) {
+                    error("Open Wupp and reconnect before sending location")
+                } else {
+                    "LOCAL_${UUID.randomUUID().toString().take(12).uppercase()}"
+                }
+
+                val bodyText = com.wa.beastclient.ui.components.buildLocationBodyText(
+                    latitude = latitude,
+                    longitude = longitude,
+                    name = cleanName,
+                    address = cleanAddr
+                )
+                val entity = MessageEntity(
+                    id = stanzaId,
+                    chatJid = effectiveChatJid,
+                    senderJid = ownJid,
+                    senderName = "You",
+                    isFromMe = true,
+                    timestamp = System.currentTimeMillis(),
+                    body = bodyText,
+                    msgType = "LOCATION",
+                    mimeType = "application/x-wa-location",
+                    deliveryStatus = if (runCatching { Whatsbridge.isConnected() }.getOrDefault(false)) "SENT" else "LOCAL_SENT",
+                    quotedId = quoted?.id,
+                    quotedSender = quoted?.senderName ?: quoted?.senderJid,
+                    quotedBody = quoted?.body?.ifBlank { WaDao.previewTextFor(quoted) }
+                )
+                dao.upsertIncomingMessageAndRefreshChat(
+                    message = entity,
+                    chatNameHint = "",
+                    isGroup = effectiveChatJid.endsWith("@g.us"),
+                    incrementUnread = false
+                )
+                SoundPoolManager.playSend()
+                entity
+            }
+        }
+
         suspend fun sendStatusReply(
             context: Context,
             status: StatusEntity,
@@ -3659,7 +3740,7 @@ class WaRealtimeService : Service() {
                 require(targets.isNotEmpty()) { "Select at least one chat to forward to" }
 
                 val upper = msg.msgType.uppercase()
-                val sourceFile = if (upper != "TEXT" && upper != "CONTACT") {
+                val sourceFile = if (upper != "TEXT" && upper != "CONTACT" && upper != "LOCATION") {
                     msg.localMediaPath?.takeIf { it.isNotBlank() }?.let(::File)
                         ?.takeIf { it.exists() && it.length() > 0L }
                         ?: error("Download this media before forwarding")
@@ -3704,6 +3785,28 @@ class WaRealtimeService : Service() {
                                 vcard = vcard,
                                 quoted = null
                             ).map { Unit }
+                        }
+                        "LOCATION" -> {
+                            val parsedLoc = com.wa.beastclient.ui.components.parseLocationPayload(msg.body, msg.mimeType)
+                            if (parsedLoc != null) {
+                                sendLocationMessage(
+                                    context = context,
+                                    chatJid = targetJid,
+                                    latitude = parsedLoc.latitude,
+                                    longitude = parsedLoc.longitude,
+                                    name = parsedLoc.title,
+                                    address = parsedLoc.address,
+                                    quoted = null
+                                ).map { Unit }
+                            } else {
+                                sendTextMessage(
+                                    context = context,
+                                    chatJid = targetJid,
+                                    text = msg.body.trim(),
+                                    quoted = null,
+                                    ghostMentionEveryone = false
+                                ).map { Unit }
+                            }
                         }
                         "STICKER" -> sendMediaMessage(
                             context = context,

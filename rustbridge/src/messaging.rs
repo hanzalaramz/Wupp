@@ -669,7 +669,14 @@ fn classify_message(
         );
     }
     if let Some(loc) = base.location_message.as_option() {
-        let label = loc.name.clone().or_else(|| loc.address.clone()).unwrap_or_default();
+        let name = loc.name.clone().unwrap_or_default().trim().to_string();
+        let addr = loc.address.clone().unwrap_or_default().trim().to_string();
+        let label = match (name.is_empty(), addr.is_empty()) {
+            (false, false) if name != addr => format!("{name} — {addr}"),
+            (false, _) => name,
+            (true, false) => addr,
+            (true, true) => String::new(),
+        };
         let coords = format!(
             "{:.5}, {:.5}{}",
             loc.degrees_latitude.unwrap_or(0.0),
@@ -683,8 +690,32 @@ fn classify_message(
         return (
             "LOCATION".into(),
             coords,
+            loc.url.clone().unwrap_or_default(),
+            "application/x-wa-location".into(),
             String::new(),
+            0,
+            0,
             String::new(),
+            None,
+        );
+    }
+    if let Some(live) = base.live_location_message.as_option() {
+        let cap = live.caption.clone().unwrap_or_default().trim().to_string();
+        let label = if cap.is_empty() {
+            "Live location".to_string()
+        } else {
+            format!("Live location — {cap}")
+        };
+        let coords = format!(
+            "{:.5}, {:.5} ({label})",
+            live.degrees_latitude.unwrap_or(0.0),
+            live.degrees_longitude.unwrap_or(0.0),
+        );
+        return (
+            "LOCATION".into(),
+            coords,
+            String::new(),
+            "application/x-wa-location-live".into(),
             String::new(),
             0,
             0,
@@ -1502,6 +1533,76 @@ pub async fn send_contact_message(
         .send(SendRequest::new(&to, message).with_options(opts))
         .await
         .map_err(|e| format!("send contact failed: {e}"))?;
+    Ok(result.message_id.to_string())
+}
+
+pub async fn send_location_message(
+    runtime: &BridgeRuntime,
+    chat_jid_str: &str,
+    latitude: f64,
+    longitude: f64,
+    name: &str,
+    address: &str,
+    url: &str,
+    quoted_id: &str,
+    quoted_sender: &str,
+    quoted_body: &str,
+) -> Result<String, String> {
+    let client = runtime
+        .client_arc()
+        .ok_or_else(|| "client not connected".to_string())?;
+    let to = parse_jid_flexible(chat_jid_str)?;
+
+    if !runtime.ghost_presence.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = client.chatstate().send_paused(&to).await;
+    }
+
+    let mut loc = wa::message::LocationMessage::default();
+    loc.degrees_latitude = Some(latitude);
+    loc.degrees_longitude = Some(longitude);
+    let clean_name = name.trim();
+    let clean_addr = address.trim();
+    let clean_url = url.trim();
+    if !clean_name.is_empty() {
+        loc.name = Some(clean_name.to_string());
+    }
+    if !clean_addr.is_empty() {
+        loc.address = Some(clean_addr.to_string());
+    }
+    if !clean_url.is_empty() {
+        loc.url = Some(clean_url.to_string());
+    }
+
+    if !quoted_id.is_empty() {
+        let mut ctx = wa::ContextInfo::default();
+        ctx.stanza_id = Some(quoted_id.to_string());
+        if !quoted_sender.is_empty() {
+            ctx.participant = Some(canonical_jid_str(quoted_sender));
+        }
+        let mut qm = wa::Message::default();
+        qm.conversation = Some(if quoted_body.is_empty() {
+            "Location".to_string()
+        } else {
+            quoted_body.to_string()
+        });
+        ctx.quoted_message = buffa::MessageField::from_box(Box::new(qm));
+        loc.context_info = buffa::MessageField::some(ctx);
+    }
+
+    let mut message = wa::Message::default();
+    message.location_message = buffa::MessageField::some(loc);
+
+    let canonical_to = canonical_jid_str(&to.to_string());
+    let eph_secs = runtime.chat_ephemeral_secs(&canonical_to);
+    let mut opts = SendOptions::default();
+    if eph_secs > 0 {
+        opts = opts.with_ephemeral_expiration(eph_secs);
+    }
+
+    let result = client
+        .send(SendRequest::new(&to, message).with_options(opts))
+        .await
+        .map_err(|e| format!("send location failed: {e}"))?;
     Ok(result.message_id.to_string())
 }
 

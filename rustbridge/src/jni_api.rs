@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use jni::objects::{JByteArray, JClass, JObject, JShortArray, JString};
-use jni::sys::{jboolean, jbyteArray, jint, jlong, jstring, JNI_FALSE, JNI_TRUE};
+use jni::sys::{jboolean, jbyteArray, jdouble, jint, jlong, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 
 use crate::client;
@@ -230,6 +230,50 @@ pub extern "system" fn Java_com_wa_bridge_whatsbridge_Whatsbridge_nativeSendCont
         &c,
         &dn,
         &vc,
+        &qid,
+        &qs,
+        &qb,
+    )) {
+        Ok(id) => new_jstr(&mut env, &id),
+        Err(e) => {
+            throw_rt(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_wa_bridge_whatsbridge_Whatsbridge_nativeSendLocationMessage<'a>(
+    mut env: JNIEnv<'a>,
+    _cls: JClass<'a>,
+    chat_jid: JString<'a>,
+    latitude: jdouble,
+    longitude: jdouble,
+    name: JString<'a>,
+    address: JString<'a>,
+    url: JString<'a>,
+    quoted_id: JString<'a>,
+    quoted_sender: JString<'a>,
+    quoted_body: JString<'a>,
+) -> jstring {
+    let c = jstr(&mut env, &chat_jid);
+    let nm = jstr(&mut env, &name);
+    let addr = jstr(&mut env, &address);
+    let u = jstr(&mut env, &url);
+    let qid = jstr(&mut env, &quoted_id);
+    let qs = jstr(&mut env, &quoted_sender);
+    let qb = jstr(&mut env, &quoted_body);
+    let Some(rt) = get_rt(&mut env) else {
+        return std::ptr::null_mut();
+    };
+    match rt.rt.block_on(messaging::send_location_message(
+        &rt,
+        &c,
+        latitude as f64,
+        longitude as f64,
+        &nm,
+        &addr,
+        &u,
         &qid,
         &qs,
         &qb,

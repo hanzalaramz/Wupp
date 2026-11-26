@@ -1704,6 +1704,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun sendLocationMessage(
+        chatJid: String,
+        latitude: Double,
+        longitude: Double,
+        name: String = "",
+        address: String = "",
+        url: String = "",
+        quoted: MessageEntity? = null,
+        allowUnsavedColdStart: Boolean = false
+    ) {
+        viewModelScope.launch {
+            WaRealtimeService.sendLocationMessage(
+                context = appContext,
+                chatJid = chatJid,
+                latitude = latitude,
+                longitude = longitude,
+                name = name,
+                address = address,
+                url = url,
+                quoted = quoted,
+                allowUnsavedColdStart = allowUnsavedColdStart
+            ).onFailure { err ->
+                showToast(err.message ?: "Failed to send location")
+            }
+        }
+    }
+
     fun toggleVoiceRecording(
         chatJid: String,
         hasRecordPermission: Boolean,

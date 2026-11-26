@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
+import android.provider.ContactsContract
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.draw.blur
@@ -111,6 +112,7 @@ import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.Schedule
@@ -252,6 +254,7 @@ import com.wa.beastclient.ui.components.AutoDownloadNetworkDialog
 import com.wa.beastclient.ui.components.BlockedContactsDialog
 import com.wa.beastclient.ui.components.ChatFontSizeDialog
 import com.wa.beastclient.ui.components.CompanionScopeInfoDialog
+import com.wa.beastclient.ui.components.ContactQrCodeSheet
 import com.wa.beastclient.ui.components.ExpressiveIconBadge
 import com.wa.beastclient.ui.components.ExpressiveSegmentPosition
 import com.wa.beastclient.ui.components.ExpressiveSegmentedActionRow
@@ -452,6 +455,8 @@ fun HomeScreen(
     var overflowExpanded by remember { mutableStateOf(false) }
     var showPairingDialog by remember { mutableStateOf(false) }
     var showQuickContactPicker by remember { mutableStateOf(false) }
+    var showContactQrSheet by remember { mutableStateOf(false) }
+    var contactQrInitialTab by remember { mutableIntStateOf(0) }
     var quickContactTarget by remember { mutableStateOf<ChatEntity?>(null) }
     val quickContactChat = remember(quickContactTarget, allChats) {
         quickContactTarget?.let { t -> allChats.firstOrNull { it.jid == t.jid } ?: t }
@@ -1446,6 +1451,10 @@ fun HomeScreen(
                         },
                         onOpenMediaVault = { showMediaVaultSheet = true },
                         onOpenStickerStudio = { showStickerStudioDialog = true },
+                        onOpenContactQr = {
+                            contactQrInitialTab = 0
+                            showContactQrSheet = true
+                        },
                         onOpenFeedback = { activeFeedbackType = it }
                     )
                 }
@@ -1612,6 +1621,41 @@ fun HomeScreen(
             onOpenLinkedDevices = {
                 showQuickContactPicker = false
                 showPairingDialog = true
+            },
+            onOpenQrScanner = {
+                showQuickContactPicker = false
+                contactQrInitialTab = 1
+                showContactQrSheet = true
+            }
+        )
+    }
+
+    if (showContactQrSheet) {
+        val ownAvatarPath = remember(bridgeStatus.ownJid, allChats) {
+            val ownUser = bridgeStatus.ownJid.substringBefore("@").substringBefore(":")
+            allChats.firstOrNull { ch ->
+                !ch.avatarPath.isNullOrBlank() &&
+                    ownUser.isNotBlank() &&
+                    ch.jid.substringBefore("@").substringBefore(":") == ownUser
+            }?.avatarPath
+        }
+        val ownDisplayChat = remember(bridgeStatus.ownJid, allChats) {
+            val ownUser = bridgeStatus.ownJid.substringBefore("@").substringBefore(":")
+            allChats.firstOrNull { ch ->
+                ownUser.isNotBlank() && ch.jid.substringBefore("@").substringBefore(":") == ownUser
+            }
+        }
+        ContactQrCodeSheet(
+            ownJid = bridgeStatus.ownJid,
+            ownName = ownDisplayChat?.name.orEmpty(),
+            ownPhone = "",
+            ownAvatarPath = ownAvatarPath,
+            colors = colors,
+            initialTab = contactQrInitialTab,
+            onDismiss = { showContactQrSheet = false },
+            onStartChat = { jid ->
+                showContactQrSheet = false
+                onOpenChat(jid)
             }
         )
     }
@@ -4887,6 +4931,7 @@ private fun ToolsVaultTab(
     onOpenMessageHistory: () -> Unit = {},
     onOpenMediaVault: () -> Unit = {},
     onOpenStickerStudio: () -> Unit = {},
+    onOpenContactQr: () -> Unit = {},
     onOpenFeedback: (GitHubFeedbackType) -> Unit
 ) {
     val context = LocalContext.current
@@ -5208,7 +5253,8 @@ private fun ToolsVaultTab(
                                 Triple(Icons.Rounded.StarOutline, "Starred messages", onOpenStarredChats),
                                 Triple(Icons.Rounded.History, if (savedHistoryCount > 0) "Message history ($savedHistoryCount)" else "Message history", onOpenMessageHistory),
                                 Triple(Icons.Rounded.Shield, "Media vault", onOpenMediaVault),
-                                Triple(Icons.Rounded.AutoFixHigh, if (customStickerCount > 0) "Sticker studio ($customStickerCount)" else "Sticker studio", onOpenStickerStudio)
+                                Triple(Icons.Rounded.AutoFixHigh, if (customStickerCount > 0) "Sticker studio ($customStickerCount)" else "Sticker studio", onOpenStickerStudio),
+                                Triple(Icons.Rounded.QrCode2, "My QR code & scan", onOpenContactQr)
                             )
                             quickRows.forEachIndexed { idx, (icon, label, action) ->
                                 Row(
@@ -6627,9 +6673,11 @@ private fun NewChatPickerDialog(
     contacts: List<ContactEntity>,
     onDismiss: () -> Unit,
     onSelectChat: (String) -> Unit,
-    onOpenLinkedDevices: () -> Unit
+    onOpenLinkedDevices: () -> Unit,
+    onOpenQrScanner: () -> Unit = {}
 ) {
     val colors = LocalWaColors.current
+    val pickerContext = LocalContext.current
     var query by remember { mutableStateOf("") }
     val selfChatJid = remember(ownJid) { StealthMatrixManager.canonicalSelfChatJid(ownJid) }
     val selfChatEntry = remember(selfChatJid, ownJid, chats, contacts) {
@@ -6728,6 +6776,58 @@ private fun NewChatPickerDialog(
                         entry.jid.lowercase().contains(q)
                 }
                 LazyColumn(modifier = Modifier.height(260.dp)) {
+                    item(key = "new_contact_qr_row") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val insertIntent = Intent(ContactsContract.Intents.Insert.ACTION).apply {
+                                        type = ContactsContract.RawContacts.CONTENT_TYPE
+                                    }
+                                    runCatching { pickerContext.startActivity(insertIntent) }.onFailure {
+                                        Toast.makeText(pickerContext, "No Contacts app available", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(colors.accentGreen),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.PersonAdd,
+                                    contentDescription = "New contact",
+                                    tint = colors.accentGreen.contrastingContentColor(),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "New contact",
+                                color = colors.textPrimary,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .clickable { onOpenQrScanner() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.QrCode2,
+                                    contentDescription = "Scan or show QR code",
+                                    tint = colors.textPrimary,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                    }
                     if (showSelfEntry && selfChatEntry != null) {
                         item(key = "self_${selfChatEntry.jid}") {
                             Row(

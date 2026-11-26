@@ -94,6 +94,29 @@ object Whatsbridge {
     ).orEmpty()
 
     @JvmStatic
+    fun sendLocationMessage(
+        chatJid: String,
+        latitude: Double,
+        longitude: Double,
+        name: String = "",
+        address: String = "",
+        url: String = "",
+        quotedId: String = "",
+        quotedSender: String = "",
+        quotedBody: String = ""
+    ): String = nativeSendLocationMessage(
+        chatJid,
+        latitude,
+        longitude,
+        name,
+        address,
+        url,
+        quotedId,
+        quotedSender,
+        quotedBody
+    ).orEmpty()
+
+    @JvmStatic
     fun sendMediaMessage(
         chatJid: String,
         filePath: String,
@@ -374,6 +397,18 @@ object Whatsbridge {
         chatJid: String,
         displayName: String,
         vcard: String,
+        quotedId: String,
+        quotedSender: String,
+        quotedBody: String
+    ): String?
+
+    private external fun nativeSendLocationMessage(
+        chatJid: String,
+        latitude: Double,
+        longitude: Double,
+        name: String,
+        address: String,
+        url: String,
         quotedId: String,
         quotedSender: String,
         quotedBody: String

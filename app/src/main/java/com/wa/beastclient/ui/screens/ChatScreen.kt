@@ -121,6 +121,7 @@ import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.KeyboardDoubleArrowDown
+import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MoreHoriz
@@ -272,7 +273,11 @@ import com.wa.beastclient.ui.components.ForwardMessageDialog
 import com.wa.beastclient.ui.components.FullScreenMediaViewer
 import com.wa.beastclient.ui.components.InAppPdfViewerDialog
 import com.wa.beastclient.ui.components.InlineTimestampMessage
+import com.wa.beastclient.ui.components.LocationMessageCard
 import com.wa.beastclient.ui.components.MessageHistorySheet
+import com.wa.beastclient.ui.components.ShareLocationSheet
+import com.wa.beastclient.ui.components.openLocationInMaps
+import com.wa.beastclient.ui.components.parseLocationPayload
 import com.wa.beastclient.ui.components.MessageMetaCluster
 import com.wa.beastclient.ui.components.OutboundMediaPreviewDialog
 import com.wa.beastclient.ui.components.PerChatQuickControlsSheet
@@ -936,6 +941,9 @@ fun ChatScreen(
     var participantAvatarTarget by remember { mutableStateOf<Triple<String, String, String?>?>(null) }
     var participantPopupTarget by remember { mutableStateOf<ParticipantPopupTarget?>(null) }
     var showWallpaperDialog by remember { mutableStateOf(false) }
+    var showShareLocationSheet by remember { mutableStateOf(false) }
+    var callMessageActionTarget by remember { mutableStateOf<MessageEntity?>(null) }
+    var callInfoDialogTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var showScheduleDialog by remember { mutableStateOf(false) }
     var showScheduledSheet by remember { mutableStateOf(false) }
     var editingScheduledMessage by remember { mutableStateOf<ScheduledMessage?>(null) }
@@ -2179,6 +2187,8 @@ fun ChatScreen(
                                         onOpenSticker = { activeStickerActionMsg = msg },
                                         onOpenDocument = handleOpenDocument,
                                         onSaveDocument = handleSaveDocument,
+                                        onCallBackMessage = { isVideoCall -> initiateCall(isVideoCall) },
+                                        onLongClickCallMessage = { callMessageActionTarget = msg },
                                         onLongPress = { toggleMessageSelection(msg) },
                                         onNavigateToChat = onNavigateToChat
                                     )
@@ -2220,6 +2230,8 @@ fun ChatScreen(
                                             onOpenSticker = { activeStickerActionMsg = msg },
                                             onOpenDocument = handleOpenDocument,
                                             onSaveDocument = handleSaveDocument,
+                                            onCallBackMessage = { isVideoCall -> initiateCall(isVideoCall) },
+                                            onLongClickCallMessage = { callMessageActionTarget = msg },
                                             onLongPress = { toggleMessageSelection(msg) },
                                             onNavigateToChat = onNavigateToChat
                                         )
@@ -3637,10 +3649,10 @@ fun ChatScreen(
                             }
                         }
 
-                        // Main 4x2 Rounded-Square Attachment Grid
+                        // Main 3x3 Rounded-Square Attachment Grid (balanced symmetry + Location sharing)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
                             ComposerAttachTile(
                                 icon = Icons.Rounded.Collections,
@@ -3679,6 +3691,12 @@ fun ChatScreen(
                                     pickMediaLauncher.launch("*/*")
                                 }
                             )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
                             ComposerAttachTile(
                                 icon = Icons.Rounded.Person,
                                 iconTint = Color(0xFF14B8A6),
@@ -3691,12 +3709,6 @@ fun ChatScreen(
                                     showInAppContactPicker = true
                                 }
                             )
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
                             ComposerAttachTile(
                                 icon = Icons.Rounded.Headphones,
                                 iconTint = Color(0xFFF97316),
@@ -3710,6 +3722,24 @@ fun ChatScreen(
                                     pickAudioLauncher.launch("audio/*")
                                 }
                             )
+                            ComposerAttachTile(
+                                icon = Icons.Rounded.LocationOn,
+                                iconTint = Color(0xFF10B981),
+                                label = "Location",
+                                tileBg = tileBg,
+                                tileBorder = tileBorder,
+                                labelColor = labelColor,
+                                onClick = {
+                                    showAttachTray = false
+                                    showShareLocationSheet = true
+                                }
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
                             ComposerAttachTile(
                                 icon = Icons.Rounded.EmojiEmotions,
                                 iconTint = Color(0xFFFACC15),
@@ -4494,6 +4524,142 @@ fun ChatScreen(
         )
     }
 
+    if (showShareLocationSheet) {
+        ShareLocationSheet(
+            colors = colors,
+            onDismiss = { showShareLocationSheet = false },
+            onSendLocation = { lat, lng, name, address ->
+                showShareLocationSheet = false
+                runWithOutboundGuard {
+                    val allowUnsaved = !isKnownChatOrContact && coldStartConfirmed
+                    scrollToBottomPending = true
+                    viewModel.sendLocationMessage(
+                        chatJid = chatJid,
+                        latitude = lat,
+                        longitude = lng,
+                        name = name,
+                        address = address,
+                        quoted = replyTarget,
+                        allowUnsavedColdStart = allowUnsaved
+                    )
+                    replyTarget = null
+                    scope.launch { listState.animateScrollToItem(0) }
+                }
+            }
+        )
+    }
+
+    callMessageActionTarget?.let { callMsg ->
+        val defaultVideo = resolveCallMessageIsVideo(callMsg.body)
+        ModalBottomSheet(
+            onDismissRequest = { callMessageActionTarget = null },
+            containerColor = if (colors.isDark) Color(0xFF14181B) else colors.elevatedBar
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 26.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = callMsg.body.substringBefore("|").ifBlank { "Call" },
+                    color = colors.textPrimary,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+                ActionSheetRow(
+                    title = if (defaultVideo) "Video call back" else "Voice call back",
+                    icon = if (defaultVideo) Icons.Rounded.Videocam else Icons.Rounded.Call
+                ) {
+                    callMessageActionTarget = null
+                    initiateCall(defaultVideo)
+                }
+                ActionSheetRow(
+                    title = if (defaultVideo) "Voice call instead" else "Video call instead",
+                    icon = if (defaultVideo) Icons.Rounded.Call else Icons.Rounded.Videocam
+                ) {
+                    callMessageActionTarget = null
+                    initiateCall(!defaultVideo)
+                }
+                ActionSheetRow(
+                    title = "View call info",
+                    icon = Icons.Rounded.Info
+                ) {
+                    callMessageActionTarget = null
+                    callInfoDialogTarget = callMsg
+                }
+                ActionSheetRow(
+                    title = "Delete from chat",
+                    icon = Icons.Rounded.Delete
+                ) {
+                    callMessageActionTarget = null
+                    deleteConfirmTarget = callMsg
+                }
+            }
+        }
+    }
+
+    callInfoDialogTarget?.let { callMsg ->
+        val parts = callMsg.body.split("|", limit = 2)
+        val title = parts.getOrNull(0)?.ifBlank { "Voice call" } ?: "Voice call"
+        val subtitle = parts.getOrNull(1)?.ifBlank {
+            when {
+                callMsg.durationSec in 1..59 -> "${callMsg.durationSec} sec"
+                callMsg.durationSec >= 60 -> "${(callMsg.durationSec + 30) / 60} min"
+                else -> "No answer"
+            }
+        } ?: "No answer"
+        val formattedTime = remember(callMsg.timestamp) {
+            SimpleDateFormat("MMM d, yyyy · h:mm:ss a", Locale.getDefault()).format(Date(callMsg.timestamp))
+        }
+        AlertDialog(
+            onDismissRequest = { callInfoDialogTarget = null },
+            containerColor = colors.elevatedBar,
+            title = { Text(title, color = colors.textPrimary, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = if (callMsg.isFromMe) "Direction: Outgoing" else "Direction: Incoming",
+                        color = colors.textPrimary,
+                        fontSize = 14.sp
+                    )
+                    Text(
+                        text = "Status: $subtitle",
+                        color = colors.textSecondary,
+                        fontSize = 14.sp
+                    )
+                    Text(
+                        text = "Time: $formattedTime",
+                        color = colors.textSecondary,
+                        fontSize = 13.5.sp
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val isVideo = resolveCallMessageIsVideo(callMsg.body)
+                        callInfoDialogTarget = null
+                        initiateCall(isVideo)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.brightGreen,
+                        contentColor = colors.brightGreen.contrastingContentColor()
+                    )
+                ) {
+                    Text("Call Back")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { callInfoDialogTarget = null }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
     participantPopupTarget?.let { popup ->
         var resolvedDigits by remember(popup.jid, popup.altJid, popup.phoneDisplay) {
             mutableStateOf(
@@ -5123,6 +5289,8 @@ private fun MessageBubbleRow(
     onOpenSticker: () -> Unit = {},
     onOpenDocument: () -> Unit = {},
     onSaveDocument: () -> Unit = {},
+    onCallBackMessage: (Boolean) -> Unit = {},
+    onLongClickCallMessage: (() -> Unit)? = null,
     onLongPress: () -> Unit,
     onNavigateToChat: (String) -> Unit = {}
 ) {
@@ -5155,6 +5323,14 @@ private fun MessageBubbleRow(
     val isContactCard = remember(msg.id, msg.msgType, msg.isDeletedBySender) {
         isContactMessage(msg)
     }
+    val parsedLocation = remember(msg.id, msg.msgType, msg.body, msg.mimeType, msg.isDeletedBySender) {
+        if (msg.msgType == "LOCATION" && !msg.isDeletedBySender) {
+            parseLocationPayload(msg.body, msg.mimeType)
+        } else {
+            null
+        }
+    }
+    val isLocationCard = parsedLocation != null
     val isMediaCard = (msg.msgType == "IMAGE" || msg.msgType == "VIDEO" || msg.msgType == "GIF") &&
         !msg.isViewOnce &&
         msg.msgType != "VIEW_ONCE_STRIPPED" &&
@@ -5163,25 +5339,26 @@ private fun MessageBubbleRow(
     val tailOffsetDp = 5.5.dp
     val sideStartPad = when {
         isSticker -> 0.dp
-        isMediaCard -> if (!isChannel && showTail && !effectiveOutgoing) 8.5.dp else 3.dp
+        isMediaCard || isLocationCard -> if (!isChannel && showTail && !effectiveOutgoing) 8.5.dp else 3.dp
         isDocCard || isContactCard -> if (!isChannel && showTail && !effectiveOutgoing) 11.5.dp else 6.dp
         else -> if (!isChannel && showTail && !effectiveOutgoing) 15.5.dp else 10.dp
     }
     val sideEndPad = when {
         isSticker -> 0.dp
-        isMediaCard -> if (!isChannel && showTail && effectiveOutgoing) 8.5.dp else 3.dp
+        isMediaCard || isLocationCard -> if (!isChannel && showTail && effectiveOutgoing) 8.5.dp else 3.dp
         isDocCard || isContactCard -> if (!isChannel && showTail && effectiveOutgoing) 11.5.dp else 6.dp
         else -> if (!isChannel && showTail && effectiveOutgoing) 15.5.dp else 10.dp
     }
     val topBottomPad = when {
         isSticker -> 0.dp
-        isMediaCard -> 3.dp
+        isMediaCard || isLocationCard -> 3.dp
         isDocCard || isContactCard -> 5.dp
         else -> 6.dp
     }
     val bubbleMaxW = when {
         isSticker -> 160.dp
         isMediaCard -> 282.dp
+        isLocationCard -> 276.dp
         isContactCard -> 270.dp
         isDocCard -> 285.dp
         else -> 305.dp
@@ -5742,7 +5919,7 @@ private fun MessageBubbleRow(
                                 else -> "No answer"
                             }
                         } ?: "No answer"
-                        val isVideoCall = callTitle.contains("Video", ignoreCase = true)
+                        val isVideoCall = resolveCallMessageIsVideo(msg.body)
                         val isMissed = callTitle.contains("Missed", ignoreCase = true) ||
                             callTitle.contains("Silenced", ignoreCase = true) ||
                             callSubtitle.contains("No answer", ignoreCase = true) ||
@@ -5774,6 +5951,10 @@ private fun MessageBubbleRow(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(callCardBg)
+                                    .combinedClickable(
+                                        onClick = { onCallBackMessage(isVideoCall) },
+                                        onLongClick = onLongClickCallMessage ?: onLongPress
+                                    )
                                     .padding(horizontal = 10.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -6077,6 +6258,27 @@ private fun MessageBubbleRow(
                                 )
                             }
                         }
+                    }
+
+                    // Location card (WhatsApp-style map preview + place name + address + tap to open Maps)
+                    parsedLocation != null -> {
+                        LocationMessageCard(
+                            msg = msg,
+                            payload = parsedLocation,
+                            colors = colors,
+                            onClick = { openLocationInMaps(context, parsedLocation) },
+                            onLongClick = onLongPress,
+                            metaCluster = {
+                                MessageMetaCluster(
+                                    timeText = formatMessageClock(msg.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour),
+                                    isEdited = msg.isEdited,
+                                    isEphemeral = msg.isEphemeral,
+                                    isFromMe = msg.isFromMe,
+                                    deliveryStatus = msg.deliveryStatus,
+                                    isPinned = msg.isPinned
+                                )
+                            }
+                        )
                     }
 
                     // Contact card (vCard attachment)
@@ -7229,6 +7431,9 @@ private data class ParticipantPopupTarget(
     val altJid: String = "",
     val isAdmin: Boolean = false
 )
+
+internal fun resolveCallMessageIsVideo(callBody: String): Boolean =
+    callBody.substringBefore("|").contains("Video", ignoreCase = true)
 
 internal fun formatReactionBadgeSummary(
     legacySummary: String,

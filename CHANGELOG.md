@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.10-pre.5] - 2026-11-26
+
+### ✨ Features
+- Fixed location messages so they render as rich map preview cards with place names and addresses, and open directly in Maps when tapped (#184).
+- Added location sharing to the attachment menu using device GPS or address search / pasted coordinates (#184).
+- Added WhatsApp-style QR code contact sharing (`My code`) and live camera or photo scanning (`Scan code`) plus a `New contact` shortcut in New Chat and Settings (#166).
+- Made call log bubbles interactive so tapping starts a matching voice or video callback right away, and long-pressing offers Call back or View call info (#186).
+
 ## [0.3.10-pre.4] - 2026-11-26
 
 ### ✨ Features

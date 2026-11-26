@@ -1595,6 +1595,10 @@ interface WaDao {
                 msg.msgType == "IMAGE" -> msg.body.ifBlank { "📷 Photo" }
                 msg.msgType == "VIDEO" -> msg.body.ifBlank { "🎥 Video" }
                 msg.msgType == "DOCUMENT" -> msg.body.ifBlank { "📄 Document" }
+                msg.msgType == "LOCATION" -> {
+                    val label = msg.body.substringAfter("(", "").substringBeforeLast(")").trim()
+                    if (label.isNotBlank()) "📍 $label" else "📍 Location"
+                }
                 msg.msgType == "STICKER" -> "💟 Sticker"
                 msg.msgType == "UNDECRYPTABLE" -> "⏳ Waiting for this message"
                 else -> msg.body
