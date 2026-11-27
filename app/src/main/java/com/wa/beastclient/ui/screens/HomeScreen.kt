@@ -5352,7 +5352,8 @@ private fun ToolsVaultTab(
     fun showCategory(cat: SettingsCategory): Boolean =
         isSearching || selectedCategory == SettingsCategory.ALL || selectedCategory == cat
 
-    val privacyDotActive = stealth.offlineMode || stealth.ghostPresence || stealth.hideReadReceipts
+    val privacyDotActive = stealth.offlineMode || stealth.ghostPresence || stealth.hideReadReceipts ||
+        stealth.hideChatContactNames || stealth.hideChatProfilePictures
     val updatesDotActive = updateState is UpdateUiState.UpdateAvailable || updateState is UpdateUiState.ReadyToInstall
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -5513,7 +5514,8 @@ private fun ToolsVaultTab(
                 matchesSearch("anti-delete", "deleted messages", "statuses") ||
                 matchesSearch("disappearing", "ephemeral", "immunity") ||
                 matchesSearch(stringResource(R.string.settings_applock_row_title), "app lock", "pin", "biometric") ||
-                matchesSearch(stringResource(R.string.settings_allow_screenshots_title), "screenshots", "screen")
+                matchesSearch(stringResource(R.string.settings_allow_screenshots_title), "screenshots", "screen") ||
+                matchesSearch("privacy mode", "hide contact names", "hide profile pictures", "dp", "avatar", "names")
             )
         val showCallingSection = showCategory(SettingsCategory.CALLS) && (
             matchesSearch("calling", "voip", "voice", "video", "always ready", "smart warm", "official", "ring", "anti-call", "record", "pip", "swap", "flip", "preview", "layout")
@@ -5823,6 +5825,50 @@ private fun ToolsVaultTab(
                             },
                             onCheckedChange = {
                                 viewModel.updateGlobalStealth { c -> c.copy(disappearingImmunity = it) }
+                            }
+                        )
+                        ExpressiveSegmentedSwitchRow(
+                            icon = Icons.Rounded.VisibilityOff,
+                            title = "Hide Names & DPs in Chats",
+                            checked = stealth.hideChatContactNames && stealth.hideChatProfilePictures,
+                            position = ExpressiveSegmentPosition.MIDDLE,
+                            onInfoClick = {
+                                infoDialogContent = "Hide Names & DPs in Chats" to
+                                    "Turns on both contact name masking and profile picture hiding inside chat conversations."
+                            },
+                            onCheckedChange = { enabled ->
+                                viewModel.updateGlobalStealth { c ->
+                                    c.copy(
+                                        hideChatContactNames = enabled,
+                                        hideChatProfilePictures = enabled
+                                    )
+                                }
+                            }
+                        )
+                        ExpressiveSegmentedSwitchRow(
+                            icon = Icons.Rounded.Person,
+                            title = "Hide Contact Names in Chats",
+                            checked = stealth.hideChatContactNames,
+                            position = ExpressiveSegmentPosition.MIDDLE,
+                            onInfoClick = {
+                                infoDialogContent = "Hide Contact Names in Chats" to
+                                    "Replaces contact, group, and sender names with neutral labels inside open chat screens."
+                            },
+                            onCheckedChange = {
+                                viewModel.updateGlobalStealth { c -> c.copy(hideChatContactNames = it) }
+                            }
+                        )
+                        ExpressiveSegmentedSwitchRow(
+                            icon = Icons.Rounded.Image,
+                            title = "Hide Profile Pictures (DPs) in Chats",
+                            checked = stealth.hideChatProfilePictures,
+                            position = ExpressiveSegmentPosition.MIDDLE,
+                            onInfoClick = {
+                                infoDialogContent = "Hide Profile Pictures (DPs) in Chats" to
+                                    "Hides contact and participant profile photos in the chat header and group message bubbles."
+                            },
+                            onCheckedChange = {
+                                viewModel.updateGlobalStealth { c -> c.copy(hideChatProfilePictures = it) }
                             }
                         )
                         ExpressiveSegmentedActionRow(

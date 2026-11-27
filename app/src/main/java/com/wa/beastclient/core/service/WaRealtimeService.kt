@@ -1459,9 +1459,10 @@ class WaRealtimeService : Service() {
         if (dao.getChat(msg.chatJid)?.avatarPath.isNullOrBlank()) {
             requestSingleAvatarIfNeeded(msg.chatJid)
         }
-        if (isActiveChat || (msg.isFromMe && !isSync)) {
+        val preExistingChatTs = dao.getChat(msg.chatJid)?.lastMessageTimestamp ?: 0L
+        if (isActiveChat || (msg.isFromMe && (!isSync || msg.timestamp >= preExistingChatTs - 1000L))) {
             dao.clearLocalUnread(msg.chatJid)
-            if (msg.isFromMe && !isSync) {
+            if (msg.isFromMe) {
                 val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 runCatching { mgr?.cancel(notificationIdForChat(msg.chatJid)) }
             }
@@ -1969,6 +1970,23 @@ class WaRealtimeService : Service() {
                         timestamp = timestamp
                     )
                 )
+            }
+        }
+        if ((receiptType == "READ_SELF" || receiptType == "PLAYED_SELF") &&
+            chatJid.isNotBlank() &&
+            chatJid != "status@broadcast" &&
+            !chatJid.endsWith("@newsletter")
+        ) {
+            val readCutoffTs = maxOf(maxMatchedTs, timestamp)
+            val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            val targets = listOfNotNull(
+                chatJid,
+                altChatJid.takeIf { it.isNotBlank() && it != chatJid }
+            )
+            targets.forEach { target ->
+                dao.clearLocalUnread(target)
+                dao.markIncomingReadUpTo(target, readCutoffTs, timestamp)
+                runCatching { mgr?.cancel(notificationIdForChat(target)) }
             }
         }
         // On 1:1 DMs, a READ/DELIVERED receipt advances prior outgoing ticks up to that message timestamp

@@ -85,6 +85,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.automirrored.rounded.Forward
@@ -1479,12 +1481,29 @@ fun ChatScreen(
                                     end = if (isChannel) 82.dp else 118.dp
                                 )
                             ) {
-                                Box(modifier = Modifier.clickable { showProfilePhotoLightbox = true }) {
+                                Box(
+                                    modifier = Modifier.clickable {
+                                        if (stealthConfig.hideChatProfilePictures) {
+                                            Toast.makeText(
+                                                context,
+                                                "Profile pictures hidden in Privacy Mode",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        } else {
+                                            showProfilePhotoLightbox = true
+                                        }
+                                    }
+                                ) {
                                     WhatsAppAvatar(
                                         jid = chatJid,
-                                        avatarPath = chat?.avatarPath,
+                                        avatarPath = if (stealthConfig.hideChatProfilePictures) null else chat?.avatarPath,
                                         isGroup = chat?.isGroup == true,
-                                        size = 38.dp
+                                        size = 38.dp,
+                                        initialChar = if (stealthConfig.hideChatProfilePictures || stealthConfig.hideChatContactNames) {
+                                            null
+                                        } else {
+                                            extractAvatarInitialChar(chat?.name.orEmpty())
+                                        }
                                     )
                                 }
                                 Spacer(modifier = Modifier.width(10.dp))
@@ -1496,10 +1515,22 @@ fun ChatScreen(
                                     val isSelfChat = remember(chatJid, bridgeStatus.ownJid) {
                                         StealthMatrixManager.isSelfChatJid(chatJid, bridgeStatus.ownJid)
                                     }
-                                    val displayChatTitle = remember(chat?.name, chatJid, isSelfChat) {
+                                    val displayChatTitle = remember(
+                                        chat?.name,
+                                        chatJid,
+                                        isSelfChat,
+                                        isChannel,
+                                        stealthConfig.hideChatContactNames
+                                    ) {
                                         val base = chat?.name?.ifBlank { chatJid.substringBefore("@") }
                                             ?: chatJid.substringBefore("@")
-                                        if (isSelfChat && !base.contains("(You)", ignoreCase = true)) "$base (You)" else base
+                                        val rawTitle = if (isSelfChat && !base.contains("(You)", ignoreCase = true)) "$base (You)" else base
+                                        StealthMatrixManager.maskChatTitleIfHidden(
+                                            rawTitle = rawTitle,
+                                            isGroup = chat?.isGroup == true,
+                                            isChannel = isChannel,
+                                            hideNames = stealthConfig.hideChatContactNames
+                                        )
                                     }
                                     Text(
                                         text = displayChatTitle,
@@ -1521,6 +1552,8 @@ fun ChatScreen(
                                     ) {
                                         if (chat?.isGroup != true || isChannel || participantMeta.isEmpty()) {
                                             ""
+                                        } else if (stealthConfig.hideChatContactNames) {
+                                            "${participantMeta.size} participants"
                                         } else {
                                             val others = participantMeta.values
                                                 .asSequence()
@@ -1584,6 +1617,7 @@ fun ChatScreen(
                                         }
                                     }
                                     if (stealthConfig.alwaysShowContactBio &&
+                                        !stealthConfig.hideChatContactNames &&
                                         effectiveAbout.isNotBlank() &&
                                         !isChannel &&
                                         !chatJid.endsWith("@g.us") &&
@@ -1766,6 +1800,32 @@ fun ChatScreen(
                                         onClick = {
                                             showOverflow = false
                                             showScheduledSheet = true
+                                        }
+                                    )
+                                    val privacyModeBothActive = stealthConfig.hideChatContactNames &&
+                                        stealthConfig.hideChatProfilePictures
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                if (privacyModeBothActive) "Show names & DPs"
+                                                else "Hide names & DPs"
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                if (privacyModeBothActive) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
+                                                null
+                                            )
+                                        },
+                                        onClick = {
+                                            showOverflow = false
+                                            val next = !privacyModeBothActive
+                                            viewModel.updateGlobalStealth { c ->
+                                                c.copy(
+                                                    hideChatContactNames = next,
+                                                    hideChatProfilePictures = next
+                                                )
+                                            }
                                         }
                                     )
                                 }
@@ -2218,7 +2278,9 @@ fun ChatScreen(
                                             else callMessageActionTarget = msg
                                         },
                                         onLongPress = { toggleMessageSelection(msg) },
-                                        onNavigateToChat = onNavigateToChat
+                                        onNavigateToChat = onNavigateToChat,
+                                        hideContactNames = stealthConfig.hideChatContactNames,
+                                        hideProfilePictures = stealthConfig.hideChatProfilePictures
                                     )
                                 } else {
                                     SwipeToReplyBox(onReply = { replyTarget = msg }) {
@@ -2270,7 +2332,9 @@ fun ChatScreen(
                                                 else callMessageActionTarget = msg
                                             },
                                             onLongPress = { toggleMessageSelection(msg) },
-                                            onNavigateToChat = onNavigateToChat
+                                            onNavigateToChat = onNavigateToChat,
+                                            hideContactNames = stealthConfig.hideChatContactNames,
+                                            hideProfilePictures = stealthConfig.hideChatProfilePictures
                                         )
                                     }
                                 }
@@ -5357,7 +5421,9 @@ private fun MessageBubbleRow(
     onCallBackMessage: (Boolean) -> Unit = {},
     onLongClickCallMessage: (() -> Unit)? = null,
     onLongPress: () -> Unit,
-    onNavigateToChat: (String) -> Unit = {}
+    onNavigateToChat: (String) -> Unit = {},
+    hideContactNames: Boolean = false,
+    hideProfilePictures: Boolean = false
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
@@ -5490,17 +5556,24 @@ private fun MessageBubbleRow(
         if (showGroupGutter) {
             if (showSenderHeader) {
                 val resolvedPrimary = senderDisplay?.primary ?: msg.senderName
-                val showInitials = resolvedPrimary != "~ Member" && resolvedPrimary != "Group Admin"
+                val showInitials = !hideProfilePictures && !hideContactNames &&
+                    resolvedPrimary != "~ Member" && resolvedPrimary != "Group Admin"
                 Box(
                     modifier = Modifier
                         .padding(top = 1.dp, end = 6.dp)
-                        .clickable {
-                            if (isSelectionMode) onToggleSelect() else onClickSenderAvatar()
-                        }
+                        .then(
+                            if (!hideProfilePictures) {
+                                Modifier.clickable {
+                                    if (isSelectionMode) onToggleSelect() else onClickSenderAvatar()
+                                }
+                            } else {
+                                Modifier
+                            }
+                        )
                 ) {
                     WhatsAppAvatar(
                         jid = msg.senderJid,
-                        avatarPath = senderAvatarPath,
+                        avatarPath = if (hideProfilePictures) null else senderAvatarPath,
                         isGroup = false,
                         size = 28.dp,
                         initialChar = if (showInitials) extractAvatarInitialChar(resolvedPrimary) else null
@@ -5581,12 +5654,12 @@ private fun MessageBubbleRow(
                         it.isNotBlank() && it != "participant" && it != "group"
                     } ?: cleanSenderJid.takeIf { it.isNotBlank() } ?: msg.senderName.ifBlank { msg.id }
                     val c = palette[abs(colorKey.hashCode()) % palette.size]
-                    val resolvedPrimary = senderPrimary
-                    val resolvedPhone = senderDisplay?.secondaryPhone.orEmpty()
+                    val resolvedPrimary = StealthMatrixManager.maskGroupSenderIfHidden(senderPrimary, hideContactNames)
+                    val resolvedPhone = if (hideContactNames) "" else senderDisplay?.secondaryPhone.orEmpty()
                     Row(
                         modifier = Modifier
                             .then(
-                                if (!isSelectionMode) {
+                                if (!isSelectionMode && !hideProfilePictures) {
                                     Modifier.clickable(
                                         interactionSource = remember { MutableInteractionSource() },
                                         indication = null,
@@ -5637,7 +5710,7 @@ private fun MessageBubbleRow(
                 // Quoted Context Banner with full-height accent bar + media glyph + 50dp square thumbnail
                 if (!msg.quotedId.isNullOrBlank()) {
                     val rawQuoted = msg.quotedSender.orEmpty()
-                    val qPrimary = quotedDisplay?.primary?.takeIf { it.isNotBlank() } ?: when {
+                    val rawQPrimary = quotedDisplay?.primary?.takeIf { it.isNotBlank() } ?: when {
                         isChannel && (rawQuoted.isBlank() || rawQuoted == msg.chatJid || rawQuoted.endsWith("@newsletter")) ->
                             channelDisplayName.ifBlank { "Channel" }
                         rawQuoted.endsWith("@newsletter") ->
@@ -5646,7 +5719,8 @@ private fun MessageBubbleRow(
                         rawQuoted.isNotBlank() -> rawQuoted
                         else -> "Quoted message"
                     }
-                    val qPhone = quotedDisplay?.secondaryPhone.orEmpty()
+                    val qPrimary = if (hideContactNames && rawQPrimary != "You") "Member" else rawQPrimary
+                    val qPhone = if (hideContactNames) "" else quotedDisplay?.secondaryPhone.orEmpty()
                     val qAccent = when {
                         isChannel || qPrimary == "You" -> colors.brightGreen
                         else -> listOf(

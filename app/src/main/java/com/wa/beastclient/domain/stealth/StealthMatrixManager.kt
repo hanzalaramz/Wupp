@@ -176,7 +176,9 @@ data class GlobalStealthConfig(
     val autoRecordCalls: Boolean = false,
     val chatSoundsEnabled: Boolean = true,
     val localContactFallbackEnabled: Boolean = true,
-    val preferPhonebookContactNames: Boolean = false
+    val preferPhonebookContactNames: Boolean = false,
+    val hideChatContactNames: Boolean = false,
+    val hideChatProfilePictures: Boolean = false
 )
 
 data class EffectiveChatPrivacy(
@@ -275,6 +277,8 @@ object StealthMatrixManager {
     private const val KEY_CHAT_SOUNDS_ENABLED = "chat_sounds_enabled"
     private const val KEY_LOCAL_CONTACT_FALLBACK = "local_contact_fallback_enabled"
     private const val KEY_PREFER_PHONEBOOK_NAMES = "prefer_phonebook_contact_names"
+    private const val KEY_HIDE_CHAT_CONTACT_NAMES = "hide_chat_contact_names"
+    private const val KEY_HIDE_CHAT_PROFILE_PICTURES = "hide_chat_profile_pictures"
 
     private const val FOURTEEN_DAYS_MS = 14L * 24L * 60L * 60L * 1000L
     private const val WARNING_THRESHOLD_DAYS = 10
@@ -403,7 +407,9 @@ object StealthMatrixManager {
             autoRecordCalls = prefs.getBoolean(KEY_AUTO_RECORD_CALLS, false),
             chatSoundsEnabled = prefs.getBoolean(KEY_CHAT_SOUNDS_ENABLED, true),
             localContactFallbackEnabled = prefs.getBoolean(KEY_LOCAL_CONTACT_FALLBACK, true),
-            preferPhonebookContactNames = prefs.getBoolean(KEY_PREFER_PHONEBOOK_NAMES, false)
+            preferPhonebookContactNames = prefs.getBoolean(KEY_PREFER_PHONEBOOK_NAMES, false),
+            hideChatContactNames = prefs.getBoolean(KEY_HIDE_CHAT_CONTACT_NAMES, false),
+            hideChatProfilePictures = prefs.getBoolean(KEY_HIDE_CHAT_PROFILE_PICTURES, false)
         )
 
     fun updateConfig(transform: (GlobalStealthConfig) -> GlobalStealthConfig) {
@@ -479,9 +485,28 @@ object StealthMatrixManager {
                 .putBoolean(KEY_CHAT_SOUNDS_ENABLED, updated.chatSoundsEnabled)
                 .putBoolean(KEY_LOCAL_CONTACT_FALLBACK, updated.localContactFallbackEnabled)
                 .putBoolean(KEY_PREFER_PHONEBOOK_NAMES, updated.preferPhonebookContactNames)
+                .putBoolean(KEY_HIDE_CHAT_CONTACT_NAMES, updated.hideChatContactNames)
+                .putBoolean(KEY_HIDE_CHAT_PROFILE_PICTURES, updated.hideChatProfilePictures)
                 .apply()
         }
     }
+
+    fun maskChatTitleIfHidden(
+        rawTitle: String,
+        isGroup: Boolean,
+        isChannel: Boolean,
+        hideNames: Boolean
+    ): String {
+        if (!hideNames) return rawTitle
+        return when {
+            isChannel -> "Private Channel"
+            isGroup -> "Private Group"
+            else -> "Private Chat"
+        }
+    }
+
+    fun maskGroupSenderIfHidden(rawName: String, hideNames: Boolean): String =
+        if (hideNames) "Member" else rawName
 
     fun currentAutoDownloadNetwork(context: Context): AutoDownloadNetwork {
         val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager

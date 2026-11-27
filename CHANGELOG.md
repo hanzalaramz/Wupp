@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### ✨ Features
+- Added Chat Privacy Mode toggles in Settings and chat menus to hide contact names, profile pictures (DPs), or both inside chats (#220).
+
+### 🛠️ Fixes
+- Fixed messages sent or read on your main WhatsApp phone reappearing as unread or shifting order in Wupp by clearing unread counts on `READ_SELF` / `PLAYED_SELF` receipts and same-second replies, and sorting messages deterministically (#221).
+
 ## [0.3.10] - 2026-11-26
 
 ### ✨ Features

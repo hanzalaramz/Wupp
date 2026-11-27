@@ -134,6 +134,20 @@ interface WaDao {
     @Query("UPDATE chats SET unread_count = 0 WHERE jid = :chatJid")
     suspend fun clearLocalUnread(chatJid: String)
 
+    @Query(
+        """
+        UPDATE messages
+        SET delivery_status = 'READ',
+            read_at = CASE WHEN read_at = 0 THEN :readTs ELSE read_at END
+        WHERE chat_jid = :chatJid
+          AND is_from_me = 0
+          AND delivery_status != 'PLAYED'
+          AND delivery_status != 'READ'
+          AND timestamp <= :upToTs
+        """
+    )
+    suspend fun markIncomingReadUpTo(chatJid: String, upToTs: Long, readTs: Long)
+
     @Query("UPDATE chats SET unread_count = 0 WHERE jid LIKE '%@newsletter' AND unread_count > 0")
     suspend fun resetInflatedNewsletterUnread()
 
@@ -452,10 +466,10 @@ interface WaDao {
     @Query("SELECT * FROM chats WHERE last_message_preview = '' OR last_message_type IN ('UNKNOWN', '')")
     suspend fun getChatsWithBlankPreview(): List<ChatEntity>
 
-    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, rowid DESC LIMIT 1")
+    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, id DESC LIMIT 1")
     suspend fun getLatestMessageForChat(chatJid: String): MessageEntity?
 
-    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, rowid DESC")
+    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, id DESC")
     suspend fun getMessagesForChat(chatJid: String): List<MessageEntity>
 
     @Query("SELECT * FROM messages WHERE chat_jid = :chatJid AND timestamp > :afterTimestamp ORDER BY timestamp ASC LIMIT 1")
@@ -478,7 +492,7 @@ interface WaDao {
               WHEN instr(:chatJid, '@') > 1 THEN substr(:chatJid, 1, instr(:chatJid, '@') - 1)
               ELSE :chatJid
           END
-        ORDER BY timestamp DESC, rowid DESC LIMIT 1
+        ORDER BY timestamp DESC, id DESC LIMIT 1
         """
     )
     suspend fun getLatestIncomingSenderName(chatJid: String): String?
@@ -508,10 +522,10 @@ interface WaDao {
     )
     suspend fun getExpiredEphemeralMessageIds(nowMs: Long): List<String>
 
-    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, rowid DESC")
+    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, id DESC")
     fun pagingMessages(chatJid: String): PagingSource<Int, MessageEntity>
 
-    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, rowid DESC LIMIT :limit")
+    @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, id DESC LIMIT :limit")
     fun observeRecentMessages(chatJid: String, limit: Int = 200): Flow<List<MessageEntity>>
 
     @Query(
@@ -1278,8 +1292,10 @@ interface WaDao {
                     chat.lastMessageStatus
                 }
                 val latestSenderName = safeSenderLabelForChatPreview(latest)
+                val resolvedBatchUnread = if (latest.isFromMe) 0 else chat.unreadCount
                 upsertChat(
                     chat.copy(
+                        unreadCount = resolvedBatchUnread,
                         lastMessageId = latest.id,
                         lastMessagePreview = previewTextFor(latest),
                         lastMessageType = if (latest.isViewOnce) "VIEW_ONCE_${latest.msgType}" else latest.msgType,
@@ -1384,7 +1400,8 @@ interface WaDao {
             )
         } else {
             val shouldAdvancePreview = effectiveMessage.timestamp >= existingChat.lastMessageTimestamp ||
-                existingChat.lastMessageId == effectiveMessage.id
+                existingChat.lastMessageId == effectiveMessage.id ||
+                (effectiveMessage.isFromMe && effectiveMessage.timestamp / 1000L == existingChat.lastMessageTimestamp / 1000L)
             val resolvedUnread = when {
                 effectiveMessage.isFromMe && shouldAdvancePreview -> 0
                 shouldBumpUnread -> existingChat.unreadCount + 1
