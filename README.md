@@ -40,44 +40,29 @@
 
 ---
 
-<div align="center">
+## <a id="features"></a>What You Get
 
-<h2><a id="features"></a>What You Get</h2>
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
-
-#### Privacy
+### Privacy
 - **Ghost Mode:** Freeze your last seen and stay hidden while online.
 - **Hide Ticks & Typing:** Turn off read ticks, voice-note played ticks, and typing/recording status globally or per chat.
-- **Keep Deleted Messages:** Save messages, statuses, and edit history on your phone even if someone deletes or edits them.
-- **Chat Privacy & Lock:** Lock the app or individual chats, and hide contact names and profile photos inside chats.
+- **Keep Deleted Messages:** Save deleted messages, statuses, and edit history on your phone.
+- **App & Chat Lock:** Lock the app or individual chats, and hide contact names and profile photos inside chats.
 
-#### Calls & Media
-- **In-App Voice & Video Calls:** Native encrypted calls right inside Wupp with a draggable corner self-preview.
+### Calls & Media
+- **In-App Voice & Video Calls:** Native encrypted calls inside Wupp with a draggable corner self-preview.
 - **View-Once Media:** Open, save, and send View-Once photos, videos, and voice notes.
 - **Better Photos & Voice Notes:** Send up to 10 photos/videos at once with captions, pause/resume voice notes, and transcribe audio offline.
 
-    </td>
-    <td width="50%" valign="top">
-
-#### Look & Feel
+### Look & Feel
 - **AMOLED & Glass UI:** Pure black default theme with smooth translucent bars and popups.
 - **Custom Home Screen:** Pick Classic, iOS-style, or Compact layouts, change colors, and hide bottom tabs you don't use.
-- **Stickers:** Make custom stickers in Sticker Studio and keep favorite stickers saved locally.
+- **Stickers:** Create custom stickers in Sticker Studio and keep favorite stickers saved locally.
 
-#### Handy Extras
+### Handy Extras
 - **Better Groups:** `@` mention autocomplete, `@everyone` ghost mentions, member quick cards, and admin-only group support.
 - **Locations, Contacts & QR:** Map preview cards, GPS sharing, native contact cards, and QR code scan/share.
 - **Scheduled Messages & Drafts:** Schedule one-time or repeat messages and keep unsent drafts per chat.
 - **Multi-Account & Easy Updates:** Switch between accounts and install signed updates right inside the app.
-
-    </td>
-  </tr>
-</table>
-
-</div>
 
 ---
 
