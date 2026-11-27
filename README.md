@@ -50,7 +50,7 @@
 
 ### Calls & Media
 - **In-App Voice & Video Calls:** Native encrypted calls inside Wupp with a draggable corner self-preview.
-- **View-Once Media:** Open, save, and send View-Once photos, videos, and voice notes.
+- **View-Once Media:** Open and send View-Once photos, videos, and voice notes.
 - **Better Photos & Voice Notes:** Send up to 10 photos/videos at once with captions, pause/resume voice notes, and transcribe audio offline.
 
 ### Look & Feel
