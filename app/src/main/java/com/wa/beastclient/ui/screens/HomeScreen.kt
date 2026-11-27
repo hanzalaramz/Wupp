@@ -338,18 +338,23 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-/** Returns the bottom-bar tab IDs in swipeable left-to-right Wupp order. */
+/** Returns the bottom-bar tab IDs in swipeable left-to-right Wupp order, omitting [hiddenNavTabs]. */
 internal fun resolveHomeTabOrder(
     separateGroupsAndChats: Boolean,
-    separateChannelsTab: Boolean = false
-): List<Int> = buildList {
-    add(0)
-    if (separateGroupsAndChats) add(4)
-    add(1)
-    if (separateChannelsTab) add(6)
-    add(2)
-    add(5)
-    add(3)
+    separateChannelsTab: Boolean = false,
+    hiddenNavTabs: Set<Int> = emptySet()
+): List<Int> {
+    val full = buildList {
+        add(0)
+        if (separateGroupsAndChats) add(4)
+        add(1)
+        if (separateChannelsTab) add(6)
+        add(2)
+        add(5)
+        add(3)
+    }
+    val filtered = full.filterNot { it in hiddenNavTabs }
+    return filtered.ifEmpty { listOf(0) }
 }
 
 internal fun filterChannelsByQuery(
@@ -451,17 +456,6 @@ fun HomeScreen(
     }
 
     val showChannelsTab = stealth.separateChannelsTab && !stealth.hideChannels
-
-    LaunchedEffect(stealth.separateGroupsAndChats, currentTab) {
-        if (!stealth.separateGroupsAndChats && currentTab == 4) {
-            onSelectTab(0)
-        }
-    }
-    LaunchedEffect(showChannelsTab, currentTab) {
-        if (!showChannelsTab && currentTab == 6) {
-            onSelectTab(1)
-        }
-    }
 
     var editProfileRequestNonce by remember { mutableIntStateOf(0) }
     var overflowExpanded by remember { mutableStateOf(false) }
@@ -666,6 +660,18 @@ fun HomeScreen(
 
     val backdropState = rememberWuppBackdropState()
     val homeAppearance by HomeAppearanceManager.config.collectAsState()
+    val activeTabOrder = remember(stealth.separateGroupsAndChats, showChannelsTab, homeAppearance.hiddenNavTabs) {
+        resolveHomeTabOrder(
+            separateGroupsAndChats = stealth.separateGroupsAndChats,
+            separateChannelsTab = showChannelsTab,
+            hiddenNavTabs = homeAppearance.hiddenNavTabs
+        )
+    }
+    LaunchedEffect(activeTabOrder, currentTab) {
+        if (currentTab !in activeTabOrder) {
+            onSelectTab(activeTabOrder.first())
+        }
+    }
     val isReducedMotion = remember(homeAppearance.reducedMotion, context) {
         HomeAppearanceManager.isReducedMotionEffective(context, homeAppearance)
     }
@@ -1033,6 +1039,21 @@ fun HomeScreen(
                                         }
                                     )
                                     DropdownMenuItem(
+                                        text = { Text("Settings") },
+                                        leadingIcon = { Icon(Icons.Rounded.Settings, null) },
+                                        onClick = {
+                                            overflowExpanded = false
+                                            if (3 in activeTabOrder) {
+                                                onSelectTab(3)
+                                            } else {
+                                                HomeAppearanceManager.update { cfg ->
+                                                    cfg.copy(hiddenNavTabs = cfg.hiddenNavTabs - 3)
+                                                }
+                                                onSelectTab(3)
+                                            }
+                                        }
+                                    )
+                                    DropdownMenuItem(
                                         text = { Text("Theme · ${stealth.themeMode.label}") },
                                         leadingIcon = { Icon(Icons.Rounded.Palette, null) },
                                         onClick = {
@@ -1317,6 +1338,7 @@ fun HomeScreen(
                 classicMode = stealth.classicWhatsAppLook || homeAppearance.navBarStyle == HomeNavStyle.DOCKED_BAR,
                 showLabels = homeAppearance.showNavLabels && homeAppearance.navBarStyle != HomeNavStyle.COMPACT_ICONS,
                 compactIcons = homeAppearance.navBarStyle == HomeNavStyle.COMPACT_ICONS,
+                hiddenNavTabs = homeAppearance.hiddenNavTabs,
                 separateGroupsAndChats = stealth.separateGroupsAndChats,
                 unreadGroupsCount = unreadGroupsCount,
                 separateChannelsTab = showChannelsTab,
@@ -1377,12 +1399,7 @@ fun HomeScreen(
                     .then(if (!stealth.classicWhatsAppLook) Modifier.wuppBackdropSource(backdropState) else Modifier)
                     .background(effectiveAppSurface)
             ) {
-                val tabOrder = remember(stealth.separateGroupsAndChats, showChannelsTab) {
-                    resolveHomeTabOrder(
-                        separateGroupsAndChats = stealth.separateGroupsAndChats,
-                        separateChannelsTab = showChannelsTab
-                    )
-                }
+                val tabOrder = activeTabOrder
                 val pagerState = rememberPagerState(
                     initialPage = resolvePagerIndexForTab(tabOrder, currentTab),
                     pageCount = { tabOrder.size }
@@ -5312,6 +5329,7 @@ private fun ToolsVaultTab(
     var showAppLockDialog by remember { mutableStateOf(false) }
     var showLanguageDialog by remember { mutableStateOf(false) }
     var showClockFormatDialog by remember { mutableStateOf(false) }
+    var showCustomizeNavBarDialog by remember { mutableStateOf(false) }
     var showHideNotifGuide by remember { mutableStateOf(false) }
     var showCallingSetupDialog by remember { mutableStateOf(false) }
     var showAntiCallDialog by remember { mutableStateOf(false) }
@@ -5544,7 +5562,7 @@ private fun ToolsVaultTab(
             matchesSearch("theme", "oled", "material you", "accent", "bubble", "font", "wallpaper", "reactions", "emoji", "language", "enter sends")
             )
         val showLooksSection = showCategory(SettingsCategory.APPEARANCE) && (
-            matchesSearch("status", "vertical", "bio", "classic", "compact", "seconds", "time format", "clock", "camera", "badges", "separate groups", "channels", "local contact names", "fallback", "phonebook", "prefer")
+            matchesSearch("status", "vertical", "bio", "classic", "compact", "seconds", "time format", "clock", "camera", "badges", "separate groups", "channels", "local contact names", "fallback", "phonebook", "prefer", "navigation bar", "bottom bar", "tabs", "customize")
             )
         val showAlertsSection = showCategory(SettingsCategory.ALERTS) && (
             matchesSearch("notifications", "dm", "group", "preview", "vibrate", "conversation sounds", "chat sounds", "sound", "sync banner", "battery", "unrestricted", "24/7")
@@ -6458,7 +6476,7 @@ private fun ToolsVaultTab(
                             icon = Icons.Rounded.VisibilityOff,
                             title = stringResource(R.string.settings_look_hide_channels_title),
                             checked = stealth.hideChannels,
-                            position = ExpressiveSegmentPosition.BOTTOM,
+                            position = ExpressiveSegmentPosition.MIDDLE,
                             onInfoClick = {
                                 infoDialogContent = context.getString(R.string.settings_look_hide_channels_title) to
                                     context.getString(R.string.settings_look_hide_channels_subtitle)
@@ -6466,6 +6484,24 @@ private fun ToolsVaultTab(
                             onCheckedChange = {
                                 viewModel.updateGlobalStealth { c -> c.copy(hideChannels = it) }
                             }
+                        )
+                        val navAppearance by HomeAppearanceManager.config.collectAsState()
+                        val navOrderAll = resolveHomeTabOrder(
+                            separateGroupsAndChats = stealth.separateGroupsAndChats,
+                            separateChannelsTab = stealth.separateChannelsTab && !stealth.hideChannels,
+                            hiddenNavTabs = emptySet()
+                        )
+                        val navOrderVisible = resolveHomeTabOrder(
+                            separateGroupsAndChats = stealth.separateGroupsAndChats,
+                            separateChannelsTab = stealth.separateChannelsTab && !stealth.hideChannels,
+                            hiddenNavTabs = navAppearance.hiddenNavTabs
+                        )
+                        ExpressiveSegmentedActionRow(
+                            icon = Icons.Rounded.Tune,
+                            title = "Customize Navigation Bar",
+                            subtitle = "${navOrderVisible.size} of ${navOrderAll.size} tabs visible",
+                            position = ExpressiveSegmentPosition.BOTTOM,
+                            onClick = { showCustomizeNavBarDialog = true }
                         )
                     }
                 }
@@ -6985,6 +7021,97 @@ private fun ToolsVaultTab(
             confirmButton = {
                 TextButton(onClick = { showClockFormatDialog = false }) {
                     Text("Close", color = colors.accentGreen)
+                }
+            }
+        )
+    }
+
+    if (showCustomizeNavBarDialog) {
+        val colors = LocalWaColors.current
+        val navAppearance by HomeAppearanceManager.config.collectAsState()
+        val navItems = buildList {
+            add(0 to stringResource(R.string.nav_chats))
+            add(4 to stringResource(R.string.nav_groups))
+            add(1 to stringResource(R.string.nav_updates))
+            if (stealth.separateChannelsTab && !stealth.hideChannels) {
+                add(6 to stringResource(R.string.nav_channels))
+            }
+            add(2 to stringResource(R.string.nav_communities))
+            add(5 to stringResource(R.string.nav_calls))
+            add(3 to "You")
+        }
+        val visibleOrder = resolveHomeTabOrder(
+            separateGroupsAndChats = stealth.separateGroupsAndChats,
+            separateChannelsTab = stealth.separateChannelsTab && !stealth.hideChannels,
+            hiddenNavTabs = navAppearance.hiddenNavTabs
+        )
+        AlertDialog(
+            onDismissRequest = { showCustomizeNavBarDialog = false },
+            containerColor = colors.elevatedBar,
+            title = { Text("Customize Navigation Bar", color = colors.textPrimary, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Choose which tabs appear on the bottom navigation bar. At least one tab must stay visible.",
+                        color = colors.textSecondary,
+                        fontSize = 12.5.sp
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    navItems.forEach { (tabId, label) ->
+                        val isVisible = if (tabId == 4) {
+                            stealth.separateGroupsAndChats && (4 !in navAppearance.hiddenNavTabs)
+                        } else {
+                            tabId !in navAppearance.hiddenNavTabs
+                        }
+                        val isLastVisible = isVisible && visibleOrder.size <= 1
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(label, color = colors.textPrimary, fontSize = 14.5.sp)
+                            Switch(
+                                checked = isVisible,
+                                enabled = !isLastVisible,
+                                onCheckedChange = { checked ->
+                                    if (tabId == 4) {
+                                        viewModel.updateGlobalStealth { c -> c.copy(separateGroupsAndChats = checked) }
+                                        HomeAppearanceManager.update { cfg ->
+                                            cfg.copy(
+                                                hiddenNavTabs = if (checked) cfg.hiddenNavTabs - 4 else cfg.hiddenNavTabs + 4
+                                            )
+                                        }
+                                    } else {
+                                        HomeAppearanceManager.update { cfg ->
+                                            cfg.copy(
+                                                hiddenNavTabs = if (checked) cfg.hiddenNavTabs - tabId else cfg.hiddenNavTabs + tabId
+                                            )
+                                        }
+                                    }
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedTrackColor = colors.accentGreen,
+                                    checkedThumbColor = Color.White
+                                )
+                            )
+                        }
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        HomeAppearanceManager.update { cfg -> cfg.copy(hiddenNavTabs = emptySet()) }
+                    }
+                ) {
+                    Text("Restore Default", color = colors.textSecondary)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showCustomizeNavBarDialog = false }) {
+                    Text("Done", color = colors.accentGreen)
                 }
             }
         )

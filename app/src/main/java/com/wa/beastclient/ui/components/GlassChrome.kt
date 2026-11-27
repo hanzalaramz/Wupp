@@ -674,12 +674,14 @@ fun WuppGlassNavBar(
     onTrailingActionClick: (() -> Unit)? = null,
     showLabels: Boolean = true,
     compactIcons: Boolean = false,
+    hiddenNavTabs: Set<Int> = emptySet(),
     modifier: Modifier = Modifier
 ) {
     val colors = LocalWaColors.current
     val tabs = remember(
         separateGroupsAndChats,
         separateChannelsTab,
+        hiddenNavTabs,
         unreadChatsCount,
         unreadGroupsCount,
         chatsLabel,
@@ -690,18 +692,21 @@ fun WuppGlassNavBar(
         callsLabel,
         youLabel
     ) {
-        buildList {
-            add(GlassNavTab(0, chatsLabel, imageVector = Icons.Rounded.ChatBubble, badgeCount = unreadChatsCount))
-            if (separateGroupsAndChats) {
+        val visible = buildList {
+            if (0 !in hiddenNavTabs) add(GlassNavTab(0, chatsLabel, imageVector = Icons.Rounded.ChatBubble, badgeCount = unreadChatsCount))
+            if (separateGroupsAndChats && 4 !in hiddenNavTabs) {
                 add(GlassNavTab(4, groupsLabel, imageVector = Icons.Rounded.Groups, badgeCount = unreadGroupsCount))
             }
-            add(GlassNavTab(1, updatesLabel, imageVector = Icons.Rounded.DataUsage))
-            if (separateChannelsTab) {
+            if (1 !in hiddenNavTabs) add(GlassNavTab(1, updatesLabel, imageVector = Icons.Rounded.DataUsage))
+            if (separateChannelsTab && 6 !in hiddenNavTabs) {
                 add(GlassNavTab(6, channelsLabel, imageVector = Icons.Rounded.Campaign))
             }
-            add(GlassNavTab(2, communitiesLabel, imageVector = Icons.Rounded.Hub))
-            add(GlassNavTab(5, callsLabel, imageVector = Icons.Rounded.Call))
-            add(GlassNavTab(3, youLabel, imageVector = Icons.Rounded.AccountCircle))
+            if (2 !in hiddenNavTabs) add(GlassNavTab(2, communitiesLabel, imageVector = Icons.Rounded.Hub))
+            if (5 !in hiddenNavTabs) add(GlassNavTab(5, callsLabel, imageVector = Icons.Rounded.Call))
+            if (3 !in hiddenNavTabs) add(GlassNavTab(3, youLabel, imageVector = Icons.Rounded.AccountCircle))
+        }
+        visible.ifEmpty {
+            listOf(GlassNavTab(0, chatsLabel, imageVector = Icons.Rounded.ChatBubble, badgeCount = unreadChatsCount))
         }
     }
     val fiveTabs = tabs.size >= 5

@@ -121,7 +121,8 @@ data class HomeAppearanceConfig(
     val navBarStyle: HomeNavStyle = HomeNavStyle.FLOATING_PILL,
     val showNavLabels: Boolean = true,
     val newChatButtonStyle: HomeNewChatStyle = HomeNewChatStyle.TOP_BAR_ONLY,
-    val reducedMotion: Boolean = false
+    val reducedMotion: Boolean = false,
+    val hiddenNavTabs: Set<Int> = emptySet()
 )
 
 fun presetDefaultsFor(layout: HomeLayoutPreset): HomeAppearanceConfig = when (layout) {
@@ -224,8 +225,20 @@ internal fun moveSectionInOrder(
     return clean
 }
 
+internal val VALID_NAV_TAB_IDS = setOf(0, 4, 1, 6, 2, 5, 3)
+
+internal fun sanitizeHiddenNavTabs(raw: Set<Int>): Set<Int> {
+    val filtered = raw.filterTo(LinkedHashSet()) { it in VALID_NAV_TAB_IDS }
+    // Never allow every tab to be hidden; keep Chats (0) visible if all valid IDs were hidden.
+    if (filtered.containsAll(VALID_NAV_TAB_IDS)) {
+        filtered.remove(0)
+    }
+    return filtered
+}
+
 internal fun serializeHomeAppearance(config: HomeAppearanceConfig): String {
     val orderStr = sanitizeSectionOrder(config.sectionOrder).joinToString(",") { it.key }
+    val hiddenTabsStr = sanitizeHiddenNavTabs(config.hiddenNavTabs).sorted().joinToString(",")
     return buildString {
         appendLine("layoutPreset=${config.layoutPreset.key}")
         appendLine("accentStyle=${config.accentStyle.key}")
@@ -244,7 +257,8 @@ internal fun serializeHomeAppearance(config: HomeAppearanceConfig): String {
         appendLine("navBarStyle=${config.navBarStyle.key}")
         appendLine("showNavLabels=${config.showNavLabels}")
         appendLine("newChatButtonStyle=${config.newChatButtonStyle.key}")
-        append("reducedMotion=${config.reducedMotion}")
+        appendLine("reducedMotion=${config.reducedMotion}")
+        append("hiddenNavTabs=$hiddenTabsStr")
     }
 }
 
@@ -263,6 +277,11 @@ internal fun deserializeHomeAppearance(raw: String?): HomeAppearanceConfig {
             ?.split(',')
             ?.mapNotNull { HomeSectionKind.fromKey(it.trim()) }
             .orEmpty()
+        val parsedHiddenTabs = map["hiddenNavTabs"]
+            ?.split(',')
+            ?.mapNotNull { it.trim().toIntOrNull() }
+            ?.toSet()
+            ?: emptySet()
         base.copy(
             accentStyle = HomeAccentStyle.fromKey(map["accentStyle"] ?: base.accentStyle.key),
             unreadBadgeStyle = HomeBadgeStyle.fromKey(map["unreadBadgeStyle"] ?: base.unreadBadgeStyle.key),
@@ -280,7 +299,8 @@ internal fun deserializeHomeAppearance(raw: String?): HomeAppearanceConfig {
             navBarStyle = HomeNavStyle.fromKey(map["navBarStyle"] ?: base.navBarStyle.key),
             showNavLabels = map["showNavLabels"]?.toBooleanStrictOrNull() ?: base.showNavLabels,
             newChatButtonStyle = HomeNewChatStyle.fromKey(map["newChatButtonStyle"] ?: base.newChatButtonStyle.key),
-            reducedMotion = map["reducedMotion"]?.toBooleanStrictOrNull() ?: base.reducedMotion
+            reducedMotion = map["reducedMotion"]?.toBooleanStrictOrNull() ?: base.reducedMotion,
+            hiddenNavTabs = sanitizeHiddenNavTabs(parsedHiddenTabs)
         )
     }.getOrDefault(HomeAppearanceConfig())
 }
@@ -314,7 +334,8 @@ object HomeAppearanceManager {
                 subtitleScale = it.subtitleScale.coerceIn(0.85f, 1.15f),
                 avatarSizeDp = it.avatarSizeDp.coerceIn(38, 58),
                 previewMaxLines = it.previewMaxLines.coerceIn(1, 2),
-                sectionOrder = sanitizeSectionOrder(it.sectionOrder)
+                sectionOrder = sanitizeSectionOrder(it.sectionOrder),
+                hiddenNavTabs = sanitizeHiddenNavTabs(it.hiddenNavTabs)
             )
         }
         _config.value = next
@@ -323,7 +344,7 @@ object HomeAppearanceManager {
 
     fun applyLayoutPreset(preset: HomeLayoutPreset) {
         val defaults = presetDefaultsFor(preset)
-        update { defaults }
+        update { cur -> defaults.copy(hiddenNavTabs = cur.hiddenNavTabs) }
     }
 
     fun resetCurrentLayout() {

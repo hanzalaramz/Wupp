@@ -3360,6 +3360,8 @@ class WaRealtimeService : Service() {
                         if (p.optBoolean("isAdmin", false) || p.optBoolean("isSuperAdmin", false)) {
                             val j = p.optString("jid").trim()
                             if (j.isNotBlank()) add(j)
+                            val phone = p.optString("phoneJid").trim()
+                            if (phone.isNotBlank()) add(phone)
                         }
                     }
                 }

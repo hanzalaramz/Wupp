@@ -391,7 +391,18 @@ fun ChatScreen(
     val pinnedMessages by remember(chatJid) { viewModel.observePinnedMessages(chatJid) }.collectAsState(initial = emptyList())
     var pinDurationDialogTarget by remember(chatJid) { mutableStateOf<MessageEntity?>(null) }
     val isChannel = chatJid.endsWith("@newsletter")
+    val bridgeStatus by viewModel.bridgeStatus.collectAsState()
     val isGroupAnnounceLocked by remember(chatJid) { viewModel.isGroupAnnounceLocked(chatJid) }.collectAsState(initial = false)
+    var groupAdminJids by remember(chatJid) { mutableStateOf<Set<String>>(emptySet()) }
+    LaunchedEffect(chatJid, isGroupAnnounceLocked, bridgeStatus.connectionState) {
+        if (chatJid.endsWith("@g.us") && isGroupAnnounceLocked) {
+            groupAdminJids = viewModel.fetchGroupAdmins(chatJid)
+        }
+    }
+    val isSelfGroupAdmin = remember(groupAdminJids, bridgeStatus.ownJid) {
+        isSelfInGroupAdminSet(groupAdminJids, bridgeStatus.ownJid)
+    }
+    val isGroupComposerBlocked = isGroupAnnounceLocked && !isSelfGroupAdmin
     val effectivePrivacy by remember(chatJid) { viewModel.observeEffectivePrivacy(chatJid) }.collectAsState(initial = null)
     val stealthConfig by viewModel.stealthConfig.collectAsState()
     val effectiveWallpaper = remember(chatJid, stealthConfig) {
@@ -402,7 +413,7 @@ fun ChatScreen(
     }
     val isKnownChatOrContact by remember(chatJid) { viewModel.canInitiateOutbound(chatJid) }.collectAsState(initial = true)
     var coldStartConfirmed by remember(chatJid) { mutableStateOf(false) }
-    val coldStartWarningActive = !isChannel && !isGroupAnnounceLocked && !isKnownChatOrContact && !coldStartConfirmed
+    val coldStartWarningActive = !isChannel && !isGroupComposerBlocked && !isKnownChatOrContact && !coldStartConfirmed
     val canSendOutbound = true
     val allowUnsavedColdStartFlag = !isKnownChatOrContact || coldStartConfirmed
     var pendingGhostGuardAction by remember(chatJid) { mutableStateOf<(() -> Unit)?>(null) }
@@ -426,7 +437,6 @@ fun ChatScreen(
     }
     val isRecordingVoice by viewModel.isRecordingVoice.collectAsState()
     val isVoiceRecordingPaused by viewModel.isVoiceRecordingPaused.collectAsState()
-    val bridgeStatus by viewModel.bridgeStatus.collectAsState()
     val downloadingMediaIds by viewModel.downloadingMediaIds.collectAsState()
     val failedMediaIds by viewModel.failedMediaIds.collectAsState()
     val chatReactionCounts by remember(chatJid) { viewModel.observeChatReactionCounts(chatJid) }
@@ -875,8 +885,8 @@ fun ChatScreen(
             }
         }
     }
-    LaunchedEffect(isRecordingVoice, isGroupAnnounceLocked, canSendOutbound) {
-        if (isRecordingVoice || isGroupAnnounceLocked || !canSendOutbound) {
+    LaunchedEffect(isRecordingVoice, isGroupComposerBlocked, canSendOutbound) {
+        if (isRecordingVoice || isGroupComposerBlocked || !canSendOutbound) {
             showAttachTray = false
             showEmojiPicker = false
             holdDockForIme = false
@@ -2079,7 +2089,7 @@ fun ChatScreen(
                                     participantMeta = participantMeta,
                                     chatsByJid = chatsByJid,
                                     senderPushByJid = senderPushByJid,
-                                    isGroupAnnounceLocked = isGroupAnnounceLocked
+                                    isGroupAnnounceLocked = isGroupComposerBlocked
                                 )
                                 val quotedDisplay = if (!msg.quotedId.isNullOrBlank()) {
                                     resolveQuotedBannerSender(
@@ -2208,7 +2218,7 @@ fun ChatScreen(
                                 ) {
                                     { forwardTarget = msg }
                                 } else null
-                                if (isChannel || isGroupAnnounceLocked) {
+                                if (isChannel || isGroupComposerBlocked) {
                                     MessageBubbleRow(
                                         msg = msg,
                                         isGroup = isGroupChat,
@@ -2687,7 +2697,7 @@ fun ChatScreen(
                                     resolveFloatingContextActions(
                                         msg = target,
                                         isChannel = isChannel,
-                                        isGroupAnnounceLocked = isGroupAnnounceLocked,
+                                        isGroupAnnounceLocked = isGroupComposerBlocked,
                                         isDocument = isTargetDoc
                                     )
                                 }
@@ -2933,7 +2943,7 @@ fun ChatScreen(
                         .fillMaxWidth()
                         .onSizeChanged { bottomOverlayPx = it.height }
                 ) {
-                if (isGroupAnnounceLocked && !isChannel) {
+                if (isGroupComposerBlocked && !isChannel) {
                     Surface(
                         color = colors.appSurface,
                         modifier = Modifier.fillMaxWidth()
@@ -4270,7 +4280,7 @@ fun ChatScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Quick-react toggle chip (add or switch your own reaction)
-                    if (!isChannel && !isGroupAnnounceLocked) {
+                    if (!isChannel && !isGroupComposerBlocked) {
                         Box(
                             modifier = Modifier
                                 .height(36.dp)
@@ -4422,7 +4432,7 @@ fun ChatScreen(
                                     .clip(RoundedCornerShape(14.dp))
                                     .then(
                                         when {
-                                            isMe && !isChannel && !isGroupAnnounceLocked -> Modifier.clickable {
+                                            isMe && !isChannel && !isGroupComposerBlocked -> Modifier.clickable {
                                                 runWithOutboundGuard {
                                                     viewModel.sendReaction(chatJid, target, "")
                                                 }
@@ -4464,7 +4474,7 @@ fun ChatScreen(
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
-                                    if (isMe && !isChannel && !isGroupAnnounceLocked) {
+                                    if (isMe && !isChannel && !isGroupComposerBlocked) {
                                         Text(
                                             text = "Tap to remove",
                                             color = colors.textSecondary,
@@ -7894,5 +7904,14 @@ private fun ParticipantQuickActionButton(
             fontWeight = FontWeight.Medium,
             maxLines = 1
         )
+    }
+}
+
+internal fun isSelfInGroupAdminSet(adminJids: Set<String>, ownJid: String): Boolean {
+    val cleanOwn = ownJid.trim().substringBefore("@").substringBefore(":")
+    if (cleanOwn.isBlank() || adminJids.isEmpty()) return false
+    return adminJids.any { admin ->
+        val cleanAdmin = admin.trim().substringBefore("@").substringBefore(":")
+        admin.equals(ownJid, ignoreCase = true) || (cleanAdmin.isNotBlank() && cleanAdmin == cleanOwn)
     }
 }
