@@ -942,7 +942,7 @@ fun ChatScreen(
     var pendingViewOnceSheetTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var activeStickerActionMsg by remember { mutableStateOf<MessageEntity?>(null) }
     var pdfViewerTarget by remember { mutableStateOf<Pair<File, String>?>(null) }
-    var pendingOutboundPreview by remember { mutableStateOf<StagedOutboundMedia?>(null) }
+    var pendingOutboundPreviews by remember { mutableStateOf<List<StagedOutboundMedia>>(emptyList()) }
     var showProfilePhotoLightbox by remember { mutableStateOf(false) }
     var participantAvatarTarget by remember { mutableStateOf<Triple<String, String, String?>?>(null) }
     var participantPopupTarget by remember { mutableStateOf<ParticipantPopupTarget?>(null) }
@@ -1023,7 +1023,10 @@ fun ChatScreen(
         showAttachTray = false
         if (mime.startsWith("image/", ignoreCase = true) || mime.startsWith("video/", ignoreCase = true)) {
             scope.launch {
-                pendingOutboundPreview = viewModel.stageMediaForPreview(uri, mime)
+                val staged = viewModel.stageMediaForPreview(uri, mime)
+                if (staged != null) {
+                    pendingOutboundPreviews = listOf(staged)
+                }
             }
         } else {
             runWithOutboundGuard {
@@ -1044,10 +1047,18 @@ fun ChatScreen(
     }
 
     val pickVisualMediaLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) {
-            handlePickedAttachment(uri, "image/jpeg")
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10)
+    ) { uris ->
+        if (uris.size == 1) {
+            handlePickedAttachment(uris.first(), "image/jpeg")
+        } else if (uris.size > 1) {
+            showAttachTray = false
+            scope.launch {
+                val batch = viewModel.stageMultipleMediaForPreview(uris, "image/jpeg")
+                if (batch.isNotEmpty()) {
+                    pendingOutboundPreviews = batch
+                }
+            }
         }
     }
 
@@ -1917,38 +1928,6 @@ fun ChatScreen(
                             viewModel.unpinMessage(chatJid, targetMsg)
                         }
                     )
-                }
-
-                val isMetaAiChat = remember(chatJid, chat?.name) {
-                    chatJid.contains("13135550002") || chat?.name.equals("Meta AI", ignoreCase = true)
-                }
-                if (isMetaAiChat) {
-                    Surface(
-                        color = colors.pillActiveBg.copy(alpha = 0.9f),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 6.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Info,
-                                contentDescription = null,
-                                tint = colors.accentGreen,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Meta AI chats are managed directly in official WhatsApp. Companion devices cannot message Meta AI directly.",
-                                color = colors.textSecondary,
-                                fontSize = 12.sp,
-                                lineHeight = 16.sp
-                            )
-                        }
-                    }
                 }
             }
         }
@@ -4070,6 +4049,8 @@ fun ChatScreen(
             onJumpToChat = { targetJid ->
                 if (targetJid != chatJid) onOpenContactInfo(targetJid)
             },
+            onDeleteEntry = { viewModel.deleteMessageHistoryItem(it) },
+            onClearAll = { scoped -> viewModel.clearAllMessageHistory(scoped) },
             onDismiss = { showChatHistorySheet = false }
         )
     }
@@ -4939,33 +4920,31 @@ fun ChatScreen(
         )
     }
 
-    pendingOutboundPreview?.let { staged ->
+    if (pendingOutboundPreviews.isNotEmpty()) {
         val recipientLabel = chat?.name?.takeIf { it.isNotBlank() } ?: chatJid.substringBefore("@")
         OutboundMediaPreviewDialog(
-            staged = staged,
+            stagedItems = pendingOutboundPreviews,
             recipientLabel = recipientLabel,
             initialCaption = draftValue.text.trim(),
             initialQualityMode = qualityMode,
-            onDismiss = { pendingOutboundPreview = null },
-            onSend = { finalFile, captionText, chosenQuality, isViewOnce ->
-                pendingOutboundPreview = null
+            onDismiss = { pendingOutboundPreviews = emptyList() },
+            onSendBatch = { items, chosenQuality, isViewOnce ->
+                pendingOutboundPreviews = emptyList()
                 qualityMode = chosenQuality
                 runWithOutboundGuard {
                     scrollToBottomPending = true
-                    val targetStaged = if (finalFile != staged.file) {
-                        staged.copy(file = finalFile, fileSize = finalFile.length())
-                    } else {
-                        staged
+                    items.forEach { (itemStaged, captionText) ->
+                        viewModel.sendStagedMedia(
+                            chatJid = chatJid,
+                            staged = itemStaged,
+                            caption = captionText,
+                            qualityMode = chosenQuality,
+                            isViewOnce = isViewOnce,
+                            allowUnsavedColdStart = allowUnsavedColdStartFlag
+                        )
                     }
-                    viewModel.sendStagedMedia(
-                        chatJid = chatJid,
-                        staged = targetStaged,
-                        caption = captionText,
-                        qualityMode = chosenQuality,
-                        isViewOnce = isViewOnce,
-                        allowUnsavedColdStart = allowUnsavedColdStartFlag
-                    )
                     draftValue = TextFieldValue("")
+                    viewModel.saveChatDraft(chatJid, "")
                     scope.launch { listState.animateScrollToItem(0) }
                 }
             }

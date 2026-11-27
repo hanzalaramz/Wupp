@@ -1114,7 +1114,7 @@ async fn process_history_sync(runtime: Arc<BridgeRuntime>, lazy: LazyHistorySync
             "isCommunityParent": conv.is_parent_group.unwrap_or(false),
             "parentGroupJid": conv.parent_group_id.as_deref().unwrap_or(""),
             "isDefaultSubgroup": conv.is_default_subgroup.unwrap_or(false),
-            "unreadCount": conv.unread_count.unwrap_or(0),
+            "unreadCount": conv.unread_count,
             "archived": conv.archived.unwrap_or(false),
             "locked": conv.locked.unwrap_or(false),
             "pinned": conv.pinned.unwrap_or(0),

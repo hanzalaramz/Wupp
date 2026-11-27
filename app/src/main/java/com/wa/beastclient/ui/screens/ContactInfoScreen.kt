@@ -1933,6 +1933,8 @@ fun ContactInfoScreen(
             chats = allChats,
             initialChatJid = chatJid,
             onJumpToChat = { targetJid -> onOpenChat(targetJid) },
+            onDeleteEntry = { viewModel.deleteMessageHistoryItem(it) },
+            onClearAll = { scoped -> viewModel.clearAllMessageHistory(scoped) },
             onDismiss = { showChatHistorySheet = false }
         )
     }

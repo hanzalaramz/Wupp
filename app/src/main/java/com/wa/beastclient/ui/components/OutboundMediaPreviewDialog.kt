@@ -20,6 +20,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,9 +32,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.automirrored.rounded.Undo
@@ -54,10 +59,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -106,20 +113,32 @@ data class StagedOutboundMedia(
  */
 @Composable
 fun OutboundMediaPreviewDialog(
-    staged: StagedOutboundMedia,
+    stagedItems: List<StagedOutboundMedia>,
     recipientLabel: String,
     initialCaption: String,
     initialQualityMode: OutboundQualityMode,
     onDismiss: () -> Unit,
-    onSend: (file: File, caption: String, qualityMode: OutboundQualityMode, isViewOnce: Boolean) -> Unit
+    onSendBatch: (items: List<Pair<StagedOutboundMedia, String>>, qualityMode: OutboundQualityMode, isViewOnce: Boolean) -> Unit
 ) {
+    if (stagedItems.isEmpty()) return
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var isRendering by remember { mutableStateOf(false) }
 
-    var caption by remember(staged.file.absolutePath) { mutableStateOf(initialCaption) }
-    var isViewOnce by remember(staged.file.absolutePath) { mutableStateOf(false) }
-    var qualityMode by remember(staged.file.absolutePath) {
+    val activeItems = remember(stagedItems) { stagedItems.toMutableStateList() }
+    var selectedIndex by remember(stagedItems) { mutableIntStateOf(0) }
+    val safeIndex = selectedIndex.coerceIn(0, (activeItems.size - 1).coerceAtLeast(0))
+    val staged = activeItems.getOrElse(safeIndex) { stagedItems.first() }
+    val captionsByPath = remember(stagedItems) {
+        mutableStateMapOf<String, String>().apply {
+            if (stagedItems.isNotEmpty() && initialCaption.isNotBlank()) {
+                put(stagedItems.first().file.absolutePath, initialCaption)
+            }
+        }
+    }
+    val caption = captionsByPath[staged.file.absolutePath].orEmpty()
+    var isViewOnce by remember(stagedItems) { mutableStateOf(false) }
+    var qualityMode by remember(stagedItems) {
         mutableStateOf(
             if (staged.isVideo && initialQualityMode == OutboundQualityMode.ORIGINAL) {
                 OutboundQualityMode.HD
@@ -205,7 +224,7 @@ fun OutboundMediaPreviewDialog(
         )
 
     val handleSendAction: () -> Unit = {
-        if (!isRendering) {
+        if (!isRendering && activeItems.isNotEmpty()) {
             if (hasPhotoEdits) {
                 isRendering = true
                 scope.launch {
@@ -221,10 +240,22 @@ fun OutboundMediaPreviewDialog(
                         )
                     }.getOrDefault(staged.file)
                     isRendering = false
-                    onSend(editedFile, caption.trim(), qualityMode, isViewOnce)
+                    val payload = activeItems.mapIndexed { idx, item ->
+                        val itemCaption = captionsByPath[item.file.absolutePath].orEmpty().trim()
+                        val finalItem = if (idx == safeIndex && editedFile != item.file) {
+                            item.copy(file = editedFile, fileSize = editedFile.length())
+                        } else {
+                            item
+                        }
+                        finalItem to itemCaption
+                    }
+                    onSendBatch(payload, qualityMode, isViewOnce)
                 }
             } else {
-                onSend(staged.file, caption.trim(), qualityMode, isViewOnce)
+                val payload = activeItems.map { item ->
+                    item to captionsByPath[item.file.absolutePath].orEmpty().trim()
+                }
+                onSendBatch(payload, qualityMode, isViewOnce)
             }
         }
     }
@@ -680,7 +711,7 @@ fun OutboundMediaPreviewDialog(
                         }
                         BasicTextField(
                             value = caption,
-                            onValueChange = { caption = it },
+                            onValueChange = { captionsByPath[staged.file.absolutePath] = it },
                             textStyle = TextStyle(
                                 color = Color.White,
                                 fontSize = 15.5.sp,
@@ -738,6 +769,58 @@ fun OutboundMediaPreviewDialog(
                     }
                 }
 
+                if (activeItems.size > 1) {
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp)
+                    ) {
+                        itemsIndexed(activeItems, key = { idx, item -> "${item.file.absolutePath}_$idx" }) { idx, item ->
+                            val isSelected = idx == safeIndex
+                            Box(
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .border(
+                                        width = if (isSelected) 2.dp else 0.75.dp,
+                                        color = if (isSelected) Color(0xFF25D366) else Color.White.copy(alpha = 0.25f),
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                                    .clickable { selectedIndex = idx }
+                            ) {
+                                AsyncImage(
+                                    model = item.file,
+                                    contentDescription = "Selected media ${idx + 1}",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                if (isSelected && activeItems.size > 1) {
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(2.dp)
+                                            .size(18.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.Black.copy(alpha = 0.72f))
+                                            .clickable {
+                                                activeItems.removeAt(idx)
+                                                selectedIndex = selectedIndex.coerceIn(0, (activeItems.size - 1).coerceAtLeast(0))
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Close,
+                                            contentDescription = "Remove item",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Row 2: Recipient Pill (left) + Circular Vibrant Green Send Button (right)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -765,24 +848,37 @@ fun OutboundMediaPreviewDialog(
                     }
 
                     val sendInteraction = remember { MutableInteractionSource() }
-                    Box(
-                        modifier = Modifier
-                            .size(50.dp)
-                            .expressivePressScale(sendInteraction, pressedScale = 0.90f)
-                            .clip(CircleShape)
-                            .background(Color(0xFF25D366))
-                            .clickable(
-                                interactionSource = sendInteraction,
-                                indication = null
-                            ) { handleSendAction() },
-                        contentAlignment = Alignment.Center
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Rounded.Send,
-                            contentDescription = "Send",
-                            tint = Color(0xFF07130C),
-                            modifier = Modifier.size(22.dp)
-                        )
+                        if (activeItems.size > 1) {
+                            Text(
+                                text = "${activeItems.size} items",
+                                color = Color.White.copy(alpha = 0.85f),
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(50.dp)
+                                .expressivePressScale(sendInteraction, pressedScale = 0.90f)
+                                .clip(CircleShape)
+                                .background(Color(0xFF25D366))
+                                .clickable(
+                                    interactionSource = sendInteraction,
+                                    indication = null
+                                ) { handleSendAction() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.Send,
+                                contentDescription = "Send",
+                                tint = Color(0xFF07130C),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
                 }
             }

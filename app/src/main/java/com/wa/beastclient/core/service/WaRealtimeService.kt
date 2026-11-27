@@ -195,6 +195,19 @@ class WaRealtimeService : Service() {
         if (jid.endsWith("@g.us") || jid.endsWith("@newsletter") || jid == "status@broadcast") {
             return jid
         }
+        val metaCanonical = canonicalMetaAiJid(jid).takeIf { it == META_AI_BOT_JID }
+            ?: canonicalMetaAiJid(alt).takeIf { it == META_AI_BOT_JID }
+        if (metaCanonical != null) {
+            listOf(jid, alt)
+                .filter { it.isNotBlank() && it != META_AI_BOT_JID }
+                .distinct()
+                .forEach { dup ->
+                    dao.mergeDuplicateChatAlias(canonicalJid = META_AI_BOT_JID, duplicateJid = dup)
+                    if (activeChatJid.value == dup) activeChatJid.value = META_AI_BOT_JID
+                }
+            pushnameCache[META_AI_BOT_JID] = "Meta AI"
+            return META_AI_BOT_JID
+        }
         val mapped = when {
             jid.endsWith("@lid") && alt.endsWith("@s.whatsapp.net") -> {
                 rememberAndPersistAlias(applicationContext, lidJid = jid, pnJid = alt)
@@ -244,6 +257,20 @@ class WaRealtimeService : Service() {
             if (lid.endsWith("@lid") && pn.endsWith("@s.whatsapp.net")) {
                 dao.mergeDuplicateChatAlias(canonicalJid = pn, duplicateJid = lid)
             }
+        }
+        val allChatsSnapshot = dao.getAllChatsOnce()
+        val metaDupJids = allChatsSnapshot
+            .asSequence()
+            .map { stripJidDevice(it.jid) }
+            .filter { it != META_AI_BOT_JID && canonicalMetaAiJid(it) == META_AI_BOT_JID }
+            .distinct()
+            .toList()
+        if (metaDupJids.isNotEmpty()) {
+            metaDupJids.forEach { dup ->
+                dao.mergeDuplicateChatAlias(canonicalJid = META_AI_BOT_JID, duplicateJid = dup)
+                if (activeChatJid.value == dup) activeChatJid.value = META_AI_BOT_JID
+            }
+            dao.updateChatName(META_AI_BOT_JID, "Meta AI", overwrite = true)
         }
         if (!queryRustBridge) return
         val lidChats = dao.getAllChatsOnce()
@@ -1002,8 +1029,11 @@ class WaRealtimeService : Service() {
                     val altJid = c.optString("altJid")
                     val jid = canonicalizeAndMergeAlias(rawJid, altJid)
                     if (jid == "status@broadcast" || jid.endsWith("@broadcast")) continue
-                    val unread = c.optInt("unreadCount", 0)
-                    unreadByChat[jid] = maxOf(unreadByChat[jid] ?: 0, unread)
+                    val hasUnread = c.has("unreadCount") && !c.isNull("unreadCount")
+                    val unread = if (hasUnread) c.optInt("unreadCount", 0).coerceAtLeast(0) else -1
+                    if (unread >= 0) {
+                        unreadByChat[jid] = maxOf(unreadByChat[jid] ?: 0, unread)
+                    }
                     val rawName = c.optString("name").trim()
                     val name = if (DeviceContactFallbackResolver.isUsableDisplayName(rawName, jid, altJid)) {
                         rawName
@@ -1030,7 +1060,7 @@ class WaRealtimeService : Service() {
                         jid = jid,
                         name = resolvedChatName,
                         isGroup = c.optBoolean("isGroup", jid.endsWith("@g.us")),
-                        unreadCount = unreadByChat[jid] ?: unread,
+                        unreadCount = unreadByChat[jid] ?: -1,
                         isArchived = c.optBoolean("archived", false),
                         isPinned = pinnedMs > 0L,
                         pinOrder = if (pinnedMs > 0L) pinnedMs else 0L,
@@ -1942,34 +1972,36 @@ class WaRealtimeService : Service() {
         if (isPrimaryActive) {
             StealthMatrixManager.recordPrimaryHeartbeat(timestamp)
         }
-        val ids = json.optJSONArray("messageIds") ?: return
+        val ids = json.optJSONArray("messageIds")
         var maxMatchedTs = 0L
         val isStatusReadReceipt = chatJid == "status@broadcast" &&
             (receiptType == "READ_SELF" || receiptType == "PLAYED_SELF" || receiptType == "READ")
-        for (i in 0 until ids.length()) {
-            val id = ids.optString(i)
-            if (id.isBlank()) continue
-            if (isStatusReadReceipt) {
-                dao.markStatusViewed(id)
-            }
-            dao.updateDeliveryStatus(id, receiptType, timestamp)
-            val msgRow = dao.getMessage(id)
-            if (msgRow?.isViewOnce == true && (receiptType == "PLAYED" || receiptType == "PLAYED_SELF")) {
-                dao.markViewOnceOpened(id)
-            }
-            if (msgRow != null && msgRow.timestamp > maxMatchedTs) {
-                maxMatchedTs = msgRow.timestamp
-            }
-            if (chatJid.endsWith("@g.us") && senderJid.isNotBlank()) {
-                dao.upsertGroupReceipt(
-                    GroupReceiptEntity(
-                        messageId = id,
-                        participantJid = senderJid,
-                        participantName = pushnameCache[senderJid] ?: senderJid.substringBefore("@"),
-                        status = receiptType,
-                        timestamp = timestamp
+        if (ids != null) {
+            for (i in 0 until ids.length()) {
+                val id = ids.optString(i)
+                if (id.isBlank()) continue
+                if (isStatusReadReceipt) {
+                    dao.markStatusViewed(id)
+                }
+                dao.updateDeliveryStatus(id, receiptType, timestamp)
+                val msgRow = dao.getMessage(id)
+                if (msgRow?.isViewOnce == true && (receiptType == "PLAYED" || receiptType == "PLAYED_SELF")) {
+                    dao.markViewOnceOpened(id)
+                }
+                if (msgRow != null && msgRow.timestamp > maxMatchedTs) {
+                    maxMatchedTs = msgRow.timestamp
+                }
+                if (chatJid.endsWith("@g.us") && senderJid.isNotBlank()) {
+                    dao.upsertGroupReceipt(
+                        GroupReceiptEntity(
+                            messageId = id,
+                            participantJid = senderJid,
+                            participantName = pushnameCache[senderJid] ?: senderJid.substringBefore("@"),
+                            status = receiptType,
+                            timestamp = timestamp
+                        )
                     )
-                )
+                }
             }
         }
         if ((receiptType == "READ_SELF" || receiptType == "PLAYED_SELF") &&
@@ -1981,8 +2013,9 @@ class WaRealtimeService : Service() {
             val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             val targets = listOfNotNull(
                 chatJid,
-                altChatJid.takeIf { it.isNotBlank() && it != chatJid }
-            )
+                altChatJid.takeIf { it.isNotBlank() },
+                rawChat.takeIf { it.isNotBlank() }
+            ).distinct()
             targets.forEach { target ->
                 dao.clearLocalUnread(target)
                 dao.markIncomingReadUpTo(target, readCutoffTs, timestamp)
@@ -2255,10 +2288,12 @@ class WaRealtimeService : Service() {
             }
             "MARK_READ" -> {
                 StealthMatrixManager.recordPrimaryHeartbeat(json.optLong("timestamp", System.currentTimeMillis()))
+                val canonicalTarget = canonicalizeAndMergeAlias(jid, altJid)
                 val targets = listOfNotNull(
+                    canonicalTarget.takeIf { it.isNotBlank() },
                     jid.takeIf { it.isNotBlank() },
-                    altJid.takeIf { it.isNotBlank() && it != jid }
-                )
+                    altJid.takeIf { it.isNotBlank() }
+                ).distinct()
                 if (json.optBoolean("read")) {
                     val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                     targets.forEach { t ->
@@ -2501,6 +2536,13 @@ class WaRealtimeService : Service() {
         const val ACTION_DISCONNECT = "com.wupp.app.action.DISCONNECT"
         const val OFFLINE_OUTBOUND_ERROR = "Wupp is in Offline mode — tap Offline to go Live"
         const val MAX_FORWARD_RECIPIENTS = 5
+        const val META_AI_BOT_JID = "13135550002@bot"
+
+        internal fun canonicalMetaAiJid(rawJid: String): String {
+            val clean = rawJid.trim().substringBefore(":")
+            val user = clean.substringBefore("@")
+            return if (user == "13135550002") META_AI_BOT_JID else rawJid
+        }
         private const val ALIAS_PREFS_NAME = "wupp_jid_aliases"
         internal val persistedLidToPn = ConcurrentHashMap<String, String>()
         @Volatile

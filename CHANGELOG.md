@@ -3,9 +3,13 @@
 ## [Unreleased]
 
 ### ✨ Features
+- Added multi-photo/video selection (up to 10 items) with a thumbnail strip and per-item captions in the media preview dialog (#218).
+- Added individual delete and **Clear All** options in Message History to remove deleted/edited records and free local storage (#215).
 - Added Chat Privacy Mode toggles in Settings and chat menus to hide contact names, profile pictures (DPs), or both inside chats (#220).
 
 ### 🛠️ Fixes
+- Preserved unread counts when incremental history sync omits `unread_count`, prevented stale sync batches from re-marking replied chats as unread, and cleared unread badges across alias JIDs on `READ_SELF` / `MARK_READ` (#214).
+- Canonicalized Meta AI chats and outbound messages to `13135550002@bot` so duplicate `13135550002` chats merge cleanly and Meta AI replies work directly in Wupp (#217).
 - Fixed messages sent or read on your main WhatsApp phone reappearing as unread or shifting order in Wupp by clearing unread counts on `READ_SELF` / `PLAYED_SELF` receipts and same-second replies, and sorting messages deterministically (#221).
 
 ## [0.3.10] - 2026-11-26

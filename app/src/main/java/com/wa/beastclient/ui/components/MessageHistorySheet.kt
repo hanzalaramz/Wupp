@@ -23,12 +23,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -151,6 +153,8 @@ fun MessageHistorySheet(
     initialChatJid: String? = null,
     initialFilter: MessageHistoryFilter = MessageHistoryFilter.ALL,
     onJumpToChat: (String) -> Unit,
+    onDeleteEntry: (MessageEntity) -> Unit = {},
+    onClearAll: (scopedChatJid: String?) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val colors = LocalWaColors.current
@@ -162,6 +166,7 @@ fun MessageHistorySheet(
     var filter by remember(initialFilter) { mutableStateOf(initialFilter) }
     var searchQuery by remember { mutableStateOf("") }
     var scopedChatJid by remember(initialChatJid) { mutableStateOf(initialChatJid) }
+    var showClearConfirm by remember { mutableStateOf(false) }
     val expandedEditCardIds = remember { mutableStateMapOf<String, Boolean>() }
 
     val chatNamesByJid = remember(chats) {
@@ -215,8 +220,27 @@ fun MessageHistorySheet(
                         )
                     }
                 }
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Rounded.Close, "Close", tint = colors.textSecondary)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (entries.isNotEmpty()) {
+                        TextButton(onClick = { showClearConfirm = true }) {
+                            Icon(
+                                Icons.Rounded.DeleteSweep,
+                                contentDescription = "Clear history",
+                                tint = colors.antiDeleteRed,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = "Clear",
+                                color = colors.antiDeleteRed,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Rounded.Close, "Close", tint = colors.textSecondary)
+                    }
                 }
             }
 
@@ -447,8 +471,24 @@ fun MessageHistorySheet(
 
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.End
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    TextButton(onClick = { onDeleteEntry(msg) }) {
+                                        Icon(
+                                            Icons.Rounded.DeleteOutline,
+                                            contentDescription = "Delete history entry",
+                                            modifier = Modifier.size(16.dp),
+                                            tint = colors.antiDeleteRed
+                                        )
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(
+                                            text = "Delete",
+                                            color = colors.antiDeleteRed,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
                                     TextButton(
                                         onClick = {
                                             onDismiss()
@@ -466,6 +506,42 @@ fun MessageHistorySheet(
                 }
             }
         }
+    }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            containerColor = colors.elevatedBar,
+            title = {
+                Text(
+                    text = if (scopedChatJid.isNullOrBlank()) "Clear Message History?" else "Clear Chat History?",
+                    color = colors.textPrimary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Text(
+                    text = "This removes saved deleted and edited message records from this device to free storage.",
+                    color = colors.textSecondary,
+                    fontSize = 13.5.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearConfirm = false
+                        onClearAll(scopedChatJid)
+                    }
+                ) {
+                    Text("Clear All", color = colors.antiDeleteRed, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
+            }
+        )
     }
 }
 

@@ -1553,6 +1553,61 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         WaRealtimeService.downloadViewOnceAndMarkOpened(appContext, msg)
     }
 
+    fun deleteMessageHistoryItem(msg: MessageEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            dao.deleteEditsForMessage(msg.id)
+            if (msg.isDeletedBySender) {
+                dao.deleteMessageById(msg.id)
+                val path = msg.localMediaPath
+                if (!path.isNullOrBlank() && dao.countMediaPathReferences(path) == 0) {
+                    runCatching { File(path).delete() }
+                }
+                if (!dao.hasAnyDeletedMessage(msg.chatJid)) {
+                    dao.getChat(msg.chatJid)?.let { c ->
+                        if (c.hasDeletedMessages) dao.upsertChat(c.copy(hasDeletedMessages = false))
+                    }
+                }
+            } else if (msg.isEdited) {
+                dao.clearEditedFlagForMessage(msg.id)
+                if (!dao.hasAnyEditedMessage(msg.chatJid)) {
+                    dao.getChat(msg.chatJid)?.let { c ->
+                        if (c.hasEditedMessages) dao.upsertChat(c.copy(hasEditedMessages = false))
+                    }
+                }
+            }
+            showToast("Removed from message history")
+        }
+    }
+
+    fun clearAllMessageHistory(scopedChatJid: String? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val targetDeleted = if (scopedChatJid.isNullOrBlank()) {
+                dao.getAllDeletedMessagesOnce()
+            } else {
+                dao.getDeletedMessagesForChatOnce(scopedChatJid)
+            }
+            val mediaPaths = targetDeleted.mapNotNull { it.localMediaPath?.takeIf(String::isNotBlank) }.distinct()
+            if (scopedChatJid.isNullOrBlank()) {
+                dao.deleteAllSenderDeletedMessages()
+                dao.deleteAllMessageEdits()
+                dao.clearAllEditedFlags()
+                dao.clearAllChatDeletedFlags()
+                dao.clearAllChatEditedFlags()
+            } else {
+                dao.deleteSenderDeletedMessagesForChat(scopedChatJid)
+                dao.deleteMessageEditsForChat(scopedChatJid)
+                dao.clearEditedFlagsForChat(scopedChatJid)
+                dao.clearChatHistoryFlags(scopedChatJid)
+            }
+            mediaPaths.forEach { path ->
+                if (dao.countMediaPathReferences(path) == 0) {
+                    runCatching { File(path).delete() }
+                }
+            }
+            showToast("Message history cleared")
+        }
+    }
+
     suspend fun stageMediaForPreview(uri: Uri, rawMimeType: String?): StagedOutboundMedia? {
         val detectedMime = runCatching { appContext.contentResolver.getType(uri) }.getOrNull()
         val resolvedMime = resolveEffectiveMediaMimeType(rawMimeType, detectedMime)
@@ -1589,6 +1644,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             durationSec = durationSec,
             fileSize = copied.length()
         )
+    }
+
+    suspend fun stageMultipleMediaForPreview(
+        uris: List<Uri>,
+        fallbackMimeType: String = "image/jpeg"
+    ): List<StagedOutboundMedia> = uris.mapNotNull { uri ->
+        stageMediaForPreview(uri, fallbackMimeType)
     }
 
     fun sendStagedMedia(

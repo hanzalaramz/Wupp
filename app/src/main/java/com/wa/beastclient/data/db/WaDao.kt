@@ -209,6 +209,42 @@ interface WaDao {
     @Query("DELETE FROM message_edits WHERE message_id = :messageId")
     suspend fun deleteEditsForMessage(messageId: String)
 
+    @Query("UPDATE messages SET is_edited = 0, edited_at = 0 WHERE id = :messageId")
+    suspend fun clearEditedFlagForMessage(messageId: String)
+
+    @Query("SELECT * FROM messages WHERE is_deleted_by_sender = 1")
+    suspend fun getAllDeletedMessagesOnce(): List<MessageEntity>
+
+    @Query("SELECT * FROM messages WHERE is_deleted_by_sender = 1 AND chat_jid = :chatJid")
+    suspend fun getDeletedMessagesForChatOnce(chatJid: String): List<MessageEntity>
+
+    @Query("DELETE FROM messages WHERE is_deleted_by_sender = 1")
+    suspend fun deleteAllSenderDeletedMessages()
+
+    @Query("DELETE FROM messages WHERE is_deleted_by_sender = 1 AND chat_jid = :chatJid")
+    suspend fun deleteSenderDeletedMessagesForChat(chatJid: String)
+
+    @Query("DELETE FROM message_edits")
+    suspend fun deleteAllMessageEdits()
+
+    @Query("DELETE FROM message_edits WHERE message_id IN (SELECT id FROM messages WHERE chat_jid = :chatJid)")
+    suspend fun deleteMessageEditsForChat(chatJid: String)
+
+    @Query("UPDATE messages SET is_edited = 0, edited_at = 0 WHERE is_edited = 1")
+    suspend fun clearAllEditedFlags()
+
+    @Query("UPDATE messages SET is_edited = 0, edited_at = 0 WHERE is_edited = 1 AND chat_jid = :chatJid")
+    suspend fun clearEditedFlagsForChat(chatJid: String)
+
+    @Query("UPDATE chats SET has_deleted_messages = 0 WHERE has_deleted_messages = 1")
+    suspend fun clearAllChatDeletedFlags()
+
+    @Query("UPDATE chats SET has_edited_messages = 0 WHERE has_edited_messages = 1")
+    suspend fun clearAllChatEditedFlags()
+
+    @Query("UPDATE chats SET has_deleted_messages = 0, has_edited_messages = 0 WHERE jid = :chatJid")
+    suspend fun clearChatHistoryFlags(chatJid: String)
+
     @Query("DELETE FROM group_receipts WHERE message_id = :messageId")
     suspend fun deleteReceiptsForMessage(messageId: String)
 
@@ -1202,7 +1238,7 @@ interface WaDao {
                 if (!isGroupOrChannel && !chatJidsWithMessages.contains(chat.jid)) {
                     continue
                 }
-                upsertChat(if (isCurrentlyOpen) chat.copy(unreadCount = 0) else chat)
+                upsertChat(if (isCurrentlyOpen || chat.unreadCount < 0) chat.copy(unreadCount = 0) else chat)
             } else {
                 val jidUser = chat.jid.substringBefore("@")
                 val incomingIsCustom = chat.name.isNotBlank() &&
@@ -1238,7 +1274,14 @@ interface WaDao {
                         isArchived = resolvedArchived,
                         isLocked = chat.isLocked || existing.isLocked,
                         localArchiveOverride = existing.localArchiveOverride,
-                        unreadCount = if (isCurrentlyOpen) 0 else chat.unreadCount,
+                        unreadCount = resolveHistorySyncUnreadCount(
+                            isCurrentlyOpen = isCurrentlyOpen,
+                            incomingUnreadCount = chat.unreadCount,
+                            incomingLastTimestamp = chat.lastMessageTimestamp,
+                            existingUnreadCount = existing.unreadCount,
+                            existingLastFromMe = existing.lastMessageFromMe,
+                            existingLastTimestamp = existing.lastMessageTimestamp
+                        ),
                         lastMessageTimestamp = maxOf(existing.lastMessageTimestamp, chat.lastMessageTimestamp),
                         isCommunityParent = chat.isCommunityParent || existing.isCommunityParent,
                         parentGroupJid = chat.parentGroupJid.ifBlank { existing.parentGroupJid },
@@ -1659,6 +1702,31 @@ interface WaDao {
         private fun formatDurationShort(sec: Int): String {
             val s = sec.coerceAtLeast(0)
             return "%d:%02d".format(s / 60, s % 60)
+        }
+
+        /**
+         * Resolves the unread count when merging a HistorySync chat snapshot with an existing chat row.
+         * - Open chat always stays at 0.
+         * - Negative incoming unread count means the server omitted unread_count in this sync batch;
+         *   preserve existingUnreadCount instead of wiping it to 0.
+         * - Stale sync batches (timestamp <= existingLastTimestamp) must not re-inflate unreadCount
+         *   from 0 when the latest message in the chat is already from us.
+         */
+        fun resolveHistorySyncUnreadCount(
+            isCurrentlyOpen: Boolean,
+            incomingUnreadCount: Int,
+            incomingLastTimestamp: Long,
+            existingUnreadCount: Int,
+            existingLastFromMe: Boolean,
+            existingLastTimestamp: Long
+        ): Int = when {
+            isCurrentlyOpen -> 0
+            incomingUnreadCount < 0 -> existingUnreadCount.coerceAtLeast(0)
+            incomingUnreadCount > 0 &&
+                existingLastFromMe &&
+                existingUnreadCount == 0 &&
+                incomingLastTimestamp <= existingLastTimestamp -> 0
+            else -> incomingUnreadCount.coerceAtLeast(0)
         }
     }
 }

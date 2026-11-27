@@ -2,6 +2,17 @@ use std::str::FromStr;
 
 use whatsapp_rust::wacore_binary::Jid;
 
+/// Normalizes Meta AI JIDs (`13135550002@s.whatsapp.net` / `@lid`) to `13135550002@bot`
+/// so companion messages always route to the real AI bot endpoint without duplicate chats.
+fn normalize_meta_ai_jid(jid: Jid) -> Jid {
+    if jid.user == "13135550002" && (jid.is_pn() || jid.is_lid()) {
+        if let Ok(bot_jid) = Jid::from_str("13135550002@bot") {
+            return bot_jid;
+        }
+    }
+    jid
+}
+
 /// Parses phone digits or full JID strings into a `Jid`, defaulting bare phone strings to PN.
 pub fn parse_jid_flexible(raw: &str) -> Result<Jid, String> {
     let trimmed = raw.trim();
@@ -9,11 +20,17 @@ pub fn parse_jid_flexible(raw: &str) -> Result<Jid, String> {
         return Err("empty JID".to_string());
     }
     if trimmed.contains('@') {
-        return Jid::from_str(trimmed).map_err(|e| format!("invalid JID '{trimmed}': {e}"));
+        let parsed = Jid::from_str(trimmed).map_err(|e| format!("invalid JID '{trimmed}': {e}"))?;
+        return Ok(normalize_meta_ai_jid(parsed));
     }
     let digits: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
         return Err(format!("invalid JID '{trimmed}': no digits"));
+    }
+    if digits == "13135550002" {
+        if let Ok(bot_jid) = Jid::from_str("13135550002@bot") {
+            return Ok(bot_jid);
+        }
     }
     Ok(Jid::pn(digits))
 }

@@ -1858,6 +1858,8 @@ fun HomeScreen(
             chats = allChats,
             initialChatJid = messageHistoryChatFilter,
             onJumpToChat = { targetJid -> onOpenChat(targetJid) },
+            onDeleteEntry = { viewModel.deleteMessageHistoryItem(it) },
+            onClearAll = { scoped -> viewModel.clearAllMessageHistory(scoped) },
             onDismiss = {
                 showMessageHistorySheet = false
                 messageHistoryChatFilter = null
