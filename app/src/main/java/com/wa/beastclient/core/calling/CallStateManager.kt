@@ -804,6 +804,7 @@ object CallStateManager {
                 phase = CallPhase.ACTIVE,
                 peerAccepted = true,
                 isVideo = videoMode,
+                hasRemoteVideo = it.hasRemoteVideo || remoteVideo,
                 connectedAtEpochMs = startedAt,
                 statusText = if (wasActive) it.statusText else formatCallTimer(it.durationSec)
             )
@@ -904,6 +905,13 @@ object CallStateManager {
                         mainScope.launch {
                             _uiState.update { cur ->
                                 if (cur.hasRemoteVideo) cur else cur.copy(hasRemoteVideo = true)
+                            }
+                        }
+                    },
+                    onRemoteVideoPacketReceived = {
+                        mainScope.launch {
+                            _uiState.update { cur ->
+                                if (cur.hasRemoteVideo) cur else cur.copy(hasRemoteVideo = true, isVideo = true)
                             }
                         }
                     }

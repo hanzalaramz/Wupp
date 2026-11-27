@@ -2113,6 +2113,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun downloadUpdateToDevice(release: AppReleaseInfo, existingApkPath: String? = null) {
+        viewModelScope.launch {
+            WuppUpdater.downloadToDevice(appContext, release, existingApkPath)
+                .onSuccess { savedRelPath ->
+                    showToast("Saved APK to $savedRelPath")
+                }
+                .onFailure { err ->
+                    showToast(err.message ?: "Unable to save APK to Downloads")
+                }
+        }
+    }
+
     fun installDownloadedApk(apkFile: File) {
         WuppUpdater.installApk(appContext, apkFile).onFailure { err ->
             showToast(err.message ?: "Unable to launch APK installer")

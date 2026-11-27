@@ -299,6 +299,7 @@ fun GitHubFeedbackDialog(
 fun AppUpdateDialog(
     state: UpdateUiState,
     onDownload: (AppReleaseInfo) -> Unit,
+    onDownloadToDevice: ((AppReleaseInfo, String?) -> Unit)? = null,
     onInstall: (File) -> Unit,
     onInstallExternal: (File) -> Unit = {},
     onSkipVersion: () -> Unit = {},
@@ -721,6 +722,29 @@ fun AppUpdateDialog(
                     fontSize = 11.5.sp,
                     lineHeight = 16.sp
                 )
+            }
+
+            if (onDownloadToDevice != null && !isDownloading && !release.apkDownloadUrl.isNullOrBlank()) {
+                val cachedPath = when (state) {
+                    is UpdateUiState.ReadyToInstall -> state.apkPath
+                    is UpdateUiState.Error -> state.apkPath
+                    else -> null
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = { onDownloadToDevice(release, cachedPath) },
+                    shape = RoundedCornerShape(26.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                ) {
+                    Text(
+                        text = "Download to Device",
+                        color = colors.textPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
 
             if (release.htmlUrl.isNotBlank() && !isDownloading) {

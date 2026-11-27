@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.3.11-pre.3] - 2026-11-27
+
+### ✨ Features
+- Added a **Download to Device** button in the in-app updater dialog to save the release APK directly to `Downloads/Wupp` for manual installation (#226).
+
+### 🛠️ Fixes
+- Fixed remote video not appearing on video calls until toggling the camera off and on again by caching the initial IDR keyframe for late-attaching `TextureView` surfaces and setting `hasRemoteVideo` when remote video packets or call activation arrive (#228).
+
 ## [0.3.11-pre.2] - 2026-11-27
 
 ### 🛠️ Fixes

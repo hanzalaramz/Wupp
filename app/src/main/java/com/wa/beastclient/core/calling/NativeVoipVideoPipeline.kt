@@ -191,6 +191,47 @@ internal fun computeSmartVideoDisplayScale(
     }
 }
 
+internal data class DecoderBootstrapPlan(
+    val csd0: ByteArray?,
+    val bootstrapIdrFrame: ByteArray?,
+    val bootstrapIdrTs90k: Long,
+    val feedCurrentFrame: Boolean
+)
+
+/**
+ * Resolves how to initialize the H.264 MediaCodec decoder when [targetSurface] is ready.
+ * If the current packet is a keyframe with SPS/PPS (or cached SPS/PPS), opens directly on it.
+ * If the current packet is a delta frame (e.g., initial IDR arrived before TextureView mounted),
+ * bootstraps the decoder using [cachedIdrFrame] + [cachedSpsPps] before feeding the delta frame.
+ */
+internal fun resolveDecoderBootstrap(
+    isCurrentKey: Boolean,
+    currentPayload: ByteArray,
+    currentTs90k: Long,
+    cachedSpsPps: ByteArray?,
+    cachedIdrFrame: ByteArray?,
+    cachedIdrTs90k: Long
+): DecoderBootstrapPlan? {
+    val hasInlineSps = annexBContainsNalType(currentPayload, 7)
+    if (isCurrentKey && (cachedSpsPps != null || hasInlineSps)) {
+        return DecoderBootstrapPlan(
+            csd0 = cachedSpsPps,
+            bootstrapIdrFrame = null,
+            bootstrapIdrTs90k = 0L,
+            feedCurrentFrame = true
+        )
+    }
+    if (cachedIdrFrame != null && (cachedSpsPps != null || annexBContainsNalType(cachedIdrFrame, 7))) {
+        return DecoderBootstrapPlan(
+            csd0 = cachedSpsPps,
+            bootstrapIdrFrame = cachedIdrFrame,
+            bootstrapIdrTs90k = cachedIdrTs90k,
+            feedCurrentFrame = !isCurrentKey && currentPayload.isNotEmpty()
+        )
+    }
+    return null
+}
+
 /**
  * Hardware MediaCodec H.264 Annex-B video encoder (Camera2 -> GL upright portrait relay ->
  * Rust VoIP) and decoder (Rust VoIP -> remote Surface) supporting front/back switching and PLI.
@@ -202,7 +243,8 @@ class NativeVoipVideoPipeline(
     private val onRemoteCodecRotationDegrees: (Int) -> Unit = {},
     private val onRemoteVideoSizeChanged: (Int, Int) -> Unit = { _, _ -> },
     private val onLocalVideoSizeChanged: (Int, Int) -> Unit = { _, _ -> },
-    private val onRemoteFirstFrameDecoded: () -> Unit = {}
+    private val onRemoteFirstFrameDecoded: () -> Unit = {},
+    private val onRemoteVideoPacketReceived: () -> Unit = {}
 ) {
     companion object {
         private const val TAG = "NativeVoipVideo"
@@ -1017,11 +1059,30 @@ class NativeVoipVideoPipeline(
         return null
     }
 
+    private fun queueDecoderFrame(dec: MediaCodec, data: ByteArray, ts90k: Long, isKey: Boolean) {
+        val inIdx = dec.dequeueInputBuffer(5_000)
+        if (inIdx >= 0) {
+            val inBuf = dec.getInputBuffer(inIdx)
+            inBuf?.clear()
+            val ptsUs = (ts90k * 1_000L) / 90L
+            if (inBuf != null && data.size <= inBuf.remaining()) {
+                inBuf.put(data)
+                val decFlags = if (isKey) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
+                dec.queueInputBuffer(inIdx, 0, data.size, ptsUs, decFlags)
+            } else {
+                dec.queueInputBuffer(inIdx, 0, 0, ptsUs, 0)
+            }
+        }
+    }
+
     private fun runDecoderLoop() {
         var cachedSpsPps: ByteArray? = null
+        var cachedIdrFrame: ByteArray? = null
+        var cachedIdrTs90k = 0L
         var lastOrientation = -1
         var lastKeyframeOrientation = -1
         var firstFrameReported = false
+        var remotePacketReported = false
         var awaitingDecoderKeyframe = true
         var lastPeerKeyframeReqMs = 0L
         val info = MediaCodec.BufferInfo()
@@ -1031,6 +1092,37 @@ class NativeVoipVideoPipeline(
                 val pullStartNs = System.nanoTime()
                 val packet = runCatching { Whatsbridge.pullVoipVideoFrame(callId) }.getOrNull()
                 if (packet == null) {
+                    // If TextureView attached while no new packet has arrived yet, bootstrap from cached IDR.
+                    val idleIdr = cachedIdrFrame
+                    if (idleIdr != null) {
+                        synchronized(decoderSurfaceLock) {
+                            val targetSurface = remoteSurfaceRef.get()
+                            if (targetSurface != null && targetSurface.isValid &&
+                                (activeDecoder == null || configuredRemoteSurface !== targetSurface)
+                            ) {
+                                val plan = resolveDecoderBootstrap(
+                                    isCurrentKey = true,
+                                    currentPayload = idleIdr,
+                                    currentTs90k = cachedIdrTs90k,
+                                    cachedSpsPps = cachedSpsPps,
+                                    cachedIdrFrame = idleIdr,
+                                    cachedIdrTs90k = cachedIdrTs90k
+                                )
+                                if (plan != null) {
+                                    releaseActiveDecoderLocked()
+                                    val fmt = MediaFormat.createVideoFormat(MIME_AVC, CAM_WIDTH, CAM_HEIGHT)
+                                    plan.csd0?.let { fmt.setByteBuffer("csd-0", ByteBuffer.wrap(it)) }
+                                    val opened = openConfiguredAvcDecoder(fmt, targetSurface)
+                                    if (opened != null) {
+                                        activeDecoder = opened
+                                        configuredRemoteSurface = targetSurface
+                                        awaitingDecoderKeyframe = false
+                                        runCatching { queueDecoderFrame(opened, idleIdr, cachedIdrTs90k, true) }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // Guard against tight busy-spin when the Rust video playout channel is absent
                     // (e.g., audio call upgrading to video or call terminating).
                     if (System.nanoTime() - pullStartNs < 5_000_000L) {
@@ -1047,6 +1139,9 @@ class NativeVoipVideoPipeline(
                 val isKey = isKeyHeader || annexBContainsNalType(payload, 5)
                 if (isKey) {
                     lastKeyframeOrientation = rawOrientation
+                    if (payload.isNotEmpty()) {
+                        cachedIdrFrame = payload.copyOf()
+                    }
                 }
                 // Keep keyframe orientation across delta packets whose RTP extension omitted rotation,
                 // preventing the image from jumping between upright and sideways over time.
@@ -1063,8 +1158,15 @@ class NativeVoipVideoPipeline(
                 val ts90k = ByteBuffer.wrap(packet, 4, 4)
                     .order(ByteOrder.LITTLE_ENDIAN)
                     .int.toLong() and 0xFFFF_FFFFL
+                if (isKey && payload.isNotEmpty()) {
+                    cachedIdrTs90k = ts90k
+                }
 
                 extractParameterSetsAnnexB(payload)?.let { cachedSpsPps = it }
+                if (!remotePacketReported && (isKey || cachedSpsPps != null)) {
+                    remotePacketReported = true
+                    onRemoteVideoPacketReceived()
+                }
 
                 var requestPeerKeyframe = false
                 synchronized(decoderSurfaceLock) {
@@ -1077,23 +1179,33 @@ class NativeVoipVideoPipeline(
                         return@synchronized
                     }
 
+                    var feedCurrent = true
                     if (activeDecoder == null || configuredRemoteSurface !== targetSurface) {
                         releaseActiveDecoderLocked()
                         awaitingDecoderKeyframe = true
-                        if (!isKey) {
+                        val plan = resolveDecoderBootstrap(
+                            isCurrentKey = isKey,
+                            currentPayload = payload,
+                            currentTs90k = ts90k,
+                            cachedSpsPps = cachedSpsPps,
+                            cachedIdrFrame = cachedIdrFrame,
+                            cachedIdrTs90k = cachedIdrTs90k
+                        )
+                        if (plan == null) {
                             requestPeerKeyframe = true
                             return@synchronized
                         }
-                        val initCfg = cachedSpsPps
                         val fmt = MediaFormat.createVideoFormat(MIME_AVC, CAM_WIDTH, CAM_HEIGHT)
-                        if (initCfg != null) {
-                            fmt.setByteBuffer("csd-0", ByteBuffer.wrap(initCfg))
-                        }
+                        plan.csd0?.let { fmt.setByteBuffer("csd-0", ByteBuffer.wrap(it)) }
                         val opened = openConfiguredAvcDecoder(fmt, targetSurface)
                         if (opened != null) {
                             activeDecoder = opened
                             configuredRemoteSurface = targetSurface
                             awaitingDecoderKeyframe = false
+                            plan.bootstrapIdrFrame?.let { bootIdr ->
+                                queueDecoderFrame(opened, bootIdr, plan.bootstrapIdrTs90k, true)
+                            }
+                            feedCurrent = plan.feedCurrentFrame
                         } else {
                             return@synchronized
                         }
@@ -1109,19 +1221,8 @@ class NativeVoipVideoPipeline(
 
                     val dec = activeDecoder ?: return@synchronized
                     try {
-                        val inIdx = dec.dequeueInputBuffer(5_000)
-                        if (inIdx >= 0) {
-                            val inBuf = dec.getInputBuffer(inIdx)
-                            inBuf?.clear()
-                            val ptsUs = (ts90k * 1_000L) / 90L
-                            if (inBuf != null && payload.size <= inBuf.remaining()) {
-                                inBuf.put(payload)
-                                val decFlags = if (isKey) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
-                                dec.queueInputBuffer(inIdx, 0, payload.size, ptsUs, decFlags)
-                            } else {
-                                // Return the slot without feeding a truncated frame to the decoder.
-                                dec.queueInputBuffer(inIdx, 0, 0, ptsUs, 0)
-                            }
+                        if (feedCurrent) {
+                            queueDecoderFrame(dec, payload, ts90k, isKey)
                         }
 
                         while (true) {

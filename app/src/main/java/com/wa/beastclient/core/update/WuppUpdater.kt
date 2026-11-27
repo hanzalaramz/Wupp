@@ -4,12 +4,15 @@ import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -313,7 +316,11 @@ object WuppUpdater {
         return null
     }
 
-    suspend fun downloadUpdate(context: Context, release: AppReleaseInfo) {
+    suspend fun downloadUpdate(
+        context: Context,
+        release: AppReleaseInfo,
+        installAfterDownload: Boolean = true
+    ) {
         val appCtx = context.applicationContext
         val downloadUrl = release.apkDownloadUrl
         if (downloadUrl.isNullOrBlank()) {
@@ -412,13 +419,15 @@ object WuppUpdater {
                 activeInstallRelease = release
                 activeInstallApkPath = apkFile.absolutePath
                 _state.value = UpdateUiState.ReadyToInstall(release, apkFile.absolutePath)
-                installApk(appCtx, apkFile).onFailure { err ->
-                    _state.value = UpdateUiState.Error(
-                        message = err.message ?: "Unable to start update installer",
-                        silent = false,
-                        release = release,
-                        apkPath = apkFile.absolutePath
-                    )
+                if (installAfterDownload) {
+                    installApk(appCtx, apkFile).onFailure { err ->
+                        _state.value = UpdateUiState.Error(
+                            message = err.message ?: "Unable to start update installer",
+                            silent = false,
+                            release = release,
+                            apkPath = apkFile.absolutePath
+                        )
+                    }
                 }
             },
             onFailure = { err ->
@@ -429,6 +438,82 @@ object WuppUpdater {
                 )
             }
         )
+    }
+
+    /**
+     * Downloads the release APK (if not already cached) and saves a copy into the device's
+     * public Downloads/Wupp folder so users can install it via their file manager or app store.
+     */
+    suspend fun downloadToDevice(
+        context: Context,
+        release: AppReleaseInfo,
+        existingApkPath: String? = null
+    ): Result<String> {
+        val appCtx = context.applicationContext
+        val existingFile = existingApkPath
+            ?.takeIf { it.isNotBlank() }
+            ?.let { File(it) }
+            ?.takeIf { it.exists() && it.length() > 100_000L }
+            ?: findExistingDownloadedApk(appCtx, release)
+
+        val apkFile = if (existingFile != null) {
+            existingFile
+        } else {
+            downloadUpdate(appCtx, release, installAfterDownload = false)
+            when (val cur = _state.value) {
+                is UpdateUiState.ReadyToInstall -> File(cur.apkPath)
+                is UpdateUiState.Error -> return Result.failure(IllegalStateException(cur.message))
+                else -> return Result.failure(IllegalStateException("APK download did not complete"))
+            }
+        }
+
+        val rawName = release.apkFileName?.takeIf { it.isNotBlank() }
+            ?: "Wupp-${release.tagName.replace(Regex("[^a-zA-Z0-9._-]"), "_")}.apk"
+        val displayName = if (rawName.endsWith(".apk", ignoreCase = true)) rawName else "$rawName.apk"
+        return copyApkToPublicDownloads(appCtx, apkFile, displayName)
+    }
+
+    private suspend fun copyApkToPublicDownloads(
+        context: Context,
+        sourceApk: File,
+        displayName: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            if (!sourceApk.exists() || sourceApk.length() <= 0L) {
+                throw IllegalStateException("Downloaded APK file is missing")
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val resolver = context.contentResolver
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, displayName)
+                    put(MediaStore.Downloads.MIME_TYPE, "application/vnd.android.package-archive")
+                    put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Wupp")
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IllegalStateException("Could not create file in Downloads")
+                try {
+                    resolver.openOutputStream(uri)?.use { output ->
+                        FileInputStream(sourceApk).use { input -> input.copyTo(output) }
+                        output.flush()
+                    } ?: throw IllegalStateException("Could not open Downloads output stream")
+                    values.clear()
+                    values.put(MediaStore.Downloads.IS_PENDING, 0)
+                    resolver.update(uri, values, null, null)
+                } catch (err: Throwable) {
+                    runCatching { resolver.delete(uri, null, null) }
+                    throw err
+                }
+                "Downloads/Wupp/$displayName"
+            } else {
+                @Suppress("DEPRECATION")
+                val baseDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val targetDir = File(baseDir, "Wupp").apply { if (!exists()) mkdirs() }
+                val targetFile = File(targetDir, displayName)
+                sourceApk.copyTo(targetFile, overwrite = true)
+                "Downloads/Wupp/$displayName"
+            }
+        }
     }
 
     fun installApk(context: Context, apkFile: File): Result<Unit> = runCatching {
