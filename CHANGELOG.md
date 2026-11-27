@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.11-pre.1] - 2026-11-27
+
 ### ✨ Features
 - Added multi-photo/video selection (up to 10 items) with a thumbnail strip and per-item captions in the media preview dialog (#218).
 - Added individual delete and **Clear All** options in Message History to remove deleted/edited records and free local storage (#215).
