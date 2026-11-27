@@ -339,7 +339,11 @@ internal fun resolveMentionsInText(
         if (cleanJid.isBlank()) continue
         val bareUser = cleanJid.substringBefore("@").substringBefore(":").trim()
         if (bareUser.isBlank() || !seenUsers.add(bareUser)) continue
-        val resolved = resolveName(cleanJid)?.trim().orEmpty()
+        val resolved = if (cleanJid.endsWith("@g.us", ignoreCase = true)) {
+            "everyone"
+        } else {
+            resolveName(cleanJid)?.trim().orEmpty()
+        }
         if (resolved.isBlank() || resolved == bareUser) continue
         val pattern = Regex("""(?<![\w])@${Regex.escape(bareUser)}(?![\w])""")
         result = pattern.replace(result) { "@$resolved" }

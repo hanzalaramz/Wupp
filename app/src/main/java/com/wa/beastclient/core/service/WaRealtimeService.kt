@@ -3643,7 +3643,8 @@ class WaRealtimeService : Service() {
             quoted: MessageEntity?,
             ghostMentionEveryone: Boolean,
             requireLinkedSession: Boolean = false,
-            allowUnsavedColdStart: Boolean = false
+            allowUnsavedColdStart: Boolean = false,
+            explicitMentionsCsv: String = ""
         ): Result<MessageEntity> = withContext(Dispatchers.IO) {
             runCatching {
                 ensureOnlineForOutbound()
@@ -3663,23 +3664,26 @@ class WaRealtimeService : Service() {
                 }
 
                 val privacy = StealthMatrixManager.getEffectivePrivacy(dao, effectiveChatJid)
-                var mentionsCsv = ""
+                val mentionSet = linkedSetOf<String>()
+                explicitMentionsCsv.split(',').forEach { m ->
+                    val cleanM = m.trim()
+                    if (cleanM.isNotBlank()) mentionSet.add(cleanM)
+                }
                 if (ghostMentionEveryone && effectiveChatJid.endsWith("@g.us")) {
                     val ownUser = _bridgeStatus.value.ownJid.substringBefore("@").substringBefore(":")
-                    mentionsCsv = runCatching {
+                    runCatching {
                         val raw = Whatsbridge.getGroupParticipantsJson(effectiveChatJid)
                         val arr = JSONArray(raw)
-                        buildList {
-                            for (i in 0 until arr.length()) {
-                                val participant = arr.optString(i).trim()
-                                val participantUser = participant.substringBefore("@").substringBefore(":")
-                                if (participant.isNotBlank() && (ownUser.isBlank() || participantUser != ownUser)) {
-                                    add(participant)
-                                }
+                        for (i in 0 until arr.length()) {
+                            val participant = arr.optString(i).trim()
+                            val participantUser = participant.substringBefore("@").substringBefore(":")
+                            if (participant.isNotBlank() && (ownUser.isBlank() || participantUser != ownUser)) {
+                                mentionSet.add(participant)
                             }
-                        }.distinct().joinToString(",")
-                    }.getOrElse { emptyList<String>().joinToString(",") }
+                        }
+                    }
                 }
+                val mentionsCsv = mentionSet.joinToString(",")
 
                 val ownJid = _bridgeStatus.value.ownJid.ifBlank { "me@s.whatsapp.net" }
                 val stanzaId = if (runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {

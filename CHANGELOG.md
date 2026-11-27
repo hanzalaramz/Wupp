@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-11-27
+
+### ✨ Features
+- Added WhatsApp-style `@` member autocomplete in group chats and fixed raw numeric/LID and `@everyone` mentions (#104).
+- Added **Customize Navigation Bar** in Settings to show/hide individual bottom tabs and restore defaults (#185).
+- Added a **Download to Device** button in the in-app updater to save APKs to `Downloads/Wupp` (#226).
+- Added multi-photo/video selection (up to 10 items) with per-item captions (#218), delete/clear options in Message History (#215), and Chat Privacy Mode toggles in Settings and Quick Controls (#220).
+
+### 🛠️ Fixes
+- Allowed group admins to send messages, reply, and react in admin-only groups (#232).
+- Fixed remote video not showing on video calls until toggling the camera (#228).
+- Fixed profile pictures still showing when **Hide Names & DPs** was enabled.
+- Fixed unread count sync mismatches (#214), Meta AI chat routing (#217), main-phone read/reply sync (#221), and background battery/CPU drain (#106).
+
 ## [0.3.11-pre.4] - 2026-11-27
 
 ### ✨ Features

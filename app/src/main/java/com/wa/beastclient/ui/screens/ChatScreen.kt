@@ -816,6 +816,21 @@ fun ChatScreen(
     }
     var replyTarget by remember { mutableStateOf<MessageEntity?>(null) }
     var ghostMentionEveryone by remember { mutableStateOf(false) }
+    val isGroupThread = chat?.isGroup == true || chatJid.endsWith("@g.us")
+    val pendingMentions = remember(chatJid) { mutableMapOf<String, String>() }
+    var groupMembers by remember(chatJid) { mutableStateOf<List<String>>(emptyList()) }
+    val activeMentionQuery = remember(draftValue, isGroupThread) {
+        if (isGroupThread) extractActiveMentionQuery(draftValue.text, draftValue.selection.end) else null
+    }
+    LaunchedEffect(chatJid, isGroupThread, activeMentionQuery != null) {
+        if (isGroupThread && groupMembers.isEmpty()) {
+            val fetched = viewModel.fetchGroupParticipants(chatJid)
+            if (fetched.isNotEmpty()) {
+                groupMembers = fetched
+                viewModel.resolveParticipantsLocally(fetched)
+            }
+        }
+    }
     var qualityMode by remember { mutableStateOf(OutboundQualityMode.HD) }
     var showAttachTray by remember { mutableStateOf(false) }
     var showEmojiPicker by remember(chatJid) { mutableStateOf(false) }
@@ -2121,31 +2136,45 @@ fun ChatScreen(
                                     if (isGroupChat) {
                                         { mentionJid: String ->
                                             val cleanMention = mentionJid.trim()
-                                            val bareDigits = cleanMention.substringBefore("@").substringBefore(":")
-                                            val directMeta = participantMeta[cleanMention]
-                                                ?: participantMeta["$bareDigits@s.whatsapp.net"]
-                                                ?: participantMeta["$bareDigits@lid"]
-                                                ?: participantMeta.values.firstOrNull { meta ->
-                                                    meta.altJid.substringBefore("@").substringBefore(":") == bareDigits
-                                                }
-                                            val effectiveJid = directMeta?.jid ?: cleanMention
-                                            if (directMeta?.isSelf == true) {
-                                                "You"
+                                            if (cleanMention.endsWith("@g.us", ignoreCase = true)) {
+                                                "everyone"
                                             } else {
-                                                val info = resolveSenderDisplayInfo(
-                                                    rawJidOrText = effectiveJid,
-                                                    explicitName = "",
-                                                    isSelf = false,
-                                                    participantMeta = participantMeta,
-                                                    chatsByJid = chatsByJid,
-                                                    senderPushByJid = senderPushByJid
-                                                )
-                                                val candidate = info.primary.removePrefix("~ ").trim()
-                                                candidate.takeIf {
-                                                    it.isNotBlank() &&
-                                                        !it.startsWith("User ·") &&
-                                                        it != bareDigits &&
-                                                        !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(it)
+                                                val bareDigits = cleanMention.substringBefore("@").substringBefore(":")
+                                                val directMeta = participantMeta[cleanMention]
+                                                    ?: participantMeta["$bareDigits@s.whatsapp.net"]
+                                                    ?: participantMeta["$bareDigits@lid"]
+                                                    ?: participantMeta.values.firstOrNull { meta ->
+                                                        meta.altJid.substringBefore("@").substringBefore(":") == bareDigits
+                                                    }
+                                                val isSelfMention = directMeta?.isSelf == true ||
+                                                    StealthMatrixManager.isSelfChatJid(cleanMention, bridgeStatus.ownJid) ||
+                                                    (directMeta?.altJid?.let {
+                                                        StealthMatrixManager.isSelfChatJid(it, bridgeStatus.ownJid)
+                                                    } == true)
+                                                if (isSelfMention) {
+                                                    "You"
+                                                } else {
+                                                    val effectiveJid = directMeta?.jid ?: cleanMention
+                                                    val info = resolveSenderDisplayInfo(
+                                                        rawJidOrText = effectiveJid,
+                                                        explicitName = "",
+                                                        isSelf = false,
+                                                        participantMeta = participantMeta,
+                                                        chatsByJid = chatsByJid,
+                                                        senderPushByJid = senderPushByJid
+                                                    )
+                                                    val candidate = info.primary.removePrefix("~ ").trim()
+                                                    val resolved = candidate.takeIf {
+                                                        it.isNotBlank() &&
+                                                            !it.startsWith("User ·") &&
+                                                            it != bareDigits &&
+                                                            !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(it)
+                                                    } ?: chatsByJid[cleanMention]?.name?.takeIf {
+                                                        it.isNotBlank() && it != bareDigits
+                                                    } ?: senderPushByJid[cleanMention]?.takeIf {
+                                                        it.isNotBlank() && it != bareDigits
+                                                    }
+                                                    resolved
                                                 }
                                             }
                                         }
@@ -3215,6 +3244,138 @@ fun ChatScreen(
                         }
                     } else {
                         val hasDraftText = draftValue.text.isNotBlank()
+                        AnimatedVisibility(visible = isGroupThread && activeMentionQuery != null) {
+                            val mQuery = activeMentionQuery
+                            if (mQuery != null) {
+                                val ownBare = bridgeStatus.ownJid.substringBefore("@").substringBefore(":")
+                                val queryLower = mQuery.query.trim().lowercase()
+                                val candidateMembers = remember(groupMembers, participantMeta, chatsByJid, senderPushByJid, queryLower, ownBare) {
+                                    groupMembers
+                                        .distinct()
+                                        .filter { mJid ->
+                                            val bare = mJid.substringBefore("@").substringBefore(":")
+                                            ownBare.isBlank() || bare != ownBare
+                                        }
+                                        .map { mJid ->
+                                            val info = resolveSenderDisplayInfo(
+                                                rawJidOrText = mJid,
+                                                explicitName = "",
+                                                isSelf = false,
+                                                participantMeta = participantMeta,
+                                                chatsByJid = chatsByJid,
+                                                senderPushByJid = senderPushByJid
+                                            )
+                                            val display = info.primary.removePrefix("~ ").trim()
+                                                .ifBlank { mJid.substringBefore("@") }
+                                            Triple(mJid, display, info.secondaryPhone)
+                                        }
+                                        .filter { (mJid, display, phone) ->
+                                            queryLower.isEmpty() ||
+                                                display.lowercase().contains(queryLower) ||
+                                                phone.lowercase().contains(queryLower) ||
+                                                mJid.substringBefore("@").contains(queryLower)
+                                        }
+                                        .take(20)
+                                }
+                                val showEveryoneRow = queryLower.isEmpty() ||
+                                    "everyone".startsWith(queryLower) ||
+                                    "all".startsWith(queryLower)
+                                if (showEveryoneRow || candidateMembers.isNotEmpty()) {
+                                    Surface(
+                                        shape = RoundedCornerShape(18.dp),
+                                        color = colors.elevatedBar.copy(alpha = 0.96f),
+                                        tonalElevation = 4.dp,
+                                        shadowElevation = 6.dp,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                                            .heightIn(max = 210.dp)
+                                    ) {
+                                        LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                                            if (showEveryoneRow) {
+                                                item(key = "mention_everyone") {
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .clickable {
+                                                                val (newText, newCursor) = applyMentionSelection(
+                                                                    text = draftValue.text,
+                                                                    startIndex = mQuery.startIndex,
+                                                                    cursorIndex = draftValue.selection.end,
+                                                                    displayName = "everyone"
+                                                                )
+                                                                draftValue = TextFieldValue(newText, TextRange(newCursor))
+                                                                ghostMentionEveryone = true
+                                                            }
+                                                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                    ) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .size(34.dp)
+                                                                .clip(CircleShape)
+                                                                .background(colors.brightGreen.copy(alpha = 0.18f)),
+                                                            contentAlignment = Alignment.Center
+                                                        ) {
+                                                            Text("@", color = colors.brightGreen, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                                        }
+                                                        Column {
+                                                            Text("@everyone", color = colors.textPrimary, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold)
+                                                            Text("Notify all group members", color = colors.textSecondary, fontSize = 12.sp)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            items(candidateMembers, key = { it.first }) { (mJid, display, phone) ->
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clickable {
+                                                            val (newText, newCursor) = applyMentionSelection(
+                                                                text = draftValue.text,
+                                                                startIndex = mQuery.startIndex,
+                                                                cursorIndex = draftValue.selection.end,
+                                                                displayName = display
+                                                            )
+                                                            pendingMentions["@$display"] = mJid
+                                                            draftValue = TextFieldValue(newText, TextRange(newCursor))
+                                                        }
+                                                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    WhatsAppAvatar(
+                                                        jid = mJid,
+                                                        avatarPath = chatsByJid[mJid]?.avatarPath,
+                                                        isGroup = false,
+                                                        size = 34.dp
+                                                    )
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(
+                                                            text = display,
+                                                            color = colors.textPrimary,
+                                                            fontSize = 14.5.sp,
+                                                            fontWeight = FontWeight.Medium,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                        if (phone.isNotBlank()) {
+                                                            Text(
+                                                                text = phone,
+                                                                color = colors.textSecondary,
+                                                                fontSize = 11.5.sp,
+                                                                maxLines = 1
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         WuppGlassBottomBar(
                             backdropState = wallpaperBackdropState,
                             classicMode = stealthConfig.classicWhatsAppLook,
@@ -3408,14 +3569,20 @@ fun ChatScreen(
                                                     if (draftValue.text.isNotBlank()) {
                                                         runWithOutboundGuard {
                                                             scrollToBottomPending = true
+                                                            val (wireText, explicitCsv) = buildOutboundMentionPayload(
+                                                                draftValue.text,
+                                                                pendingMentions
+                                                            )
                                                             viewModel.sendText(
                                                                 chatJid = chatJid,
-                                                                text = draftValue.text,
+                                                                text = wireText,
                                                                 quoted = replyTarget,
                                                                 ghostMentionEveryone = ghostMentionEveryone,
-                                                                allowUnsavedColdStart = allowUnsavedColdStartFlag
+                                                                allowUnsavedColdStart = allowUnsavedColdStartFlag,
+                                                                explicitMentionsCsv = explicitCsv
                                                             )
                                                             draftValue = TextFieldValue("")
+                                                            pendingMentions.clear()
                                                             viewModel.saveChatDraft(chatJid, "")
                                                             replyTarget = null
                                                             ghostMentionEveryone = false
@@ -3514,14 +3681,20 @@ fun ChatScreen(
                                                     onClick = {
                                                         runWithOutboundGuard {
                                                             scrollToBottomPending = true
+                                                            val (wireText, explicitCsv) = buildOutboundMentionPayload(
+                                                                draftValue.text,
+                                                                pendingMentions
+                                                            )
                                                             viewModel.sendText(
                                                                 chatJid = chatJid,
-                                                                text = draftValue.text,
+                                                                text = wireText,
                                                                 quoted = replyTarget,
                                                                 ghostMentionEveryone = ghostMentionEveryone,
-                                                                allowUnsavedColdStart = allowUnsavedColdStartFlag
+                                                                allowUnsavedColdStart = allowUnsavedColdStartFlag,
+                                                                explicitMentionsCsv = explicitCsv
                                                             )
                                                             draftValue = TextFieldValue("")
+                                                            pendingMentions.clear()
                                                             viewModel.saveChatDraft(chatJid, "")
                                                             replyTarget = null
                                                             ghostMentionEveryone = false
@@ -7905,6 +8078,68 @@ private fun ParticipantQuickActionButton(
             maxLines = 1
         )
     }
+}
+
+internal data class ActiveMentionQuery(
+    val startIndex: Int,
+    val query: String
+)
+
+internal fun extractActiveMentionQuery(text: String, cursorIndex: Int): ActiveMentionQuery? {
+    val safeCursor = cursorIndex.coerceIn(0, text.length)
+    var i = safeCursor - 1
+    while (i >= 0) {
+        val ch = text[i]
+        if (ch == '\n') return null
+        if (ch == '@') {
+            val prevOk = i == 0 || text[i - 1].isWhitespace()
+            if (!prevOk) return null
+            val q = text.substring(i + 1, safeCursor)
+            return if (q.length <= 30) ActiveMentionQuery(i, q) else null
+        }
+        if (safeCursor - i > 32) return null
+        i--
+    }
+    return null
+}
+
+internal fun applyMentionSelection(
+    text: String,
+    startIndex: Int,
+    cursorIndex: Int,
+    displayName: String
+): Pair<String, Int> {
+    val safeStart = startIndex.coerceIn(0, text.length)
+    val safeEnd = cursorIndex.coerceIn(safeStart, text.length)
+    val insertion = "@${displayName.trim()} "
+    val updated = buildString {
+        append(text.substring(0, safeStart))
+        append(insertion)
+        append(text.substring(safeEnd))
+    }
+    return updated to (safeStart + insertion.length)
+}
+
+internal fun buildOutboundMentionPayload(
+    text: String,
+    selectedMentions: Map<String, String>
+): Pair<String, String> {
+    if (selectedMentions.isEmpty() || !text.contains('@')) return text to ""
+    var wireText = text
+    val mentionedJids = linkedSetOf<String>()
+    for ((token, jid) in selectedMentions) {
+        val cleanToken = token.trim()
+        val cleanJid = jid.trim()
+        if (cleanToken.isBlank() || cleanJid.isBlank()) continue
+        if (wireText.contains(cleanToken)) {
+            val bareUser = cleanJid.substringBefore("@").substringBefore(":")
+            if (bareUser.isNotBlank()) {
+                wireText = wireText.replace(cleanToken, "@$bareUser")
+                mentionedJids.add(cleanJid)
+            }
+        }
+    }
+    return wireText to mentionedJids.joinToString(",")
 }
 
 internal fun isSelfInGroupAdminSet(adminJids: Set<String>, ownJid: String): Boolean {

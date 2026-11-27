@@ -1321,7 +1321,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         text: String,
         quoted: MessageEntity?,
         ghostMentionEveryone: Boolean,
-        allowUnsavedColdStart: Boolean = false
+        allowUnsavedColdStart: Boolean = false,
+        explicitMentionsCsv: String = ""
     ) {
         if (text.isBlank()) return
         viewModelScope.launch {
@@ -1331,7 +1332,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 text = text.trim(),
                 quoted = quoted,
                 ghostMentionEveryone = ghostMentionEveryone,
-                allowUnsavedColdStart = allowUnsavedColdStart
+                allowUnsavedColdStart = allowUnsavedColdStart,
+                explicitMentionsCsv = explicitMentionsCsv
             )
                 .onFailure { err ->
                     showToast(err.message ?: "Send failed")
