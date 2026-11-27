@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 🛠️ Fixes
+- Reduced background CPU and battery drain without affecting real-time delivery: fixed un-released `SyncWakeLock` on non-final history batches, cached ephemeral message expiry instead of full-scanning SQLite every 45s, stretched idle screen-off watchdog polling to 3 minutes, added 5-minute cooldowns on redundant reconnect avatar/LID/status sweeps, serialized voice waveform extraction, buffered session log writes, and trimmed the Rust Tokio pool to 2 worker threads (#106).
+
 ## [0.3.11-pre.3] - 2026-11-27
 
 ### ✨ Features

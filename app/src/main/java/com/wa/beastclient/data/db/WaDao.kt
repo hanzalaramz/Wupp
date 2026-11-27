@@ -558,6 +558,16 @@ interface WaDao {
     )
     suspend fun getExpiredEphemeralMessageIds(nowMs: Long): List<String>
 
+    @Query(
+        """
+        SELECT MIN((CASE WHEN ephemeral_start > 0 THEN ephemeral_start ELSE timestamp END) + (CAST(ephemeral_duration AS INTEGER) * 1000))
+        FROM messages
+        WHERE is_ephemeral = 1
+          AND ephemeral_duration > 0
+        """
+    )
+    suspend fun getNextEphemeralExpiryMs(): Long?
+
     @Query("SELECT * FROM messages WHERE chat_jid = :chatJid ORDER BY timestamp DESC, id DESC")
     fun pagingMessages(chatJid: String): PagingSource<Int, MessageEntity>
 

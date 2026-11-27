@@ -16,6 +16,9 @@ import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 
 /**
  * Captures rolling runtime/bridge logs and uncaught crash traces locally, and lets users
@@ -33,6 +36,11 @@ object AppLogManager {
     private const val MAX_SESSION_BYTES = 512L * 1024L
 
     private val writeLock = Any()
+    private val pendingLines = ArrayList<String>(32)
+    private val logFlushExecutor = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "wupp-log-flush").apply { isDaemon = true }
+    }
+    private var scheduledFlush: ScheduledFuture<*>? = null
     private val lineTimeFormat = object : ThreadLocal<SimpleDateFormat>() {
         override fun initialValue(): SimpleDateFormat =
             SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
@@ -71,14 +79,41 @@ object AppLogManager {
         val ts = lineTimeFormat.get()?.format(Date()).orEmpty()
         val stack = throwable?.let { "\n${stackTraceToString(it)}" }.orEmpty()
         val entry = "$ts [$cleanLevel/$cleanTag] $message$stack"
+        val urgent = cleanLevel == "ERROR" || cleanLevel == "CRASH" || throwable != null
 
         synchronized(writeLock) {
-            runCatching {
-                val dir = ensureLogDir(ctx)
-                val file = File(dir, SESSION_LOG_FILE)
-                rotateIfOversizedLocked(dir, file)
-                file.appendText("$entry\n")
+            pendingLines.add(entry)
+            if (urgent || pendingLines.size >= 32) {
+                scheduledFlush?.cancel(false)
+                scheduledFlush = null
+                flushPendingLocked(ctx)
+            } else if (scheduledFlush == null || scheduledFlush?.isDone == true) {
+                scheduledFlush = logFlushExecutor.schedule(
+                    {
+                        val currentCtx = appContext ?: return@schedule
+                        synchronized(writeLock) {
+                            scheduledFlush = null
+                            flushPendingLocked(currentCtx)
+                        }
+                    },
+                    3L,
+                    TimeUnit.SECONDS
+                )
             }
+        }
+    }
+
+    private fun flushPendingLocked(ctx: Context) {
+        if (pendingLines.isEmpty()) return
+        val batchText = buildString {
+            pendingLines.forEach { appendLine(it) }
+        }
+        pendingLines.clear()
+        runCatching {
+            val dir = ensureLogDir(ctx)
+            val file = File(dir, SESSION_LOG_FILE)
+            rotateIfOversizedLocked(dir, file)
+            file.appendText(batchText)
         }
     }
 
@@ -116,6 +151,7 @@ object AppLogManager {
         )
         val stack = stackTraceToString(throwable)
         val tailLines = synchronized(writeLock) {
+            flushPendingLocked(context)
             val session = File(ensureLogDir(context), SESSION_LOG_FILE)
             if (session.exists()) {
                 runCatching { session.readLines().takeLast(200).joinToString("\n") }.getOrDefault("")
@@ -179,6 +215,7 @@ object AppLogManager {
             generatedAtFormatted = nowFormatted
         )
         return synchronized(writeLock) {
+            flushPendingLocked(ctx)
             val dir = ensureLogDir(ctx)
             val crashFile = File(dir, CRASH_LOG_FILE)
             val prevFile = File(dir, PREV_LOG_FILE)
@@ -275,6 +312,9 @@ object AppLogManager {
     fun clearLogs(context: Context) {
         val ctx = context.applicationContext
         synchronized(writeLock) {
+            pendingLines.clear()
+            scheduledFlush?.cancel(false)
+            scheduledFlush = null
             val dir = ensureLogDir(ctx)
             runCatching { File(dir, SESSION_LOG_FILE).delete() }
             runCatching { File(dir, PREV_LOG_FILE).delete() }

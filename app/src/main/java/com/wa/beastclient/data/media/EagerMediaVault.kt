@@ -14,6 +14,7 @@ import com.wa.beastclient.data.db.WaDao
 import com.wa.beastclient.domain.accounts.AccountManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -23,6 +24,7 @@ import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.max
@@ -51,7 +53,9 @@ data class PreparedMedia(
  * Gallery exports, 40-bar waveform extraction, and coroutine-based offline voice transcription.
  */
 object EagerMediaVault {
-    private val vaultScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val waveformScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
+    private val pendingWaveformIds = ConcurrentHashMap.newKeySet<String>()
 
     fun ensureDirectories(context: Context) {
         val base = AccountManager.dataDir(context)
@@ -530,25 +534,30 @@ object EagerMediaVault {
         existingWaveformCsv: String
     ) {
         if (localPath.isNullOrBlank()) return
-        vaultScope.launch {
-            val file = File(localPath)
-            if (!file.exists()) return@launch
+        if (!pendingWaveformIds.add(messageId)) return
+        waveformScope.launch {
+            try {
+                val file = File(localPath)
+                if (!file.exists()) return@launch
 
-            val waveform = existingWaveformCsv.ifBlank {
-                extract40BarWaveform(file).joinToString(",")
-            }
-            val transcript = runOfflineTranscriptionEngine(context, file, durationSec, waveform)
+                val waveform = existingWaveformCsv.ifBlank {
+                    extract40BarWaveform(file).joinToString(",")
+                }
+                val transcript = runOfflineTranscriptionEngine(context, file, durationSec, waveform)
 
-            val sha = computeSha256(file)
-            dao.updateMessageMedia(
-                messageId = messageId,
-                localPath = file.absolutePath,
-                sha256 = sha,
-                fileSize = file.length(),
-                waveformCsv = waveform
-            )
-            if (transcript.isNotBlank()) {
-                dao.updateAudioTranscript(messageId = messageId, transcript = transcript)
+                val sha = computeSha256(file)
+                dao.updateMessageMedia(
+                    messageId = messageId,
+                    localPath = file.absolutePath,
+                    sha256 = sha,
+                    fileSize = file.length(),
+                    waveformCsv = waveform
+                )
+                if (transcript.isNotBlank()) {
+                    dao.updateAudioTranscript(messageId = messageId, transcript = transcript)
+                }
+            } finally {
+                pendingWaveformIds.remove(messageId)
             }
         }
     }

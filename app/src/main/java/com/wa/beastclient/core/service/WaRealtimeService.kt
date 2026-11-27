@@ -181,6 +181,14 @@ class WaRealtimeService : Service() {
     private var lastWatchdogReconnectMs: Long = 0L
     @Volatile
     private var watchdogConsecutiveFailures: Int = 0
+    @Volatile
+    private var nextEphemeralExpiryMs: Long? = null
+    @Volatile
+    private var lastAvatarSyncElapsedMs: Long = 0L
+    @Volatile
+    private var lastLidHealElapsedMs: Long = 0L
+    @Volatile
+    private var lastStatusSweepElapsedMs: Long = 0L
     private val typingExpiryJobs = ConcurrentHashMap<String, Job>()
     private var postConnectSyncJob: Job? = null
     private val pendingReactions = ConcurrentHashMap<String, MutableList<JSONObject>>()
@@ -350,10 +358,16 @@ class WaRealtimeService : Service() {
 
     private suspend fun purgeExpiredEphemeralIfNeeded() {
         if (StealthMatrixManager.config.value.disappearingImmunity) return
-        val expiredIds = dao.getExpiredEphemeralMessageIds(System.currentTimeMillis())
+        val nowMs = System.currentTimeMillis()
+        val cachedExpiry = nextEphemeralExpiryMs
+        if (cachedExpiry != null && nowMs < cachedExpiry) {
+            return
+        }
+        val expiredIds = dao.getExpiredEphemeralMessageIds(nowMs)
         for (id in expiredIds) {
             deleteMessagePermanentlyInternal(applicationContext, dao, id)
         }
+        nextEphemeralExpiryMs = dao.getNextEphemeralExpiryMs() ?: Long.MAX_VALUE
     }
 
     override fun onCreate() {
@@ -494,6 +508,10 @@ class WaRealtimeService : Service() {
         chatAliasToCanonical.clear()
         lastWatchdogReconnectMs = 0L
         watchdogConsecutiveFailures = 0
+        nextEphemeralExpiryMs = null
+        lastAvatarSyncElapsedMs = 0L
+        lastLidHealElapsedMs = 0L
+        lastStatusSweepElapsedMs = 0L
     }
 
     internal fun rebindAfterAccountSwitch() {
@@ -611,7 +629,14 @@ class WaRealtimeService : Service() {
         serviceScope.launch {
             delay(20_000L)
             while (true) {
-                delay(45_000L)
+                val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                val isInteractive = runCatching { pm?.isInteractive ?: true }.getOrDefault(true)
+                val pollDelay = computeWatchdogPollDelayMs(
+                    connectionState = _bridgeStatus.value.connectionState,
+                    isInteractive = isInteractive,
+                    skipBackgroundReconnect = shouldSkipBackgroundReconnect()
+                )
+                delay(pollDelay)
                 runCatching { purgeExpiredEphemeralIfNeeded() }
                 nudgeReconnectIfNeeded()
             }
@@ -901,9 +926,13 @@ class WaRealtimeService : Service() {
                     }
                     postConnectSyncJob?.cancel()
                     postConnectSyncJob = serviceScope.launch {
-                        // Heal any existing split @lid/@pn chats immediately from local SQLite (0 network traffic),
-                        // then wait 4s for WhatsApp's offline stanza queue to drain before starting contact/avatar fetches.
-                        healDuplicateLidChatsLocally(queryRustBridge = true)
+                        // Heal any existing split @lid/@pn chats from local SQLite with cooldown so brief
+                        // network flaps don't repeatedly rescan SQLite/Rust, then sync contacts/avatars.
+                        val elapsed = SystemClock.elapsedRealtime()
+                        if (lastLidHealElapsedMs == 0L || elapsed - lastLidHealElapsedMs >= 300_000L) {
+                            lastLidHealElapsedMs = elapsed
+                            healDuplicateLidChatsLocally(queryRustBridge = true)
+                        }
                         delay(4_000L)
                         if (shouldSkipBackgroundReconnect()) return@launch
                         if (!runCatching { Whatsbridge.isConnected() }.getOrDefault(false)) return@launch
@@ -974,9 +1003,14 @@ class WaRealtimeService : Service() {
     }
 
     private suspend fun handleHistorySyncBatch(json: JSONObject) {
-        acquireSyncWakeLock()
         val progress = json.optInt("progress", 0)
         val isFinal = json.optBoolean("isFinal", false)
+        val chatsArrPre = json.optJSONArray("chats")
+        val msgsArrPre = json.optJSONArray("messages")
+        val hasPayload = (chatsArrPre?.length() ?: 0) > 0 || (msgsArrPre?.length() ?: 0) > 0
+        if (hasPayload) {
+            acquireSyncWakeLock()
+        }
         _bridgeStatus.value = _bridgeStatus.value.copy(
             isSyncing = !isFinal,
             syncProgressPct = progress
@@ -1200,12 +1234,17 @@ class WaRealtimeService : Service() {
                 if (pendingRevokes.containsKey(entity.id)) {
                     drainPendingRevokes(entity.id)
                 }
+                if (entity.isEphemeral && entity.ephemeralDuration > 0) {
+                    nextEphemeralExpiryMs = null
+                }
             }
         } finally {
+            if (hasPayload) {
+                releaseSyncWakeLock()
+            }
             if (isFinal) {
                 runCatching { healGroupLastSenderNames() }
                 scheduleMissingAvatarSync()
-                releaseSyncWakeLock()
             }
         }
     }
@@ -1258,6 +1297,11 @@ class WaRealtimeService : Service() {
     }
 
     private fun scheduleMissingAvatarSync(includeStatuses: Boolean = true) {
+        val elapsed = SystemClock.elapsedRealtime()
+        if (lastAvatarSyncElapsedMs > 0L && elapsed - lastAvatarSyncElapsedMs < 300_000L) {
+            return
+        }
+        lastAvatarSyncElapsedMs = elapsed
         serviceScope.launch(Dispatchers.IO) {
             if (!runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) return@launch
             val missing = LinkedHashSet<String>()
@@ -1469,6 +1513,9 @@ class WaRealtimeService : Service() {
             isGroup = isGrp,
             incrementUnread = !isSync && !isActiveChat
         )
+        if (msg.isEphemeral && msg.ephemeralDuration > 0) {
+            nextEphemeralExpiryMs = null
+        }
         if (!isGrp && !msg.isFromMe && !msg.chatJid.endsWith("@newsletter") &&
             DeviceContactFallbackResolver.isUsableDisplayName(nameHint, msg.chatJid)
         ) {
@@ -1661,6 +1708,11 @@ class WaRealtimeService : Service() {
     }
 
     private suspend fun sweepExpiredStatuses() {
+        val elapsed = SystemClock.elapsedRealtime()
+        if (lastStatusSweepElapsedMs > 0L && elapsed - lastStatusSweepElapsedMs < 300_000L) {
+            return
+        }
+        lastStatusSweepElapsedMs = elapsed
         // Issue #65: Periodically sweep expired statuses (>24h) so old stories never linger
         val sweepCutoff = System.currentTimeMillis() - 86_400_000L
         val expiredList = dao.getExpiredStatuses(sweepCutoff)
@@ -2795,6 +2847,20 @@ class WaRealtimeService : Service() {
             StealthMatrixManager.config.value.offlineMode ||
                 terminalSyncHalted ||
                 SystemClock.elapsedRealtime() < rateLimitedUntilElapsedMs
+
+        /**
+         * Adapts background socket watchdog cadence to connection and screen state so idle
+         * devices sleep cleanly instead of polling JNI and SQLite every 45 seconds.
+         */
+        internal fun computeWatchdogPollDelayMs(
+            connectionState: String,
+            isInteractive: Boolean,
+            skipBackgroundReconnect: Boolean
+        ): Long = when {
+            skipBackgroundReconnect -> 180_000L
+            connectionState == "CONNECTED" -> if (isInteractive) 60_000L else 180_000L
+            else -> 45_000L
+        }
 
         internal fun isForwardableMessageType(msg: MessageEntity): Boolean {
             if (msg.isViewOnce || msg.msgType == "VIEW_ONCE_STRIPPED" || msg.isDeletedBySender) return false

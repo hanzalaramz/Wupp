@@ -63,7 +63,7 @@ class SyncWatchdogJobService : JobService() {
         private const val PERIODIC_JOB_ID = 42011
         private const val RETRY_JOB_ID = 42012
         private const val TASK_REMOVED_REQ_CODE = 42013
-        private const val PERIODIC_INTERVAL_MS = 15L * 60L * 1000L
+        private const val PERIODIC_INTERVAL_MS = 30L * 60L * 1000L
 
         fun schedulePeriodic(context: Context) {
             val appCtx = context.applicationContext

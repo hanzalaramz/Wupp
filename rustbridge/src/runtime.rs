@@ -64,7 +64,7 @@ impl BridgeRuntime {
         }
 
         let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4)
+            .worker_threads(2)
             .thread_name("wupp-wa-rs")
             .enable_all()
             .build()
