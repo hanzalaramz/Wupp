@@ -79,6 +79,9 @@ fun PerChatQuickControlsSheet(
     onToggleLock: () -> Unit,
     onOpenWallpaper: (() -> Unit)? = null,
     onOpenChatHistory: (() -> Unit)? = null,
+    onSetHideChatNames: ((Boolean) -> Unit)? = null,
+    onSetHideChatDps: ((Boolean) -> Unit)? = null,
+    onSetHideChatNamesAndDps: ((Boolean) -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val colors = LocalWaColors.current
@@ -206,6 +209,46 @@ fun PerChatQuickControlsSheet(
                     onCheckedChange = { sendTyping = it },
                     colors = SwitchDefaults.colors(checkedTrackColor = colors.accentGreen, checkedThumbColor = Color.White)
                 )
+            }
+
+            if (onSetHideChatNamesAndDps != null || onSetHideChatNames != null || onSetHideChatDps != null) {
+                HorizontalDivider(color = colors.divider)
+                Text(
+                    text = "Chat Screen Privacy",
+                    color = colors.textSecondary,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (onSetHideChatNamesAndDps != null) {
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                        Text("Hide Names & DPs in Chats", color = colors.textPrimary, fontSize = 14.sp)
+                        Switch(
+                            checked = stealthConfig.hideChatContactNames && stealthConfig.hideChatProfilePictures,
+                            onCheckedChange = onSetHideChatNamesAndDps,
+                            colors = SwitchDefaults.colors(checkedTrackColor = colors.accentGreen, checkedThumbColor = Color.White)
+                        )
+                    }
+                }
+                if (onSetHideChatNames != null) {
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                        Text("Hide Contact Names", color = colors.textPrimary, fontSize = 14.sp)
+                        Switch(
+                            checked = stealthConfig.hideChatContactNames,
+                            onCheckedChange = onSetHideChatNames,
+                            colors = SwitchDefaults.colors(checkedTrackColor = colors.accentGreen, checkedThumbColor = Color.White)
+                        )
+                    }
+                }
+                if (onSetHideChatDps != null) {
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                        Text("Hide Profile Pictures (DPs)", color = colors.textPrimary, fontSize = 14.sp)
+                        Switch(
+                            checked = stealthConfig.hideChatProfilePictures,
+                            onCheckedChange = onSetHideChatDps,
+                            colors = SwitchDefaults.colors(checkedTrackColor = colors.accentGreen, checkedThumbColor = Color.White)
+                        )
+                    }
+                }
             }
 
             HorizontalDivider(color = colors.divider)

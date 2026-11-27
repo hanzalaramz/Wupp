@@ -1514,7 +1514,8 @@ fun ChatScreen(
                                             null
                                         } else {
                                             extractAvatarInitialChar(chat?.name.orEmpty())
-                                        }
+                                        },
+                                        hideAvatar = stealthConfig.hideChatProfilePictures
                                     )
                                 }
                                 Spacer(modifier = Modifier.width(10.dp))
@@ -3951,6 +3952,17 @@ fun ChatScreen(
             onToggleLock = { chat?.let { viewModel.setChatLock(it.jid, !it.isLocked) } },
             onOpenWallpaper = { showWallpaperDialog = true },
             onOpenChatHistory = { showChatHistorySheet = true },
+            onSetHideChatNames = { enabled ->
+                viewModel.updateGlobalStealth { c -> c.copy(hideChatContactNames = enabled) }
+            },
+            onSetHideChatDps = { enabled ->
+                viewModel.updateGlobalStealth { c -> c.copy(hideChatProfilePictures = enabled) }
+            },
+            onSetHideChatNamesAndDps = { enabled ->
+                viewModel.updateGlobalStealth { c ->
+                    c.copy(hideChatContactNames = enabled, hideChatProfilePictures = enabled)
+                }
+            },
             onDismiss = { showGhostOverrideSheet = false }
         )
     }
@@ -5555,7 +5567,8 @@ private fun MessageBubbleRow(
                         avatarPath = if (hideProfilePictures) null else senderAvatarPath,
                         isGroup = false,
                         size = 28.dp,
-                        initialChar = if (showInitials) extractAvatarInitialChar(resolvedPrimary) else null
+                        initialChar = if (showInitials) extractAvatarInitialChar(resolvedPrimary) else null,
+                        hideAvatar = hideProfilePictures
                     )
                 }
             } else {

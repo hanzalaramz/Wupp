@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.3.11-pre.2] - 2026-11-27
+
+### 🛠️ Fixes
+- Fixed profile pictures (DPs) still appearing in chat headers and group message bubbles when **Hide Names & DPs** or **Hide Profile Pictures** is enabled by skipping the local avatar disk-cache fallback.
+- Added **Hide Names & DPs in Chats**, **Hide Contact Names**, and **Hide Profile Pictures (DPs)** toggles directly inside the **Quick controls & privacy** sheet.
+
 ## [0.3.11-pre.1] - 2026-11-27
 
 ### ✨ Features

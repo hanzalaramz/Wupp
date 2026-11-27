@@ -1921,6 +1921,17 @@ fun ContactInfoScreen(
             onToggleLock = { chat?.let { viewModel.setChatLock(it.jid, !it.isLocked) } },
             onOpenWallpaper = { showWallpaperDialog = true },
             onOpenChatHistory = { showChatHistorySheet = true },
+            onSetHideChatNames = { enabled ->
+                viewModel.updateGlobalStealth { c -> c.copy(hideChatContactNames = enabled) }
+            },
+            onSetHideChatDps = { enabled ->
+                viewModel.updateGlobalStealth { c -> c.copy(hideChatProfilePictures = enabled) }
+            },
+            onSetHideChatNamesAndDps = { enabled ->
+                viewModel.updateGlobalStealth { c ->
+                    c.copy(hideChatContactNames = enabled, hideChatProfilePictures = enabled)
+                }
+            },
             onDismiss = { showGhostPrivacySheet = false }
         )
     }

@@ -1977,6 +1977,17 @@ fun HomeScreen(
                 messageHistoryChatFilter = liveTarget.jid
                 showMessageHistorySheet = true
             },
+            onSetHideChatNames = { enabled ->
+                viewModel.updateGlobalStealth { c -> c.copy(hideChatContactNames = enabled) }
+            },
+            onSetHideChatDps = { enabled ->
+                viewModel.updateGlobalStealth { c -> c.copy(hideChatProfilePictures = enabled) }
+            },
+            onSetHideChatNamesAndDps = { enabled ->
+                viewModel.updateGlobalStealth { c ->
+                    c.copy(hideChatContactNames = enabled, hideChatProfilePictures = enabled)
+                }
+            },
             onDismiss = { quickControlsChatTarget = null }
         )
     }
@@ -2844,11 +2855,12 @@ internal fun WhatsAppAvatar(
     isGroup: Boolean,
     size: Dp,
     modifier: Modifier = Modifier,
-    initialChar: String? = null
+    initialChar: String? = null,
+    hideAvatar: Boolean = false
 ) {
-    val avatarBmp = rememberAvatarBitmap(jid = jid, avatarPath = avatarPath)
-    LaunchedEffect(jid, avatarBmp == null) {
-        if (avatarBmp == null && jid.isNotBlank() && jid != "status@broadcast" && !jid.endsWith("@broadcast")) {
+    val avatarBmp = if (hideAvatar) null else rememberAvatarBitmap(jid = jid, avatarPath = avatarPath)
+    LaunchedEffect(jid, avatarBmp == null, hideAvatar) {
+        if (!hideAvatar && avatarBmp == null && jid.isNotBlank() && jid != "status@broadcast" && !jid.endsWith("@broadcast")) {
             WaRealtimeService.requestAvatarIfNeeded(jid)
         }
     }
@@ -2883,7 +2895,7 @@ internal fun WhatsAppAvatar(
                 tint = Color(0xFF99B2BD),
                 modifier = Modifier.size(size * 0.54f)
             )
-        } else if (!initialChar.isNullOrBlank()) {
+        } else if (!hideAvatar && !initialChar.isNullOrBlank()) {
             Text(
                 text = initialChar,
                 color = palette.second,
