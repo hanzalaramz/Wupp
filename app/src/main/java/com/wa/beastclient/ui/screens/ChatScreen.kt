@@ -257,6 +257,7 @@ import com.wa.beastclient.data.db.MessageReactionEntity
 import com.wa.beastclient.data.media.OutboundQualityMode
 import com.wa.beastclient.data.media.isStickerMatchedByFavoriteKeys
 import com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
+import com.wa.beastclient.domain.contacts.ParticipantDisplayResolver
 import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.domain.stealth.CallBackendMode
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
@@ -399,8 +400,9 @@ fun ChatScreen(
             groupAdminJids = viewModel.fetchGroupAdmins(chatJid)
         }
     }
-    val isSelfGroupAdmin = remember(groupAdminJids, bridgeStatus.ownJid) {
-        isSelfInGroupAdminSet(groupAdminJids, bridgeStatus.ownJid)
+    val isSelfGroupAdmin = remember(groupAdminJids, bridgeStatus.ownJid, bridgeStatus.ownLid) {
+        isSelfInGroupAdminSet(groupAdminJids, bridgeStatus.ownJid) ||
+            (bridgeStatus.ownLid.isNotBlank() && isSelfInGroupAdminSet(groupAdminJids, bridgeStatus.ownLid))
     }
     val isGroupComposerBlocked = isGroupAnnounceLocked && !isSelfGroupAdmin
     val effectivePrivacy by remember(chatJid) { viewModel.observeEffectivePrivacy(chatJid) }.collectAsState(initial = null)
@@ -710,7 +712,9 @@ fun ChatScreen(
     }
     val participantMeta by viewModel.participantMeta.collectAsState()
     val quotedMsgMeta by viewModel.quotedMsgMeta.collectAsState()
+    val allContacts by viewModel.allContacts.collectAsState()
     val chatsByJid = remember(allChats) { allChats.associateBy { it.jid } }
+    val contactsByJid = remember(allContacts) { allContacts.associateBy { it.jid } }
     val loadedSnapshot = pagedItems.itemSnapshotList.items
     val loadedMessagesById = remember(loadedSnapshot) { loadedSnapshot.associateBy { it.id } }
     val prevOutgoingStatusById = remember(chatJid) { mutableStateMapOf<String, String>() }
@@ -2147,6 +2151,13 @@ fun ChatScreen(
                                                         meta.altJid.substringBefore("@").substringBefore(":") == bareDigits
                                                     }
                                                 val isSelfMention = directMeta?.isSelf == true ||
+                                                    ParticipantDisplayResolver.isSelfParticipant(
+                                                        rawJid = cleanMention,
+                                                        altJid = directMeta?.altJid.orEmpty(),
+                                                        ownJid = bridgeStatus.ownJid,
+                                                        ownLid = bridgeStatus.ownLid,
+                                                        lidToPn = WaRealtimeService.persistedLidToPn
+                                                    ) ||
                                                     StealthMatrixManager.isSelfChatJid(cleanMention, bridgeStatus.ownJid) ||
                                                     (directMeta?.altJid?.let {
                                                         StealthMatrixManager.isSelfChatJid(it, bridgeStatus.ownJid)
@@ -2155,15 +2166,20 @@ fun ChatScreen(
                                                     "You"
                                                 } else {
                                                     val effectiveJid = directMeta?.jid ?: cleanMention
-                                                    val info = resolveSenderDisplayInfo(
+                                                    val resolvedInfo = ParticipantDisplayResolver.resolve(
                                                         rawJidOrText = effectiveJid,
                                                         explicitName = "",
                                                         isSelf = false,
+                                                        ownJid = bridgeStatus.ownJid,
+                                                        ownLid = bridgeStatus.ownLid,
                                                         participantMeta = participantMeta,
                                                         chatsByJid = chatsByJid,
-                                                        senderPushByJid = senderPushByJid
+                                                        contactsByJid = contactsByJid,
+                                                        senderPushByJid = senderPushByJid,
+                                                        lidToPn = WaRealtimeService.persistedLidToPn,
+                                                        prefixPushWithTilde = false
                                                     )
-                                                    val candidate = info.primary.removePrefix("~ ").trim()
+                                                    val candidate = resolvedInfo.primary.removePrefix("~ ").trim()
                                                     val resolved = candidate.takeIf {
                                                         it.isNotBlank() &&
                                                             !it.startsWith("User ·") &&
@@ -4235,6 +4251,16 @@ fun ChatScreen(
     }
 
     if (showChatHistorySheet) {
+        LaunchedEffect(deletedHistory, editedHistory) {
+            val histJids = (deletedHistory + editedHistory)
+                .asSequence()
+                .filter { it.chatJid == chatJid && !it.isFromMe }
+                .map { it.senderJid }
+                .filter { it.contains("@") }
+                .distinct()
+                .toList()
+            if (histJids.isNotEmpty()) viewModel.resolveParticipantsLocally(histJids)
+        }
         MessageHistorySheet(
             deletedMessages = deletedHistory,
             editedMessages = editedHistory,
@@ -4246,7 +4272,11 @@ fun ChatScreen(
             },
             onDeleteEntry = { viewModel.deleteMessageHistoryItem(it) },
             onClearAll = { scoped -> viewModel.clearAllMessageHistory(scoped) },
-            onDismiss = { showChatHistorySheet = false }
+            onDismiss = { showChatHistorySheet = false },
+            participantMeta = participantMeta,
+            contacts = allContacts,
+            ownJid = bridgeStatus.ownJid,
+            ownLid = bridgeStatus.ownLid
         )
     }
 
@@ -4391,9 +4421,15 @@ fun ChatScreen(
         val storedReactions by remember(target.id) {
             viewModel.observeReactionsFor(target.id)
         }.collectAsState(initial = emptyList())
-        val effectiveReactions = remember(storedReactions, target.reactionSummary) {
+        val effectiveReactions = remember(storedReactions, target.reactionSummary, participantMeta, bridgeStatus.ownJid, bridgeStatus.ownLid) {
             if (storedReactions.isNotEmpty()) {
-                storedReactions
+                ParticipantDisplayResolver.deduplicateReactions(
+                    reactions = storedReactions,
+                    participantMeta = participantMeta,
+                    lidToPn = WaRealtimeService.persistedLidToPn,
+                    ownJid = bridgeStatus.ownJid,
+                    ownLid = bridgeStatus.ownLid
+                )
             } else {
                 target.reactionSummary
                     .split(Regex("\\s+"))
@@ -4406,6 +4442,21 @@ fun ChatScreen(
                             updatedAt = 0L
                         )
                     }
+            }
+        }
+        LaunchedEffect(target.id, storedReactions) {
+            val actorJids = storedReactions
+                .asSequence()
+                .map { it.actor.trim() }
+                .filter {
+                    it.contains("@") &&
+                        it != MessageReactionEntity.ME_ACTOR &&
+                        !it.startsWith(MessageReactionEntity.LEGACY_PREFIX)
+                }
+                .distinct()
+                .toList()
+            if (actorJids.isNotEmpty()) {
+                viewModel.resolveParticipantsLocally(actorJids, forceRefreshUnresolved = true)
             }
         }
         val groupedCounts = remember(effectiveReactions) {
@@ -4565,29 +4616,30 @@ fun ChatScreen(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         visibleReactions.forEach { item ->
-                            val isMe = item.actor == MessageReactionEntity.ME_ACTOR ||
-                                (bridgeStatus.ownJid.isNotBlank() && item.actor == bridgeStatus.ownJid)
                             val isLegacy = item.actor.startsWith(MessageReactionEntity.LEGACY_PREFIX)
-                            val meta = if (!isMe && !isLegacy) participantMeta[item.actor] else null
-                            val altJid = meta?.altJid.orEmpty()
+                            val reactorInfo = if (!isLegacy) {
+                                ParticipantDisplayResolver.resolve(
+                                    rawJidOrText = item.actor,
+                                    explicitName = "",
+                                    isSelf = item.actor == MessageReactionEntity.ME_ACTOR,
+                                    ownJid = bridgeStatus.ownJid,
+                                    ownLid = bridgeStatus.ownLid,
+                                    participantMeta = participantMeta,
+                                    chatsByJid = chatsByJid,
+                                    contactsByJid = contactsByJid,
+                                    senderPushByJid = senderPushByJid,
+                                    lidToPn = WaRealtimeService.persistedLidToPn,
+                                    prefixPushWithTilde = false
+                                )
+                            } else null
+                            val isMe = item.actor == MessageReactionEntity.ME_ACTOR || reactorInfo?.isSelf == true
+                            val altJid = reactorInfo?.altJid.orEmpty()
                             val reactorAvatar = when {
                                 isMe -> bridgeStatus.ownJid.takeIf { it.isNotBlank() }?.let { chatsByJid[it]?.avatarPath }
                                 isLegacy -> null
-                                else -> meta?.avatarPath?.takeIf { it.isNotBlank() }
-                                    ?: chatsByJid[item.actor]?.avatarPath?.takeIf { it.isNotBlank() }
-                                    ?: altJid.takeIf { it.isNotBlank() }?.let { chatsByJid[it]?.avatarPath?.takeIf { p -> p.isNotBlank() } }
+                                else -> reactorInfo?.avatarPath?.takeIf { it.isNotBlank() }
                                     ?: if (chat?.isGroup != true) chat?.avatarPath?.takeIf { it.isNotBlank() } else null
                             }
-                            val reactorDisplay = if (!isMe && !isLegacy) {
-                                resolveSenderDisplayInfo(
-                                    rawJidOrText = item.actor,
-                                    explicitName = "",
-                                    isSelf = false,
-                                    participantMeta = participantMeta,
-                                    chatsByJid = chatsByJid,
-                                    senderPushByJid = senderPushByJid
-                                )
-                            } else null
                             val reactorName = when {
                                 isMe -> "You"
                                 isLegacy -> if (chat?.isGroup != true) {
@@ -4595,9 +4647,7 @@ fun ChatScreen(
                                 } else {
                                     "Participant"
                                 }
-                                else -> reactorDisplay?.primary?.removePrefix("~ ")?.trim()
-                                    ?.ifBlank { item.actor.substringBefore("@") }
-                                    ?: item.actor.substringBefore("@")
+                                else -> reactorInfo?.primary?.ifBlank { "Participant" } ?: "Participant"
                             }
                             Row(
                                 modifier = Modifier
@@ -4616,12 +4666,12 @@ fun ChatScreen(
                                             !isMe && !isLegacy && chat?.isGroup == true && !isChannel -> Modifier.clickable {
                                                 reactionDetailsTarget = null
                                                 participantPopupTarget = ParticipantPopupTarget(
-                                                    jid = item.actor,
+                                                    jid = reactorInfo?.canonicalJid?.ifBlank { item.actor } ?: item.actor,
                                                     name = reactorName,
                                                     avatarPath = reactorAvatar,
-                                                    phoneDisplay = reactorDisplay?.secondaryPhone.orEmpty(),
+                                                    phoneDisplay = reactorInfo?.secondaryPhone.orEmpty(),
                                                     altJid = altJid,
-                                                    isAdmin = reactorDisplay?.keyForColor == "admin"
+                                                    isAdmin = false
                                                 )
                                             }
                                             else -> Modifier
@@ -4721,15 +4771,38 @@ fun ChatScreen(
     // Message Info Bottom Sheet (DMs & Groups)
     groupReceiptsTarget?.let { target ->
         val receipts by viewModel.observeGroupReceipts(target.id).collectAsState(initial = emptyList())
+        LaunchedEffect(target.id, receipts) {
+            val jidsToResolve = buildSet {
+                if (target.senderJid.contains("@")) add(target.senderJid)
+                receipts.forEach { r ->
+                    if (r.participantJid.contains("@")) add(r.participantJid)
+                }
+            }
+            if (isGroupThread && groupMembers.isEmpty()) {
+                val fetched = viewModel.fetchGroupParticipants(chatJid)
+                if (fetched.isNotEmpty()) {
+                    groupMembers = fetched
+                }
+            }
+            if (jidsToResolve.isNotEmpty()) {
+                viewModel.resolveParticipantsLocally(jidsToResolve, forceRefreshUnresolved = true)
+            }
+        }
         MessageInfoSheet(
             msg = target,
-            isGroup = chat?.isGroup == true,
+            isGroup = chat?.isGroup == true || chatJid.endsWith("@g.us"),
             groupReceipts = receipts,
             colors = colors,
             mono = mono,
             showSeconds = showSeconds,
             use24Hour = use24Hour,
-            onDismiss = { groupReceiptsTarget = null }
+            onDismiss = { groupReceiptsTarget = null },
+            participantMeta = participantMeta,
+            chatsByJid = chatsByJid,
+            contactsByJid = contactsByJid,
+            senderPushByJid = senderPushByJid,
+            ownJid = bridgeStatus.ownJid,
+            ownLid = bridgeStatus.ownLid
         )
     }
 
@@ -6281,7 +6354,8 @@ private fun MessageBubbleRow(
                                 isDownloadingMedia = isDownloadingMedia,
                                 mediaDownloadError = mediaDownloadError,
                                 avatarPath = if (msg.isFromMe) null else senderAvatarPath,
-                                onClickAvatar = if (msg.isFromMe) null else onClickSenderAvatar
+                                onClickAvatar = if (msg.isFromMe) null else onClickSenderAvatar,
+                                resolvedSenderLabel = senderDisplay?.primary
                             )
                             if (isSelectionMode) {
                                 Box(
@@ -7626,27 +7700,33 @@ private fun resolveSenderDisplayInfo(
     isGroupAnnounceLocked: Boolean = false
 ): SenderDisplayInfo {
     if (isSelf) return SenderDisplayInfo(primary = "You", keyForColor = rawJidOrText)
-    val jid = rawJidOrText.trim()
+    val jid = ParticipantDisplayResolver.stripDevice(rawJidOrText)
     if (jid.endsWith("@g.us", ignoreCase = true) ||
         DeviceContactFallbackResolver.isGroupJidLikeIdentifier(jid)
     ) {
         return SenderDisplayInfo(primary = "", keyForColor = jid.ifBlank { "group" })
     }
-    val meta = participantMeta[jid]
-    val altJid = meta?.altJid.orEmpty()
-    val chatMatch = chatsByJid[jid] ?: altJid.takeIf { it.isNotBlank() }?.let { chatsByJid[it] }
+    val lidToPn = WaRealtimeService.persistedLidToPn
+    val meta = ParticipantDisplayResolver.lookupMeta(jid, participantMeta, lidToPn)
+    val canonicalJid = ParticipantDisplayResolver.resolveCanonicalJid(jid, meta, lidToPn)
+    val altJid = ParticipantDisplayResolver.resolveAltJid(jid, canonicalJid, meta, lidToPn)
+    val chatMatch = chatsByJid[canonicalJid]
+        ?: chatsByJid[jid]
+        ?: altJid.takeIf { it.isNotBlank() }?.let { chatsByJid[it] }
 
-    val savedName = meta?.savedName?.takeIf { isMeaningfulDisplayName(it, jid) }.orEmpty()
+    val savedName = meta?.savedName?.takeIf { isMeaningfulDisplayName(it, canonicalJid) && isMeaningfulDisplayName(it, jid) }.orEmpty()
     val pushName = sequenceOf(
-        explicitName.takeIf { isMeaningfulDisplayName(it, jid) },
-        meta?.pushName?.takeIf { isMeaningfulDisplayName(it, jid) },
+        explicitName.takeIf { isMeaningfulDisplayName(it, canonicalJid) && isMeaningfulDisplayName(it, jid) },
+        meta?.pushName?.takeIf { isMeaningfulDisplayName(it, canonicalJid) && isMeaningfulDisplayName(it, jid) },
+        senderPushByJid[canonicalJid]?.takeIf { isMeaningfulDisplayName(it, canonicalJid) },
         senderPushByJid[jid]?.takeIf { isMeaningfulDisplayName(it, jid) },
         altJid.takeIf { it.isNotBlank() }?.let { senderPushByJid[it]?.takeIf { n -> isMeaningfulDisplayName(n, it) } },
-        chatMatch?.name?.takeIf { isMeaningfulDisplayName(it, jid) }
+        chatMatch?.name?.takeIf { isMeaningfulDisplayName(it, canonicalJid) && isMeaningfulDisplayName(it, jid) }
     ).firstOrNull().orEmpty()
 
     val rawPhone = when {
         !meta?.phone.isNullOrBlank() -> meta!!.phone
+        canonicalJid.endsWith("@s.whatsapp.net") -> canonicalJid.substringBefore("@")
         jid.endsWith("@s.whatsapp.net") -> jid.substringBefore("@")
         altJid.endsWith("@s.whatsapp.net") -> altJid.substringBefore("@")
         else -> {
@@ -7655,22 +7735,23 @@ private fun resolveSenderDisplayInfo(
         }
     }
     val formattedPhone = formatIntlPhone(rawPhone)
+    val colorKeyBase = canonicalJid.ifBlank { jid }
 
     return when {
         savedName.isNotBlank() ->
-            SenderDisplayInfo(primary = savedName, keyForColor = jid.ifBlank { savedName })
+            SenderDisplayInfo(primary = savedName, keyForColor = colorKeyBase.ifBlank { savedName })
         pushName.isNotBlank() ->
-            SenderDisplayInfo(primary = "~ $pushName", secondaryPhone = formattedPhone, keyForColor = jid.ifBlank { pushName })
+            SenderDisplayInfo(primary = "~ $pushName", secondaryPhone = formattedPhone, keyForColor = colorKeyBase.ifBlank { pushName })
         formattedPhone.isNotBlank() ->
-            SenderDisplayInfo(primary = formattedPhone, keyForColor = jid.ifBlank { formattedPhone })
-        jid.endsWith("@lid") -> {
+            SenderDisplayInfo(primary = formattedPhone, keyForColor = colorKeyBase.ifBlank { formattedPhone })
+        jid.endsWith("@lid") || canonicalJid.endsWith("@lid") -> {
             val tail = jid.substringBefore("@").takeLast(4)
-            SenderDisplayInfo(primary = if (tail.isNotBlank()) "~ User · …$tail" else "~ User", keyForColor = jid)
+            SenderDisplayInfo(primary = if (tail.isNotBlank()) "~ User · …$tail" else "~ User", keyForColor = colorKeyBase)
         }
         jid.contains("@") ->
-            SenderDisplayInfo(primary = jid.substringBefore("@"), keyForColor = jid)
+            SenderDisplayInfo(primary = jid.substringBefore("@"), keyForColor = colorKeyBase)
         jid.isNotBlank() ->
-            SenderDisplayInfo(primary = jid, keyForColor = jid)
+            SenderDisplayInfo(primary = jid, keyForColor = colorKeyBase)
         else ->
             SenderDisplayInfo(
                 primary = if (isGroupAnnounceLocked) "Group Admin" else "~ Member",

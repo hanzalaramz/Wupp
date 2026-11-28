@@ -206,7 +206,8 @@ fun VoiceNoteBubble(
     mediaDownloadError: String? = null,
     modifier: Modifier = Modifier,
     avatarPath: String? = null,
-    onClickAvatar: (() -> Unit)? = null
+    onClickAvatar: (() -> Unit)? = null,
+    resolvedSenderLabel: String? = null
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
@@ -256,9 +257,18 @@ fun VoiceNoteBubble(
     var autoPlayOnDownload by remember(msg.id) { mutableStateOf(false) }
     val speedIndex = playbackState.speedIndex
 
-    val senderLabel = remember(msg.isFromMe, msg.senderName, msg.senderJid) {
-        if (msg.isFromMe) "You"
-        else msg.senderName.ifBlank { msg.senderJid.substringBefore("@") }
+    val senderLabel = remember(msg.isFromMe, msg.senderName, msg.senderJid, resolvedSenderLabel) {
+        if (msg.isFromMe) {
+            "You"
+        } else {
+            resolvedSenderLabel?.removePrefix("~ ")?.trim()?.takeIf { it.isNotBlank() }
+                ?: com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.resolve(
+                    rawJidOrText = msg.senderJid,
+                    explicitName = msg.senderName,
+                    lidToPn = com.wa.beastclient.core.service.WaRealtimeService.persistedLidToPn,
+                    prefixPushWithTilde = false
+                ).primary
+        }
     }
 
     LaunchedEffect(mediaFileExists, autoPlayOnDownload) {
@@ -390,11 +400,11 @@ fun VoiceNoteBubble(
                                 }
                             )
                     ) {
-                        val initials = msg.senderName.ifBlank { msg.senderJid.substringBefore("@") }
-                            .trim()
-                            .take(1)
-                            .uppercase()
-                            .ifBlank { null }
+                        val cleanedInitialSource = senderLabel.removePrefix("~").trim()
+                        val initials = cleanedInitialSource
+                            .takeIf { it.isNotBlank() && !it.startsWith("+") && it.first().isLetter() }
+                            ?.take(1)
+                            ?.uppercase()
                         WhatsAppAvatar(
                             jid = if (msg.isFromMe) "" else msg.senderJid,
                             avatarPath = avatarPath,

@@ -47,7 +47,7 @@ pub async fn normalize_message(
         .as_ref()
         .map(|j| canonical_jid_str(&j.to_string()))
         .unwrap_or_default();
-    let alt_sender_jid = info
+    let alt_sender_hint = info
         .source
         .sender_alt
         .as_ref()
@@ -60,19 +60,24 @@ pub async fn normalize_message(
     {
         (raw_chat_jid, rec_alt_hint)
     } else {
-        resolve_dm_chat_pair_local(runtime, &raw_chat_jid, &[&rec_alt_hint, &alt_sender_jid]).await
+        resolve_dm_chat_pair_local(runtime, &raw_chat_jid, &[&rec_alt_hint, &alt_sender_hint]).await
     };
     let raw_sender = canonical_jid_str(&info.source.sender.to_string());
-    let sender_jid = if (info.source.is_group || info.source.chat.is_group())
+    let initial_sender = if (info.source.is_group || info.source.chat.is_group())
         && (raw_sender == chat_jid || info.source.sender.is_group())
     {
-        if !alt_sender_jid.is_empty() && !alt_sender_jid.ends_with("@g.us") && alt_sender_jid != chat_jid {
-            alt_sender_jid.clone()
+        if !alt_sender_hint.is_empty() && !alt_sender_hint.ends_with("@g.us") && alt_sender_hint != chat_jid {
+            alt_sender_hint.clone()
         } else {
             String::new()
         }
     } else {
         raw_sender
+    };
+    let (sender_jid, alt_sender_jid) = if initial_sender.is_empty() {
+        (String::new(), alt_sender_hint)
+    } else {
+        resolve_dm_chat_pair_local(runtime, &initial_sender, &[&alt_sender_hint]).await
     };
 
     let ts_ms = info.timestamp.as_millis();
@@ -169,6 +174,7 @@ pub async fn normalize_message(
                 "altChatJid": alt_chat_jid,
                 "targetMessageId": target_id,
                 "senderJid": sender_jid,
+                "altSenderJid": alt_sender_jid,
                 "revokedAt": ts_ms,
                 "isStatus": is_status,
                 "isDeleteForMe": false,
@@ -210,6 +216,7 @@ pub async fn normalize_message(
             "altChatJid": alt_chat_jid,
             "targetMessageId": target_id,
             "senderJid": sender_jid,
+            "altSenderJid": alt_sender_jid,
             "senderName": effective_sender_name,
             "isFromMe": info.source.is_from_me,
             "emoji": emoji,
@@ -242,6 +249,7 @@ pub async fn normalize_message(
             "altChatJid": alt_chat_jid,
             "targetMessageId": target_id,
             "senderJid": sender_jid,
+            "altSenderJid": alt_sender_jid,
             "isFromMe": info.source.is_from_me,
             "isUnpin": is_unpin,
             "durationSec": dur_secs,
@@ -253,8 +261,14 @@ pub async fn normalize_message(
         return NormalizedItem::Pin(pin_json);
     }
 
-    let (quoted_id, quoted_sender, quoted_body, mentions_csv, eph_sec) =
+    let (quoted_id, raw_quoted_sender, quoted_body, mentions_csv, eph_sec) =
         extract_context_fields(raw_msg, None);
+    let quoted_sender = if raw_quoted_sender.ends_with("@lid") {
+        let (canon_q, _) = resolve_dm_chat_pair_local(runtime, &raw_quoted_sender, &[]).await;
+        canon_q
+    } else {
+        raw_quoted_sender
+    };
     let is_ephemeral = raw_msg.is_ephemeral() || eph_sec > 0;
     let is_view_once = raw_msg.is_view_once();
     if !from_history && eph_sec > 0 && !is_status {

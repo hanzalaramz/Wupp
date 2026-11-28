@@ -104,10 +104,36 @@ internal fun orderMessagesForPeek(
 /**
  * Resolves a concise display label for incoming group messages inside the peek preview.
  */
-internal fun resolvePeekSenderLabel(msg: MessageEntity, isGroupChat: Boolean): String? {
+internal fun resolvePeekSenderLabel(
+    msg: MessageEntity,
+    isGroupChat: Boolean,
+    participantMeta: Map<String, com.wa.beastclient.ui.ResolvedParticipantUi> = emptyMap(),
+    chatsByJid: Map<String, ChatEntity> = emptyMap(),
+    contactsByJid: Map<String, com.wa.beastclient.data.db.ContactEntity> = emptyMap(),
+    lidToPn: Map<String, String> = com.wa.beastclient.core.service.WaRealtimeService.persistedLidToPn
+): String? {
     if (msg.isFromMe || !isGroupChat) return null
+    val cleanJid = com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.stripDevice(msg.senderJid)
+    if (msg.senderName.isNotBlank() &&
+        com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver.isUsableDisplayName(msg.senderName, cleanJid)
+    ) {
+        return msg.senderName.trim()
+    }
+    if (participantMeta.isNotEmpty() || chatsByJid.isNotEmpty() || contactsByJid.isNotEmpty() || cleanJid.endsWith("@lid", ignoreCase = true)) {
+        val resolved = com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.resolve(
+            rawJidOrText = cleanJid,
+            explicitName = msg.senderName,
+            isSelf = false,
+            participantMeta = participantMeta,
+            chatsByJid = chatsByJid,
+            contactsByJid = contactsByJid,
+            lidToPn = lidToPn,
+            prefixPushWithTilde = false
+        ).primary
+        if (resolved.isNotBlank()) return resolved
+    }
     return msg.senderName
-        .ifBlank { msg.senderJid.substringBefore("@").substringBefore(":") }
+        .ifBlank { cleanJid.substringBefore("@").substringBefore(":") }
         .takeIf { it.isNotBlank() }
 }
 

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 🛠️ Fixes
+- Fixed group Message Info, reactions, group member lists, and other screens showing raw numeric IDs instead of contact names or phone numbers (#248).
+
 ## [0.3.11] - 2026-11-27
 
 ### ✨ Features
