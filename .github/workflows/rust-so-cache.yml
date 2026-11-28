@@ -17,7 +17,7 @@ jobs:
     name: Build & Cache Multi-ABI libwhatsbridge_rs.so
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Restore or build multi-ABI Rust libraries cache
         id: so-cache
