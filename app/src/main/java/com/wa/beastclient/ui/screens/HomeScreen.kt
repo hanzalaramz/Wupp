@@ -4142,7 +4142,9 @@ private fun UpdatesStatusTab(
                                 stringResource(R.string.status_add_update)
                             },
                             color = if (latestOwnStatus?.isRevoked == true) colors.antiDeleteRed else colors.textSecondary,
-                            fontSize = 12.5.sp
+                            fontSize = 12.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -4446,6 +4448,7 @@ private fun AddStatusStoryCard(
                     fontSize = 9.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
+                    softWrap = false,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .background(Color(0xB344181A), RoundedCornerShape(4.dp))
@@ -4672,6 +4675,7 @@ private fun StatusStoryCard(
                     fontSize = 9.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
+                    softWrap = false,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .background(Color(0xB344181A), RoundedCornerShape(4.dp))

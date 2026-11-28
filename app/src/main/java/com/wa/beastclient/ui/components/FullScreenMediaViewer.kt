@@ -265,49 +265,14 @@ fun FullScreenMediaViewer(
                             .weight(1f)
                             .padding(horizontal = 2.dp)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                text = headerTitle,
-                                color = Color.White,
-                                fontSize = 16.5.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
-                            if (current.isDeletedBySender) {
-                                Text(
-                                    text = formatDeletedLabel(
-                                        deletedAtMs = current.deletedAt,
-                                        fallbackTimestampMs = current.timestamp,
-                                        includeSeconds = LocalWuppShowSeconds.current,
-                                        use24Hour = use24Hour
-                                    ),
-                                    color = Color(0xFFFF6B6B),
-                                    fontSize = 10.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF3A1417))
-                                        .padding(horizontal = 7.dp, vertical = 2.dp)
-                                )
-                            }
-                            if (current.isViewOnce) {
-                                Text(
-                                    text = "View Once",
-                                    color = Color(0xFF25D366),
-                                    fontSize = 10.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF0E2C1F))
-                                        .padding(horizontal = 7.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
+                        Text(
+                            text = headerTitle,
+                            color = Color.White,
+                            fontSize = 16.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                         val subtitle = listOf(formattedTime, positionLabel)
                             .filter { it.isNotBlank() }
                             .joinToString("  ·  ")
@@ -315,8 +280,52 @@ fun FullScreenMediaViewer(
                             Text(
                                 text = subtitle,
                                 color = Color(0xFFB8C0C6),
-                                fontSize = 12.sp
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
+                        }
+                        if (current.isDeletedBySender || current.isViewOnce) {
+                            Row(
+                                modifier = Modifier.padding(top = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (current.isDeletedBySender) {
+                                    Text(
+                                        text = formatDeletedLabel(
+                                            deletedAtMs = current.deletedAt,
+                                            fallbackTimestampMs = current.timestamp,
+                                            includeSeconds = LocalWuppShowSeconds.current,
+                                            use24Hour = use24Hour
+                                        ),
+                                        color = Color(0xFFFF6B6B),
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier
+                                            .clip(CircleShape)
+                                            .background(Color(0xFF3A1417))
+                                            .padding(horizontal = 7.dp, vertical = 2.dp)
+                                    )
+                                }
+                                if (current.isViewOnce) {
+                                    Text(
+                                        text = "View Once",
+                                        color = Color(0xFF25D366),
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        modifier = Modifier
+                                            .clip(CircleShape)
+                                            .background(Color(0xFF0E2C1F))
+                                            .padding(horizontal = 7.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                     if (mediaFile != null) {

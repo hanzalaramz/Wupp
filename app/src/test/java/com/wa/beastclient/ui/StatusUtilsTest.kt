@@ -2,6 +2,7 @@ package com.wa.beastclient.ui
 
 import com.wa.beastclient.data.db.StatusEntity
 import com.wa.beastclient.ui.components.buildContactStatusSummaries
+import com.wa.beastclient.ui.components.formatDeletedLabel
 import com.wa.beastclient.ui.components.isOwnStatusSender
 import com.wa.beastclient.ui.components.isStatusMediaType
 import com.wa.beastclient.ui.components.partitionOwnAndContactStatuses
@@ -269,5 +270,34 @@ class StatusUtilsTest {
                 isLoggedIn = false
             )
         )
+    }
+
+    @Test
+    fun formatDeletedLabel_staysSingleLineAndFallsBackWhenRevokedAtMissing() {
+        val withSeconds = formatDeletedLabel(
+            deletedAtMs = 1_700_000_058_000L,
+            fallbackTimestampMs = 1_700_000_000_000L,
+            includeSeconds = true,
+            use24Hour = true
+        )
+        assertTrue(withSeconds.startsWith("Deleted · "))
+        assertFalse(withSeconds.contains('\n'))
+
+        val fallback = formatDeletedLabel(
+            deletedAtMs = 0L,
+            fallbackTimestampMs = 1_700_000_000_000L,
+            includeSeconds = false,
+            use24Hour = true
+        )
+        assertTrue(fallback.startsWith("Deleted · "))
+        assertFalse(fallback.contains('\n'))
+
+        val emptyBoth = formatDeletedLabel(
+            deletedAtMs = 0L,
+            fallbackTimestampMs = 0L,
+            includeSeconds = false,
+            use24Hour = true
+        )
+        assertEquals("Deleted", emptyBoth)
     }
 }
