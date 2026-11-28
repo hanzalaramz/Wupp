@@ -2304,7 +2304,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val status = bridgeStatus.value
             val persistedAliases = WaRealtimeService.persistedLidToPn
 
-            fun resolveOne(rawKey: String, item: JSONObject?) {
+            suspend fun resolveOne(rawKey: String, item: JSONObject?) {
                 val key = ParticipantDisplayResolver.stripDevice(rawKey)
                 if (key.isBlank()) return
                 var altJid = ParticipantDisplayResolver.stripDevice(item?.optString("altJid").orEmpty())
