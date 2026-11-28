@@ -44,9 +44,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.wa.beastclient.core.service.WaRealtimeService
+import com.wa.beastclient.data.db.ChatEntity
+import com.wa.beastclient.data.db.ContactEntity
 import com.wa.beastclient.data.db.GroupReceiptEntity
 import com.wa.beastclient.data.db.MessageEntity
 import com.wa.beastclient.data.db.WaDao
+import com.wa.beastclient.domain.contacts.ParticipantDisplayResolver
+import com.wa.beastclient.ui.ResolvedParticipantUi
 import com.wa.beastclient.ui.theme.WaColors
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -62,7 +67,13 @@ internal fun MessageInfoSheet(
     mono: FontFamily,
     showSeconds: Boolean,
     use24Hour: Boolean,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    participantMeta: Map<String, ResolvedParticipantUi> = emptyMap(),
+    chatsByJid: Map<String, ChatEntity> = emptyMap(),
+    contactsByJid: Map<String, ContactEntity> = emptyMap(),
+    senderPushByJid: Map<String, String> = emptyMap(),
+    ownJid: String = "",
+    ownLid: String = ""
 ) {
     val context = LocalContext.current
     @Suppress("DEPRECATION")
@@ -70,6 +81,14 @@ internal fun MessageInfoSheet(
     val dateClock = formatMessageDateTime(msg.timestamp, showSeconds = true, use24Hour = use24Hour)
     val rank = WaDao.deliveryRank(msg.deliveryStatus)
     val isVoiceOrAudio = msg.msgType.uppercase() in setOf("PTT", "AUDIO")
+    val lidToPn = WaRealtimeService.persistedLidToPn
+    val effectiveGroupReceipts = ParticipantDisplayResolver.deduplicateGroupReceipts(
+        receipts = groupReceipts,
+        participantMeta = participantMeta,
+        lidToPn = lidToPn,
+        ownJid = ownJid,
+        ownLid = ownLid
+    )
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -119,7 +138,19 @@ internal fun MessageInfoSheet(
                         val senderLabel = if (msg.isFromMe) {
                             "You"
                         } else {
-                            msg.senderName.ifBlank { msg.senderJid.substringBefore("@") }
+                            ParticipantDisplayResolver.resolve(
+                                rawJidOrText = msg.senderJid,
+                                explicitName = msg.senderName,
+                                isSelf = false,
+                                ownJid = ownJid,
+                                ownLid = ownLid,
+                                participantMeta = participantMeta,
+                                chatsByJid = chatsByJid,
+                                contactsByJid = contactsByJid,
+                                senderPushByJid = senderPushByJid,
+                                lidToPn = lidToPn,
+                                prefixPushWithTilde = false
+                            ).primary
                         }
                         Text(
                             text = senderLabel,
@@ -298,7 +329,7 @@ internal fun MessageInfoSheet(
                             color = colors.textPrimary,
                             fontSize = 13.5.sp
                         )
-                        if (groupReceipts.isEmpty()) {
+                        if (effectiveGroupReceipts.isEmpty()) {
                             Text(
                                 text = "No individual receipts recorded for this message yet.",
                                 color = colors.textSecondary,
@@ -308,24 +339,54 @@ internal fun MessageInfoSheet(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .heightIn(max = 220.dp)
+                                    .heightIn(max = 260.dp)
                                     .verticalScroll(rememberScrollState()),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                groupReceipts.forEach { r ->
+                                effectiveGroupReceipts.forEach { r ->
+                                    val resolved = ParticipantDisplayResolver.resolve(
+                                        rawJidOrText = r.participantJid,
+                                        explicitName = r.participantName,
+                                        isSelf = false,
+                                        ownJid = ownJid,
+                                        ownLid = ownLid,
+                                        participantMeta = participantMeta,
+                                        chatsByJid = chatsByJid,
+                                        contactsByJid = contactsByJid,
+                                        senderPushByJid = senderPushByJid,
+                                        lidToPn = lidToPn,
+                                        prefixPushWithTilde = false
+                                    )
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(
-                                            text = r.participantName.ifBlank { r.participantJid.substringBefore("@") },
-                                            color = colors.textPrimary,
-                                            fontSize = 13.5.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f)
-                                        )
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .padding(end = 10.dp)
+                                        ) {
+                                            Text(
+                                                text = resolved.primary,
+                                                color = colors.textPrimary,
+                                                fontSize = 13.5.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            if (resolved.secondaryPhone.isNotBlank() &&
+                                                resolved.secondaryPhone != resolved.primary
+                                            ) {
+                                                Text(
+                                                    text = resolved.secondaryPhone,
+                                                    color = colors.textSecondary,
+                                                    fontSize = 11.5.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
                                         val rRank = WaDao.deliveryRank(r.status)
                                         Text(
                                             text = "${r.status} · ${formatMessageClock(r.timestamp, includeSeconds = showSeconds, use24Hour = use24Hour)}",

@@ -69,24 +69,43 @@ pub async fn handle_sdk_event(runtime: Arc<BridgeRuntime>, event: Arc<Event>, cl
             let snap = client.persistence_manager().get_device_snapshot();
             let logged = snap.pn.is_some() || snap.lid.is_some();
             runtime.logged_in.store(logged, Ordering::SeqCst);
-            let own_jid = snap
+            let own_pn = snap
                 .pn
                 .as_ref()
                 .map(|j| canonical_jid_str(&j.to_string()))
-                .or_else(|| snap.lid.as_ref().map(|j| canonical_jid_str(&j.to_string())))
                 .unwrap_or_default();
+            let own_lid = snap
+                .lid
+                .as_ref()
+                .map(|j| canonical_jid_str(&j.to_string()))
+                .unwrap_or_default();
+            let own_jid = if !own_pn.is_empty() {
+                own_pn.clone()
+            } else {
+                own_lid.clone()
+            };
 
             runtime.emit_json(
                 "CONNECTION_STATE",
                 json!({
                     "state": "CONNECTED",
                     "ownJid": own_jid,
+                    "ownLid": own_lid,
                     "isLoggedIn": logged,
                 }),
             );
 
             if let Some(shared) = runtime.shared_db_arc() {
-                let pairs = list_contact_lid_pn_pairs(&shared).await;
+                if own_pn.ends_with("@s.whatsapp.net") && own_lid.ends_with("@lid") {
+                    let _ = upsert_contact_meta(&shared, &own_pn, &own_lid, "", "", "").await;
+                }
+                let mut pairs = list_contact_lid_pn_pairs(&shared).await;
+                if own_pn.ends_with("@s.whatsapp.net")
+                    && own_lid.ends_with("@lid")
+                    && !pairs.iter().any(|(p, l)| p == &own_pn && l == &own_lid)
+                {
+                    pairs.push((own_pn, own_lid));
+                }
                 if !pairs.is_empty() {
                     let mappings: Vec<Value> = pairs
                         .into_iter()
@@ -252,12 +271,16 @@ pub async fn handle_sdk_event(runtime: Arc<BridgeRuntime>, event: Arc<Event>, cl
             } else {
                 resolve_dm_chat_pair_local(&runtime, &raw_chat, &[&alt_hint, &sender_hint]).await
             };
+            let raw_sender = canonical_jid_str(&receipt.source.sender.to_string());
+            let (sender_jid, alt_sender_jid) =
+                resolve_dm_chat_pair_local(&runtime, &raw_sender, &[&sender_hint]).await;
             runtime.emit_json(
                 "RECEIPT",
                 json!({
                     "chatJid": chat_jid,
                     "altChatJid": alt_chat_jid,
-                    "senderJid": canonical_jid_str(&receipt.source.sender.to_string()),
+                    "senderJid": sender_jid,
+                    "altSenderJid": alt_sender_jid,
                     "receiptType": rtype,
                     "timestamp": receipt.timestamp.as_millis(),
                     "isPrimaryActive": is_primary_active,
@@ -292,17 +315,27 @@ pub async fn handle_sdk_event(runtime: Arc<BridgeRuntime>, event: Arc<Event>, cl
                 .as_ref()
                 .map(|j| canonical_jid_str(&j.to_string()))
                 .unwrap_or_default();
+            let sender_hint = cp
+                .source
+                .sender_alt
+                .as_ref()
+                .map(|j| canonical_jid_str(&j.to_string()))
+                .unwrap_or_default();
             let (chat_jid, alt_chat_jid) = if cp.source.chat.is_group() {
                 (raw_chat, alt_hint)
             } else {
-                resolve_dm_chat_pair_local(&runtime, &raw_chat, &[&alt_hint]).await
+                resolve_dm_chat_pair_local(&runtime, &raw_chat, &[&alt_hint, &sender_hint]).await
             };
+            let raw_sender = canonical_jid_str(&cp.source.sender.to_string());
+            let (sender_jid, alt_sender_jid) =
+                resolve_dm_chat_pair_local(&runtime, &raw_sender, &[&sender_hint]).await;
             runtime.emit_json(
                 "CHAT_PRESENCE",
                 json!({
                     "chatJid": chat_jid,
                     "altChatJid": alt_chat_jid,
-                    "senderJid": canonical_jid_str(&cp.source.sender.to_string()),
+                    "senderJid": sender_jid,
+                    "altSenderJid": alt_sender_jid,
                     "state": state,
                     "media": media,
                 }),
@@ -562,7 +595,9 @@ pub async fn handle_sdk_event(runtime: Arc<BridgeRuntime>, event: Arc<Event>, cl
             } else {
                 resolve_dm_chat_pair_local(&runtime, &raw_chat, &[&alt_hint, &sender_hint]).await
             };
-            let sender_jid = canonical_jid_str(&und.info.source.sender.to_string());
+            let raw_sender = canonical_jid_str(&und.info.source.sender.to_string());
+            let (sender_jid, alt_sender_jid) =
+                resolve_dm_chat_pair_local(&runtime, &raw_sender, &[&sender_hint]).await;
             if und.unavailable_type == UnavailableType::ViewOnce {
                 runtime.emit_json(
                     "VIEW_ONCE_STRIPPED",
@@ -571,6 +606,7 @@ pub async fn handle_sdk_event(runtime: Arc<BridgeRuntime>, event: Arc<Event>, cl
                         "chatJid": chat_jid,
                         "altChatJid": alt_chat_jid,
                         "senderJid": sender_jid,
+                        "altSenderJid": alt_sender_jid,
                         "pushName": und.info.push_name.as_str(),
                         "isFromMe": und.info.source.is_from_me,
                         "timestamp": und.info.timestamp.as_millis(),
@@ -592,6 +628,7 @@ pub async fn handle_sdk_event(runtime: Arc<BridgeRuntime>, event: Arc<Event>, cl
                         "chatJid": chat_jid,
                         "altChatJid": alt_chat_jid,
                         "senderJid": sender_jid,
+                        "altSenderJid": alt_sender_jid,
                         "pushName": und.info.push_name.as_str(),
                         "isFromMe": und.info.source.is_from_me,
                         "timestamp": und.info.timestamp.as_millis(),
@@ -613,13 +650,24 @@ pub async fn handle_sdk_event(runtime: Arc<BridgeRuntime>, event: Arc<Event>, cl
                 } else {
                     resolve_dm_chat_pair_local(&runtime, &raw_chat, &[]).await
                 };
+                let raw_part = del
+                    .participant_jid
+                    .as_ref()
+                    .map(|j| canonical_jid_str(&j.to_string()))
+                    .unwrap_or_default();
+                let (sender_jid, alt_sender_jid) = if raw_part.is_empty() {
+                    (String::new(), String::new())
+                } else {
+                    resolve_dm_chat_pair_local(&runtime, &raw_part, &[]).await
+                };
                 runtime.emit_json(
                     "MESSAGE_REVOKE",
                     json!({
                         "chatJid": chat_jid,
                         "altChatJid": alt_chat_jid,
                         "targetMessageId": target_id,
-                        "senderJid": del.participant_jid.as_ref().map(|j| canonical_jid_str(&j.to_string())).unwrap_or_default(),
+                        "senderJid": sender_jid,
+                        "altSenderJid": alt_sender_jid,
                         "revokedAt": del.timestamp.as_millis(),
                         "isStatus": false,
                         "isDeleteForMe": true,
@@ -785,13 +833,15 @@ async fn emit_call_log_record(
     } else {
         format!("call_{}_{}", chat_jid.split('@').next().unwrap_or("peer"), ts_ms / 1000)
     };
-    let sender_jid = if !creator_canon.is_empty() {
+    let raw_sender_jid = if !creator_canon.is_empty() {
         creator_canon
     } else if from_me {
         own_pn.clone()
     } else {
         chat_jid.clone()
     };
+    let (sender_jid, alt_sender_jid) =
+        resolve_dm_chat_pair_local(runtime, &raw_sender_jid, &[]).await;
     let (body, duration_sec) = format_call_record_body(record, from_me);
 
     runtime.emit_json(
@@ -801,6 +851,7 @@ async fn emit_call_log_record(
             "chatJid": chat_jid,
             "altChatJid": alt_chat_jid,
             "senderJid": sender_jid,
+            "altSenderJid": alt_sender_jid,
             "isFromMe": from_me,
             "isGroup": !group_canon.is_empty(),
             "timestamp": ts_ms,
@@ -958,15 +1009,25 @@ async fn process_history_sync(runtime: Arc<BridgeRuntime>, lazy: LazyHistorySync
     let mut lid_to_pn: HashMap<String, String> = HashMap::new();
     let mut pn_to_lid: HashMap<String, String> = HashMap::new();
     if let Some(rem) = remainder {
+        let mut history_lid_mappings: Vec<Value> = Vec::new();
         for mapping in &rem.phone_number_to_lid_mappings {
             if let (Some(pn), Some(lid)) = (mapping.pn_jid.as_deref(), mapping.lid_jid.as_deref()) {
                 let c_pn = canonical_jid_str(pn);
                 let c_lid = canonical_jid_str(lid);
                 if !c_pn.is_empty() && !c_lid.is_empty() {
+                    if c_pn.ends_with("@s.whatsapp.net") && c_lid.ends_with("@lid") {
+                        if let Some(ref sdb) = shared {
+                            let _ = upsert_contact_meta(sdb, &c_pn, &c_lid, "", "", "").await;
+                        }
+                        history_lid_mappings.push(json!({ "pn": c_pn, "lid": c_lid }));
+                    }
                     lid_to_pn.insert(c_lid.clone(), c_pn.clone());
                     pn_to_lid.insert(c_pn, c_lid);
                 }
             }
+        }
+        if !history_lid_mappings.is_empty() {
+            runtime.emit_json("LID_PN_MAPPINGS", json!({ "mappings": history_lid_mappings }));
         }
         for p in &rem.pushnames {
             let Some(jid_s) = p.id.as_deref() else { continue };
@@ -1180,19 +1241,29 @@ async fn process_history_sync(runtime: Arc<BridgeRuntime>, lazy: LazyHistorySync
                     .map(|s| (s as i64) * 1000)
                     .unwrap_or_else(now_millis);
                 let from_me = key.from_me.unwrap_or(false);
-                let call_sender = pick_individual_sender(&[
+                let raw_call_sender = pick_individual_sender(&[
                     key.participant.as_deref(),
                     web_msg.participant.as_deref(),
                     web_msg.original_self_author_user_jid_string.as_deref(),
                 ])
                 .map(canonical_jid_str)
                 .unwrap_or_else(|| if parsed_chat_jid.is_group() { String::new() } else { chat_jid.clone() });
+                let call_hint = lid_to_pn
+                    .get(&raw_call_sender)
+                    .or_else(|| pn_to_lid.get(&raw_call_sender))
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let (call_sender, call_alt_sender) = if raw_call_sender.is_empty() {
+                    (String::new(), String::new())
+                } else {
+                    resolve_dm_chat_pair_local(&runtime, &raw_call_sender, &[call_hint]).await
+                };
                 msgs_batch.push(json!({
                     "id": msg_id,
                     "chatJid": chat_jid,
                     "altChatJid": alt_chat_jid,
                     "senderJid": call_sender,
-                    "altSenderJid": "",
+                    "altSenderJid": call_alt_sender,
                     "senderName": web_msg.push_name.as_deref().unwrap_or(""),
                     "isFromMe": from_me,
                     "isGroup": parsed_chat_jid.is_group(),

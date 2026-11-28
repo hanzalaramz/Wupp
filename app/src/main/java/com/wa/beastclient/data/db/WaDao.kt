@@ -1100,8 +1100,78 @@ interface WaDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertGroupReceipt(receipt: GroupReceiptEntity)
 
+    @Query("SELECT * FROM group_receipts WHERE message_id = :messageId AND participant_jid = :participantJid LIMIT 1")
+    suspend fun getGroupReceipt(messageId: String, participantJid: String): GroupReceiptEntity?
+
+    @Query("SELECT * FROM group_receipts WHERE participant_jid = :participantJid")
+    suspend fun getGroupReceiptsForParticipant(participantJid: String): List<GroupReceiptEntity>
+
+    @Query("DELETE FROM group_receipts WHERE message_id = :messageId AND participant_jid = :participantJid")
+    suspend fun deleteGroupReceipt(messageId: String, participantJid: String)
+
+    @Transaction
+    suspend fun upsertGroupReceiptMonotonic(receipt: GroupReceiptEntity) {
+        val existing = getGroupReceipt(receipt.messageId, receipt.participantJid)
+        if (existing == null) {
+            upsertGroupReceipt(receipt)
+            return
+        }
+        val oldRank = deliveryRank(existing.status)
+        val newRank = deliveryRank(receipt.status)
+        val bestStatus = if (newRank > oldRank) receipt.status else existing.status
+        val bestTs = when {
+            newRank > oldRank -> receipt.timestamp
+            newRank == oldRank -> maxOf(existing.timestamp, receipt.timestamp)
+            else -> existing.timestamp
+        }
+        val incomingGood = com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
+            .isUsableDisplayName(receipt.participantName, receipt.participantJid)
+        val existingGood = com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
+            .isUsableDisplayName(existing.participantName, existing.participantJid)
+        val bestName = when {
+            incomingGood -> receipt.participantName.trim()
+            existingGood -> existing.participantName.trim()
+            receipt.participantName.isNotBlank() -> receipt.participantName.trim()
+            else -> existing.participantName.trim()
+        }
+        upsertGroupReceipt(
+            existing.copy(
+                participantName = bestName,
+                status = bestStatus,
+                timestamp = bestTs
+            )
+        )
+    }
+
+    @Query(
+        """
+        UPDATE group_receipts SET participant_name = :name
+        WHERE participant_jid = :jid
+          AND (participant_name = '' OR participant_name = :jid OR participant_name = :jidUser OR participant_name LIKE '+%')
+        """
+    )
+    suspend fun updateGroupReceiptParticipantName(jid: String, jidUser: String, name: String)
+
     @Query("SELECT * FROM group_receipts WHERE message_id = :messageId ORDER BY timestamp DESC")
     fun observeGroupReceipts(messageId: String): Flow<List<GroupReceiptEntity>>
+
+    @Query("SELECT DISTINCT participant_jid FROM group_receipts WHERE participant_jid LIKE '%@lid' LIMIT :limit")
+    suspend fun getDistinctLidGroupReceiptParticipants(limit: Int = 200): List<String>
+
+    @Query("SELECT DISTINCT sender_jid FROM messages WHERE sender_jid LIKE '%@lid' LIMIT :limit")
+    suspend fun getDistinctLidMessageSenders(limit: Int = 200): List<String>
+
+    @Query("SELECT DISTINCT actor FROM message_reactions WHERE actor LIKE '%@lid' LIMIT :limit")
+    suspend fun getDistinctLidReactionActors(limit: Int = 200): List<String>
+
+    @Query("SELECT DISTINCT sender_jid FROM statuses WHERE sender_jid LIKE '%@lid' LIMIT :limit")
+    suspend fun getDistinctLidStatusSenders(limit: Int = 200): List<String>
+
+    @Query("SELECT * FROM message_reactions WHERE actor = :actor")
+    suspend fun getReactionsForActor(actor: String): List<MessageReactionEntity>
+
+    @Query("SELECT * FROM message_reactions WHERE message_id = :messageId AND actor = :actor LIMIT 1")
+    suspend fun getReaction(messageId: String, actor: String): MessageReactionEntity?
 
     @Query("UPDATE messages SET reaction_summary = :summary WHERE id = :messageId AND reaction_summary = ''")
     suspend fun fillReactionSummaryIfBlank(messageId: String, summary: String)
@@ -1109,8 +1179,35 @@ interface WaDao {
     @Query("UPDATE messages SET chat_jid = :canonicalJid WHERE chat_jid = :duplicateJid")
     suspend fun reassignMessagesChatJid(canonicalJid: String, duplicateJid: String): Int
 
+    @Query("UPDATE messages SET sender_jid = :canonicalJid WHERE sender_jid = :duplicateJid")
+    suspend fun reassignMessagesSenderJid(canonicalJid: String, duplicateJid: String): Int
+
+    @Query("UPDATE messages SET quoted_sender = :canonicalJid WHERE quoted_sender = :duplicateJid")
+    suspend fun reassignMessagesQuotedSender(canonicalJid: String, duplicateJid: String): Int
+
+    @Query("UPDATE presence_logs SET jid = :canonicalJid WHERE jid = :duplicateJid")
+    suspend fun reassignPresenceLogsJid(canonicalJid: String, duplicateJid: String)
+
+    @Query(
+        """
+        UPDATE presence_logs SET contact_name = :name
+        WHERE jid = :jid
+          AND (contact_name = '' OR contact_name = :jid OR contact_name = :jidUser OR contact_name LIKE '+%')
+        """
+    )
+    suspend fun updatePresenceLogContactName(jid: String, jidUser: String, name: String)
+
     @Query("UPDATE profile_history SET jid = :canonicalJid WHERE jid = :duplicateJid")
     suspend fun reassignProfileHistoryJid(canonicalJid: String, duplicateJid: String)
+
+    @Query(
+        """
+        UPDATE profile_history SET contact_name = :name
+        WHERE jid = :jid
+          AND (contact_name = '' OR contact_name = :jid OR contact_name = :jidUser OR contact_name LIKE '+%')
+        """
+    )
+    suspend fun updateProfileHistoryContactName(jid: String, jidUser: String, name: String)
 
     @Transaction
     suspend fun mergeDuplicateChatAlias(canonicalJid: String, duplicateJid: String) {
@@ -1121,15 +1218,75 @@ interface WaDao {
         val duplicate = getChat(duplicateJid)
         val canonical = getChat(canonicalJid)
         val dupContact = getContact(duplicateJid)
+        val canonContact = getContact(canonicalJid)
         if (dupContact != null) {
-            upsertContacts(listOf(dupContact.copy(jid = canonicalJid)))
+            val shouldKeepCanon = canonContact != null &&
+                com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
+                    .isUsableDisplayName(canonContact.name, canonicalJid, duplicateJid)
+            if (!shouldKeepCanon) {
+                upsertContacts(listOf(dupContact.copy(jid = canonicalJid)))
+            }
             deleteContactRow(duplicateJid)
         }
+
+        // Always migrate participant-scoped tables even when no 1:1 DM chat exists for this member.
+        reassignMessagesSenderJid(canonicalJid, duplicateJid)
+        reassignMessagesQuotedSender(canonicalJid, duplicateJid)
+        reassignStatusSenderJid(canonicalJid, duplicateJid)
+        reassignPresenceLogsJid(canonicalJid, duplicateJid)
+        reassignProfileHistoryJid(canonicalJid, duplicateJid)
+
+        val dupReceipts = getGroupReceiptsForParticipant(duplicateJid)
+        for (r in dupReceipts) {
+            upsertGroupReceiptMonotonic(r.copy(participantJid = canonicalJid))
+            deleteGroupReceipt(r.messageId, duplicateJid)
+        }
+
+        val dupReactions = getReactionsForActor(duplicateJid)
+        if (dupReactions.isNotEmpty()) {
+            val touchedMsgIds = HashSet<String>(dupReactions.size)
+            for (rx in dupReactions) {
+                val existingCanon = getReaction(rx.messageId, canonicalJid)
+                if (existingCanon == null || rx.updatedAt >= existingCanon.updatedAt) {
+                    upsertReaction(rx.copy(actor = canonicalJid))
+                }
+                deleteReaction(rx.messageId, duplicateJid)
+                touchedMsgIds.add(rx.messageId)
+            }
+            for (mid in touchedMsgIds) {
+                val summary = getReactionsFor(mid)
+                    .map { it.emoji }
+                    .distinct()
+                    .joinToString(" ")
+                updateReactionSummary(mid, summary)
+            }
+        }
+
+        // Propagate any known good name on canonicalJid into migrated group receipts, senders, and logs.
+        val knownGoodName = sequenceOf(
+            canonContact?.name,
+            canonical?.name,
+            dupContact?.name,
+            duplicate?.name
+        ).firstOrNull {
+            com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
+                .isUsableDisplayName(it, canonicalJid, duplicateJid)
+        }?.trim().orEmpty()
+        if (knownGoodName.isNotBlank()) {
+            val canonUser = canonicalJid.substringBefore("@")
+            val dupUser = duplicateJid.substringBefore("@")
+            updateSenderNameForJid(canonicalJid, canonUser, knownGoodName)
+            updateSenderNameForJid(canonicalJid, dupUser, knownGoodName)
+            updateGroupReceiptParticipantName(canonicalJid, canonUser, knownGoodName)
+            updateGroupReceiptParticipantName(canonicalJid, dupUser, knownGoodName)
+            updateStatusSenderNameForJid(canonicalJid, canonUser, knownGoodName, overwrite = false)
+            updatePresenceLogContactName(canonicalJid, canonUser, knownGoodName)
+            updateProfileHistoryContactName(canonicalJid, canonUser, knownGoodName)
+        }
+
         if (duplicate == null && canonical == null) return
 
         reassignMessagesChatJid(canonicalJid, duplicateJid)
-        reassignProfileHistoryJid(canonicalJid, duplicateJid)
-        reassignStatusSenderJid(canonicalJid, duplicateJid)
 
         val dupPrivacy = getPrivacyRuleOnce(duplicateJid)
         if (dupPrivacy != null) {

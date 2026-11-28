@@ -402,6 +402,7 @@ fun HomeScreen(
     val groupsChats by viewModel.filteredGroups.collectAsState()
     val allChats by viewModel.allChats.collectAsState()
     val allContacts by viewModel.allContacts.collectAsState()
+    val participantMeta by viewModel.participantMeta.collectAsState()
     val channels by viewModel.channels.collectAsState()
     val selectedChip by viewModel.selectedFilter.collectAsState()
     val selectedGroupsChip by viewModel.selectedGroupsFilter.collectAsState()
@@ -1868,6 +1869,16 @@ fun HomeScreen(
     }
 
     if (showMessageHistorySheet) {
+        LaunchedEffect(deletedHistory, editedHistory) {
+            val histJids = (deletedHistory + editedHistory)
+                .asSequence()
+                .filter { !it.isFromMe }
+                .map { it.senderJid }
+                .filter { it.contains("@") }
+                .distinct()
+                .toList()
+            if (histJids.isNotEmpty()) viewModel.resolveParticipantsLocally(histJids)
+        }
         MessageHistorySheet(
             deletedMessages = deletedHistory,
             editedMessages = editedHistory,
@@ -1880,7 +1891,11 @@ fun HomeScreen(
             onDismiss = {
                 showMessageHistorySheet = false
                 messageHistoryChatFilter = null
-            }
+            },
+            participantMeta = participantMeta,
+            contacts = allContacts,
+            ownJid = bridgeStatus.ownJid,
+            ownLid = bridgeStatus.ownLid
         )
     }
 
@@ -3333,16 +3348,26 @@ private fun ChatsTabContent(
                 )
             }
             items(ftsHits.take(6), key = { "fts_${it.id}" }) { hit ->
+                val hitLabel = if (hit.isFromMe) {
+                    "You"
+                } else {
+                    com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.resolve(
+                        rawJidOrText = hit.senderJid.ifBlank { hit.chatJid },
+                        explicitName = hit.senderName,
+                        lidToPn = com.wa.beastclient.core.service.WaRealtimeService.persistedLidToPn,
+                        prefixPushWithTilde = false
+                    ).primary
+                }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onChatClick(ChatEntity(jid = hit.chatJid, name = hit.senderName)) }
+                        .clickable { onChatClick(ChatEntity(jid = hit.chatJid, name = hitLabel)) }
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = hit.senderName.ifBlank { hit.chatJid.substringBefore("@") },
+                            text = hitLabel,
                             color = colors.textPrimary,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 13.5.sp
@@ -4474,9 +4499,12 @@ private fun resolveStatusSenderChat(
     chatsByUser: Map<String, ChatEntity>
 ): ChatEntity? {
     val norm = normalizeStatusSenderJid(senderJid)
+    val mappedPn = com.wa.beastclient.core.service.WaRealtimeService.persistedLidToPn[norm]
     return chatsByJid[senderJid]
         ?: chatsByJid[norm]
+        ?: mappedPn?.let { chatsByJid[it] }
         ?: chatsByUser[norm.substringBefore("@").trim()]
+        ?: mappedPn?.let { chatsByUser[it.substringBefore("@").trim()] }
 }
 
 internal fun resolveStatusDisplayName(
@@ -4506,6 +4534,8 @@ internal fun resolveStatusDisplayName(
         chatUseful -> chatName
         contactUseful -> contactName
         storedUseful -> storedClean
+        norm.endsWith("@lid", ignoreCase = true) ->
+            com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.formatUnresolvedLidLabel(norm)
         else -> user.ifBlank { "Status" }
     }
 }

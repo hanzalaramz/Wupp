@@ -49,6 +49,7 @@ import com.wa.beastclient.domain.scheduling.ScheduledMessage
 import com.wa.beastclient.domain.scheduling.ScheduledMessageManager
 import com.wa.beastclient.domain.accounts.WuppAccount
 import com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
+import com.wa.beastclient.domain.contacts.ParticipantDisplayResolver
 import com.wa.beastclient.domain.security.AppLockConfig
 import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.domain.stealth.AutoDownloadNetwork
@@ -1041,12 +1042,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val msgs = dao.getMessagesForChat(chatJid)
             val chat = dao.getChat(chatJid)
+            val chatsByJid = dao.getAllChatsOnce().associateBy { it.jid }
+            val contactsByJid = dao.getAllContactsOnce().associateBy { it.jid }
+            val metaSnapshot = _participantMeta.value
+            val status = bridgeStatus.value
             val title = chat?.name?.ifBlank { chatJid.substringBefore("@") } ?: chatJid.substringBefore("@")
             val sb = StringBuilder()
             sb.append("WhatsApp Chat with $title\n\n")
             msgs.reversed().forEach { m ->
                 val time = java.text.SimpleDateFormat("dd/MM/yyyy, HH:mm", java.util.Locale.getDefault()).format(java.util.Date(m.timestamp))
-                val sender = if (m.isFromMe) "You" else m.senderName.ifBlank { m.senderJid.substringBefore("@") }
+                val sender = if (m.isFromMe) {
+                    "You"
+                } else {
+                    ParticipantDisplayResolver.resolve(
+                        rawJidOrText = m.senderJid,
+                        explicitName = m.senderName,
+                        isSelf = false,
+                        ownJid = status.ownJid,
+                        ownLid = status.ownLid,
+                        participantMeta = metaSnapshot,
+                        chatsByJid = chatsByJid,
+                        contactsByJid = contactsByJid,
+                        lidToPn = WaRealtimeService.persistedLidToPn,
+                        prefixPushWithTilde = false
+                    ).primary
+                }
                 sb.append("[$time] $sender: ${m.body}\n")
             }
             val file = java.io.File(context.cacheDir, "chat_${chatJid.filter { it.isLetterOrDigit() }}.txt")
@@ -2253,31 +2273,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun resolveParticipantsLocally(jids: Collection<String>) {
+    fun resolveParticipantsLocally(
+        jids: Collection<String>,
+        forceRefreshUnresolved: Boolean = false
+    ) {
         val current = _participantMeta.value
         val missing = jids
             .asSequence()
-            .map { it.trim() }
-            .filter { it.isNotBlank() && it.contains("@") && !current.containsKey(it) }
+            .map { ParticipantDisplayResolver.stripDevice(it) }
+            .filter { j ->
+                if (j.isBlank() || !j.contains("@")) return@filter false
+                val existing = current[j]
+                if (existing == null) return@filter true
+                forceRefreshUnresolved &&
+                    !existing.isSelf &&
+                    existing.savedName.isBlank() &&
+                    existing.pushName.isBlank() &&
+                    existing.phone.isBlank()
+            }
             .distinct()
             .take(80)
             .toList()
         if (missing.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             val raw = WaRealtimeService.resolveParticipantNamesJson(missing.joinToString(","))
-            val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return@launch
-            val parsed = HashMap<String, ResolvedParticipantUi>(missing.size)
+            val obj = runCatching { JSONObject(raw) }.getOrNull() ?: JSONObject()
+            val parsed = HashMap<String, ResolvedParticipantUi>(missing.size * 2)
             val fallbackEnabled = DeviceContactFallbackResolver.isFallbackEnabled()
             val preferPhonebook = DeviceContactFallbackResolver.isPreferPhonebookEnabled()
-            val keys = obj.keys()
-            while (keys.hasNext()) {
-                val key = keys.next()
-                val item = obj.optJSONObject(key) ?: continue
-                val altJid = item.optString("altJid")
-                val serverSaved = item.optString("savedName")
-                val fallbackName = item.optString("name")
-                val serverPush = item.optString("pushName").ifBlank { fallbackName }
-                val phone = item.optString("phone")
+            val status = bridgeStatus.value
+            val persistedAliases = WaRealtimeService.persistedLidToPn
+
+            suspend fun resolveOne(rawKey: String, item: JSONObject?) {
+                val key = ParticipantDisplayResolver.stripDevice(rawKey)
+                if (key.isBlank()) return
+                var altJid = ParticipantDisplayResolver.stripDevice(item?.optString("altJid").orEmpty())
+                if (altJid.isBlank()) {
+                    altJid = if (key.endsWith("@lid")) {
+                        persistedAliases[key].orEmpty()
+                    } else if (key.endsWith("@s.whatsapp.net")) {
+                        persistedAliases.entries.firstOrNull { it.value == key }?.key.orEmpty()
+                    } else ""
+                }
+                val serverSaved = item?.optString("savedName").orEmpty()
+                val fallbackName = item?.optString("name").orEmpty()
+                val serverPush = item?.optString("pushName").orEmpty().ifBlank { fallbackName }
+                var phone = item?.optString("phone").orEmpty()
+                if (phone.isBlank()) {
+                    phone = when {
+                        key.endsWith("@s.whatsapp.net") -> key.substringBefore("@")
+                        altJid.endsWith("@s.whatsapp.net") -> altJid.substringBefore("@")
+                        else -> ""
+                    }
+                }
                 val phonebookName = if (fallbackEnabled) {
                     DeviceContactFallbackResolver.lookupForParticipant(
                         context = appContext,
@@ -2289,8 +2337,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val dbContactName = listOfNotNull(
                     dao.getContact(key)?.name,
                     altJid.takeIf { it.isNotBlank() }?.let { dao.getContact(it)?.name },
-                    dao.getChat(key)?.name,
-                    altJid.takeIf { it.isNotBlank() }?.let { dao.getChat(it)?.name }
+                    dao.getChat(key)?.takeIf { !it.isGroup }?.name,
+                    altJid.takeIf { it.isNotBlank() }?.let { dao.getChat(it)?.takeIf { c -> !c.isGroup }?.name }
                 ).firstOrNull {
                     DeviceContactFallbackResolver.isUsableDisplayName(it, key, altJid)
                 }.orEmpty()
@@ -2307,20 +2355,65 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val cleanPush = serverPush.takeIf {
                     DeviceContactFallbackResolver.isUsableDisplayName(it, key, altJid)
                 }.orEmpty()
-                parsed[key] = ResolvedParticipantUi(
+                val isSelf = item?.optBoolean("isSelf", false) == true ||
+                    ParticipantDisplayResolver.isSelfParticipant(
+                        rawJid = key,
+                        altJid = altJid,
+                        ownJid = status.ownJid,
+                        ownLid = status.ownLid,
+                        lidToPn = persistedAliases
+                    )
+                val avatarPath = item?.optString("avatarPath").orEmpty().ifBlank {
+                    dao.getChat(key)?.avatarPath
+                        ?: altJid.takeIf { it.isNotBlank() }?.let { dao.getChat(it)?.avatarPath }
+                        ?: ""
+                }
+                val resolvedEntry = ResolvedParticipantUi(
                     jid = key,
                     altJid = altJid,
                     savedName = effectiveSaved,
                     pushName = cleanPush,
                     phone = phone,
-                    avatarPath = item.optString("avatarPath"),
-                    isSelf = item.optBoolean("isSelf", false)
+                    avatarPath = avatarPath,
+                    isSelf = isSelf
                 )
+                parsed[key] = resolvedEntry
+                if (altJid.isNotBlank() && altJid != key) {
+                    parsed[altJid] = resolvedEntry.copy(jid = altJid, altJid = key)
+                }
+
+                // Persist newly discovered LID<->PN pairs and heal stale Room rows locally.
+                val lidPair = when {
+                    key.endsWith("@lid") && altJid.endsWith("@s.whatsapp.net") -> key to altJid
+                    key.endsWith("@s.whatsapp.net") && altJid.endsWith("@lid") -> altJid to key
+                    else -> null
+                }
+                if (lidPair != null) {
+                    val (lid, pn) = lidPair
+                    WaRealtimeService.rememberAndPersistAlias(appContext, lidJid = lid, pnJid = pn)
+                    runCatching { dao.mergeDuplicateChatAlias(canonicalJid = pn, duplicateJid = lid) }
+                }
+                val bestDisplayName = effectiveSaved.ifBlank { cleanPush }
+                if (bestDisplayName.isNotBlank()) {
+                    val targets = listOf(key, altJid).filter { it.isNotBlank() }.distinct()
+                    for (t in targets) {
+                        val user = t.substringBefore("@")
+                        runCatching {
+                            dao.updateGroupReceiptParticipantName(t, user, bestDisplayName)
+                            dao.updateSenderNameForJid(t, user, bestDisplayName)
+                        }
+                    }
+                }
             }
-            // Mark any queried JID not returned as checked so we don't re-query every recomposition.
+
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                resolveOne(key, obj.optJSONObject(key))
+            }
             missing.forEach { k ->
                 if (!parsed.containsKey(k)) {
-                    parsed[k] = ResolvedParticipantUi(jid = k)
+                    resolveOne(k, null)
                 }
             }
             if (parsed.isNotEmpty()) {

@@ -726,6 +726,7 @@ pub async fn resolve_participant_names_json(runtime: &BridgeRuntime, jids_csv: &
         let mut alt_jid = String::new();
         let mut phone = String::new();
 
+        let mut parsed_opt: Option<Jid> = None;
         if let Ok(parsed) = parse_jid_flexible(&key) {
             if parsed.is_pn() {
                 phone = phone_digits_from_jid(&parsed);
@@ -740,7 +741,7 @@ pub async fn resolve_participant_names_json(runtime: &BridgeRuntime, jids_csv: &
                     }
                 }
             }
-            unresolved.push(parsed);
+            parsed_opt = Some(parsed);
         }
 
         if let Some(ref sdb) = shared {
@@ -773,6 +774,11 @@ pub async fn resolve_participant_names_json(runtime: &BridgeRuntime, jids_csv: &
 
         let is_self = (!own_pn.is_empty() && (key == own_pn || alt_jid == own_pn))
             || (!own_lid.is_empty() && (key == own_lid || alt_jid == own_lid));
+        if !is_self && saved_name.is_empty() && push_name.is_empty() && phone.is_empty() {
+            if let Some(parsed) = parsed_opt {
+                unresolved.push(parsed);
+            }
+        }
         let avatar_path = if !files_dir.is_empty() {
             let p1 = avatar_file_path(&files_dir, &key);
             if p1.exists() && fs::metadata(&p1).map(|m| m.len() > 0).unwrap_or(false) {
@@ -810,8 +816,9 @@ pub async fn resolve_participant_names_json(runtime: &BridgeRuntime, jids_csv: &
         );
     }
 
-    if let (Some(c), false) = (client, unresolved.is_empty()) {
+    if let (Some(c), false, false) = (client, unresolved.is_empty(), runtime.is_rate_limited()) {
         let batch: Vec<Jid> = unresolved.into_iter().take(40).collect();
+        let mut discovered_mappings: Vec<Value> = Vec::new();
         if let Ok(infos) = c.contacts().get_user_info(&batch).await {
             for (jid, ui) in infos {
                 let k = canonical_jid_str(&jid.to_string());
@@ -819,10 +826,25 @@ pub async fn resolve_participant_names_json(runtime: &BridgeRuntime, jids_csv: &
                 let alt_str = ui.pn_jid.as_ref().map(|p| canonical_jid_str(&p.to_string()))
                     .or_else(|| ui.lid.as_ref().map(|l| canonical_jid_str(&l.to_string())))
                     .unwrap_or_default();
+                let lid_col = if k.ends_with("@lid") {
+                    k.as_str()
+                } else if alt_str.ends_with("@lid") {
+                    alt_str.as_str()
+                } else {
+                    ""
+                };
+                let pn_col = if k.ends_with("@s.whatsapp.net") {
+                    k.as_str()
+                } else if alt_str.ends_with("@s.whatsapp.net") {
+                    alt_str.as_str()
+                } else {
+                    k.as_str()
+                };
+                if pn_col.ends_with("@s.whatsapp.net") && lid_col.ends_with("@lid") {
+                    discovered_mappings.push(json!({ "pn": pn_col, "lid": lid_col }));
+                }
                 if let Some(ref sdb) = shared {
                     if !biz.is_empty() || !alt_str.is_empty() {
-                        let lid_col = if k.ends_with("@lid") { k.as_str() } else if alt_str.ends_with("@lid") { alt_str.as_str() } else { "" };
-                        let pn_col = if k.ends_with("@s.whatsapp.net") { k.as_str() } else if alt_str.ends_with("@s.whatsapp.net") { alt_str.as_str() } else { &k };
                         let _ = upsert_contact_meta(sdb, pn_col, lid_col, "", "", &biz).await;
                     }
                 }
@@ -841,6 +863,9 @@ pub async fn resolve_participant_names_json(runtime: &BridgeRuntime, jids_csv: &
                     }
                 }
             }
+        }
+        if !discovered_mappings.is_empty() {
+            runtime.emit_json("LID_PN_MAPPINGS", json!({ "mappings": discovered_mappings }));
         }
     }
 
@@ -941,6 +966,30 @@ pub async fn resolve_local_dm_aliases_json(runtime: &BridgeRuntime, jids_csv: &s
     Value::Object(pairs).to_string()
 }
 
+async fn persist_and_emit_group_participant_mappings(
+    runtime: &BridgeRuntime,
+    pairs: &[(String, String)],
+) {
+    let shared = runtime.shared_db_arc();
+    let mut mappings: Vec<Value> = Vec::new();
+    for (jid_s, pn_s) in pairs {
+        let (pn, lid) = if jid_s.ends_with("@lid") && pn_s.ends_with("@s.whatsapp.net") {
+            (pn_s.as_str(), jid_s.as_str())
+        } else if jid_s.ends_with("@s.whatsapp.net") && pn_s.ends_with("@lid") {
+            (jid_s.as_str(), pn_s.as_str())
+        } else {
+            continue;
+        };
+        if let Some(ref sdb) = shared {
+            let _ = upsert_contact_meta(sdb, pn, lid, "", "", "").await;
+        }
+        mappings.push(json!({ "pn": pn, "lid": lid }));
+    }
+    if !mappings.is_empty() {
+        runtime.emit_json("LID_PN_MAPPINGS", json!({ "mappings": mappings }));
+    }
+}
+
 pub async fn get_group_participants_json(runtime: &BridgeRuntime, group_jid_str: &str) -> String {
     let Some(client) = runtime.client_arc() else {
         return "[]".to_string();
@@ -948,15 +997,38 @@ pub async fn get_group_participants_json(runtime: &BridgeRuntime, group_jid_str:
     let Ok(gjid) = parse_jid_flexible(group_jid_str) else {
         return "[]".to_string();
     };
-    let Ok(meta) = client.groups().fetch_metadata(&gjid).await else {
+    let Ok(mut meta) = client.groups().fetch_metadata(&gjid).await else {
         return "[]".to_string();
     };
+    client.groups().resolve_participant_addresses(&mut meta).await;
+    let raw_pairs: Vec<(String, String)> = meta
+        .participants
+        .iter()
+        .map(|p| {
+            (
+                canonical_jid_str(&p.jid.to_string()),
+                p.phone_number
+                    .as_ref()
+                    .map(|j| canonical_jid_str(&j.to_string()))
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    persist_and_emit_group_participant_mappings(runtime, &raw_pairs).await;
 
     // WaRealtimeService.getGroupParticipants reads a JSON array of plain participant JID strings.
+    // Prefer canonical PN JID when resolved while persisting LID->PN mappings above.
     let arr: Vec<Value> = meta
         .participants
         .into_iter()
-        .map(|p| json!(canonical_jid_str(&p.jid.to_string())))
+        .map(|p| {
+            let pn = p
+                .phone_number
+                .as_ref()
+                .map(|j| canonical_jid_str(&j.to_string()))
+                .filter(|s| s.ends_with("@s.whatsapp.net"));
+            json!(pn.unwrap_or_else(|| canonical_jid_str(&p.jid.to_string())))
+        })
         .collect();
     Value::Array(arr).to_string()
 }
@@ -972,6 +1044,20 @@ pub async fn get_group_info_json(runtime: &BridgeRuntime, group_jid_str: &str) -
         .await
         .map_err(|e| format!("fetch group metadata failed: {e}"))?;
     client.groups().resolve_participant_addresses(&mut meta).await;
+    let raw_pairs: Vec<(String, String)> = meta
+        .participants
+        .iter()
+        .map(|p| {
+            (
+                canonical_jid_str(&p.jid.to_string()),
+                p.phone_number
+                    .as_ref()
+                    .map(|j| canonical_jid_str(&j.to_string()))
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    persist_and_emit_group_participant_mappings(runtime, &raw_pairs).await;
 
     let ephem_secs = meta.ephemeral.as_ref().and_then(|e| e.expiration).unwrap_or(0);
     let invite_link = client

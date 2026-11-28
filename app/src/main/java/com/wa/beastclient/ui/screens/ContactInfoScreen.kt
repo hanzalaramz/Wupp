@@ -356,30 +356,53 @@ fun ContactInfoScreen(
     var memberSearchQuery by remember { mutableStateOf("") }
     var isMemberSearchActive by remember { mutableStateOf(false) }
     val participantMeta by viewModel.participantMeta.collectAsState()
+    val bridgeStatus by viewModel.bridgeStatus.collectAsState()
+    val chatsByJid = remember(allChats) { allChats.associateBy { it.jid } }
+    val contactsByJid = remember(allContacts) { allContacts.associateBy { it.jid } }
+    val lidToPn = com.wa.beastclient.core.service.WaRealtimeService.persistedLidToPn
 
-    val otherParticipants = remember(groupParticipants, participantMeta) {
+    val otherParticipants = remember(groupParticipants, participantMeta, bridgeStatus.ownJid, bridgeStatus.ownLid) {
         groupParticipants
-            .filter { participantMeta[it]?.isSelf != true }
-            .distinctBy { resolveMemberChatJid(it, participantMeta[it]) }
+            .filter { jid ->
+                val meta = com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.lookupMeta(jid, participantMeta, lidToPn)
+                meta?.isSelf != true &&
+                    !com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.isSelfParticipant(
+                        rawJid = jid,
+                        altJid = meta?.altJid.orEmpty(),
+                        ownJid = bridgeStatus.ownJid,
+                        ownLid = bridgeStatus.ownLid,
+                        lidToPn = lidToPn
+                    )
+            }
+            .distinctBy { jid ->
+                val meta = com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.lookupMeta(jid, participantMeta, lidToPn)
+                com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.resolveCanonicalJid(jid, meta, lidToPn)
+            }
     }
     val totalMembersCount = remember(otherParticipants) {
         (1 + otherParticipants.size).coerceAtLeast(1)
     }
 
-    val filteredMembers = remember(otherParticipants, memberSearchQuery, participantMeta) {
+    val filteredMembers = remember(otherParticipants, memberSearchQuery, participantMeta, chatsByJid, contactsByJid) {
         if (memberSearchQuery.isBlank()) {
             otherParticipants
         } else {
             val q = memberSearchQuery.lowercase().trim()
             otherParticipants.filter { jid ->
-                val meta = participantMeta[jid]
-                val resolvedChatJid = resolveMemberChatJid(jid, meta)
-                val name = meta?.savedName?.ifBlank { meta.pushName }.orEmpty().lowercase()
-                val phone = resolveMemberDisplayPhone(jid, meta).lowercase()
+                val resolved = com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.resolve(
+                    rawJidOrText = jid,
+                    ownJid = bridgeStatus.ownJid,
+                    ownLid = bridgeStatus.ownLid,
+                    participantMeta = participantMeta,
+                    chatsByJid = chatsByJid,
+                    contactsByJid = contactsByJid,
+                    lidToPn = lidToPn,
+                    prefixPushWithTilde = false
+                )
                 jid.lowercase().contains(q) ||
-                    resolvedChatJid.lowercase().contains(q) ||
-                    name.contains(q) ||
-                    phone.contains(q)
+                    resolved.canonicalJid.lowercase().contains(q) ||
+                    resolved.primary.lowercase().contains(q) ||
+                    resolved.secondaryPhone.lowercase().contains(q)
             }
         }
     }
@@ -746,7 +769,11 @@ fun ContactInfoScreen(
                                         fontSize = 12.5.sp
                                     )
                                 }
-                                if (groupAdmins.contains("me") || groupAdmins.any { it.contains("me@") }) {
+                                val isSelfAdmin = groupAdmins.contains("me") ||
+                                    groupAdmins.any { it.contains("me@") } ||
+                                    (bridgeStatus.ownJid.isNotBlank() && isGroupMemberAdmin(bridgeStatus.ownJid, bridgeStatus.ownJid, null, groupAdmins)) ||
+                                    (bridgeStatus.ownLid.isNotBlank() && isGroupMemberAdmin(bridgeStatus.ownLid, bridgeStatus.ownJid, null, groupAdmins))
+                                if (isSelfAdmin) {
                                     AdminBadge(colors.accentGreen, colors.brightGreen)
                                 }
                             }
@@ -754,11 +781,24 @@ fun ContactInfoScreen(
 
                         // List of other group participants
                         items(filteredMembers, key = { it }) { participantJid ->
-                            val meta = participantMeta[participantJid]
-                            val resolvedChatJid = resolveMemberChatJid(participantJid, meta)
-                            val pPhone = resolveMemberDisplayPhone(participantJid, meta)
-                            val pName = meta?.savedName?.ifBlank { meta.pushName }?.takeIf { it.isNotBlank() }
-                                ?: pPhone.ifBlank { participantJid.substringBefore("@") }
+                            val meta = com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.lookupMeta(
+                                participantJid,
+                                participantMeta,
+                                lidToPn
+                            )
+                            val resolved = com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.resolve(
+                                rawJidOrText = participantJid,
+                                ownJid = bridgeStatus.ownJid,
+                                ownLid = bridgeStatus.ownLid,
+                                participantMeta = participantMeta,
+                                chatsByJid = chatsByJid,
+                                contactsByJid = contactsByJid,
+                                lidToPn = lidToPn,
+                                prefixPushWithTilde = false
+                            )
+                            val resolvedChatJid = resolved.canonicalJid.ifBlank { resolveMemberChatJid(participantJid, meta) }
+                            val pPhone = resolved.secondaryPhone.ifBlank { resolveMemberDisplayPhone(participantJid, meta) }
+                            val pName = resolved.primary
                             val isAdmin = isGroupMemberAdmin(participantJid, resolvedChatJid, meta, groupAdmins)
 
                             Row(
@@ -771,7 +811,7 @@ fun ContactInfoScreen(
                                             chatJid = resolvedChatJid,
                                             displayName = pName,
                                             phone = pPhone,
-                                            avatarPath = meta?.avatarPath
+                                            avatarPath = resolved.avatarPath ?: meta?.avatarPath
                                         )
                                     }
                                     .padding(horizontal = 16.dp, vertical = 10.dp),
@@ -779,7 +819,7 @@ fun ContactInfoScreen(
                             ) {
                                 WhatsAppAvatar(
                                     jid = resolvedChatJid,
-                                    avatarPath = meta?.avatarPath,
+                                    avatarPath = resolved.avatarPath ?: meta?.avatarPath,
                                     isGroup = false,
                                     size = 44.dp
                                 )
@@ -1937,6 +1977,16 @@ fun ContactInfoScreen(
     }
 
     if (showChatHistorySheet) {
+        LaunchedEffect(deletedHistory, editedHistory) {
+            val histJids = (deletedHistory + editedHistory)
+                .asSequence()
+                .filter { it.chatJid == chatJid && !it.isFromMe }
+                .map { it.senderJid }
+                .filter { it.contains("@") }
+                .distinct()
+                .toList()
+            if (histJids.isNotEmpty()) viewModel.resolveParticipantsLocally(histJids)
+        }
         MessageHistorySheet(
             deletedMessages = deletedHistory,
             editedMessages = editedHistory,
@@ -1946,7 +1996,11 @@ fun ContactInfoScreen(
             onJumpToChat = { targetJid -> onOpenChat(targetJid) },
             onDeleteEntry = { viewModel.deleteMessageHistoryItem(it) },
             onClearAll = { scoped -> viewModel.clearAllMessageHistory(scoped) },
-            onDismiss = { showChatHistorySheet = false }
+            onDismiss = { showChatHistorySheet = false },
+            participantMeta = participantMeta,
+            contacts = allContacts,
+            ownJid = bridgeStatus.ownJid,
+            ownLid = bridgeStatus.ownLid
         )
     }
 }

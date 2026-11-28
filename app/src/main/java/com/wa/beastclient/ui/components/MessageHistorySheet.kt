@@ -155,7 +155,11 @@ fun MessageHistorySheet(
     onJumpToChat: (String) -> Unit,
     onDeleteEntry: (MessageEntity) -> Unit = {},
     onClearAll: (scopedChatJid: String?) -> Unit = {},
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    participantMeta: Map<String, com.wa.beastclient.ui.ResolvedParticipantUi> = emptyMap(),
+    contacts: List<com.wa.beastclient.data.db.ContactEntity> = emptyList(),
+    ownJid: String = "",
+    ownLid: String = ""
 ) {
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
@@ -169,8 +173,28 @@ fun MessageHistorySheet(
     var showClearConfirm by remember { mutableStateOf(false) }
     val expandedEditCardIds = remember { mutableStateMapOf<String, Boolean>() }
 
-    val chatNamesByJid = remember(chats) {
-        chats.associate { it.jid to it.name.ifBlank { it.jid.substringBefore("@") } }
+    val chatsByJid = remember(chats) { chats.associateBy { it.jid } }
+    val contactsByJid = remember(contacts) { contacts.associateBy { it.jid } }
+    val lidToPn = com.wa.beastclient.core.service.WaRealtimeService.persistedLidToPn
+    val chatNamesByJid = remember(chats, contactsByJid, participantMeta) {
+        chats.associate { ch ->
+            val resolved = if (ch.isGroup || ch.jid.endsWith("@g.us") || ch.jid.endsWith("@newsletter")) {
+                ch.name.ifBlank { ch.jid.substringBefore("@") }
+            } else {
+                com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.resolve(
+                    rawJidOrText = ch.jid,
+                    explicitName = ch.name,
+                    ownJid = ownJid,
+                    ownLid = ownLid,
+                    participantMeta = participantMeta,
+                    chatsByJid = chatsByJid,
+                    contactsByJid = contactsByJid,
+                    lidToPn = lidToPn,
+                    prefixPushWithTilde = false
+                ).primary
+            }
+            ch.jid to resolved
+        }
     }
     val editsByMessageId = remember(allEdits) {
         allEdits.groupBy { it.messageId }
@@ -327,11 +351,32 @@ fun MessageHistorySheet(
                 ) {
                     items(entries, key = { it.message.id }) { entry ->
                         val msg = entry.message
-                        val chatTitle = chatNamesByJid[msg.chatJid] ?: msg.chatJid.substringBefore("@")
-                        val senderLabel = when {
-                            msg.isFromMe -> "You"
-                            msg.senderName.isNotBlank() -> msg.senderName
-                            else -> msg.senderJid.substringBefore("@")
+                        val chatTitle = chatNamesByJid[msg.chatJid]
+                            ?: com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.resolve(
+                                rawJidOrText = msg.chatJid,
+                                ownJid = ownJid,
+                                ownLid = ownLid,
+                                participantMeta = participantMeta,
+                                chatsByJid = chatsByJid,
+                                contactsByJid = contactsByJid,
+                                lidToPn = lidToPn,
+                                prefixPushWithTilde = false
+                            ).primary
+                        val senderLabel = if (msg.isFromMe) {
+                            "You"
+                        } else {
+                            com.wa.beastclient.domain.contacts.ParticipantDisplayResolver.resolve(
+                                rawJidOrText = msg.senderJid,
+                                explicitName = msg.senderName,
+                                isSelf = false,
+                                ownJid = ownJid,
+                                ownLid = ownLid,
+                                participantMeta = participantMeta,
+                                chatsByJid = chatsByJid,
+                                contactsByJid = contactsByJid,
+                                lidToPn = lidToPn,
+                                prefixPushWithTilde = false
+                            ).primary
                         }
                         val isExpanded = expandedEditCardIds[msg.id] ?: false
                         val thumb by produceState<ImageBitmap?>(initialValue = null, msg.localMediaPath) {

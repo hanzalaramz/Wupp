@@ -48,6 +48,7 @@ import com.wa.beastclient.data.media.StickerFavoritesStore
 import com.wa.beastclient.domain.accounts.AccountManager
 import java.util.concurrent.atomic.AtomicBoolean
 import com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
+import com.wa.beastclient.domain.contacts.ParticipantDisplayResolver
 import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.components.isOwnStatusSender
@@ -76,6 +77,7 @@ data class BridgeStatus(
     val isLoggedIn: Boolean = false,
     val connectionState: String = "INITIALIZING",
     val ownJid: String = "",
+    val ownLid: String = "",
     val latestQrCode: String? = null,
     val latestPairCode: String? = null,
     val syncProgressPct: Int = 0,
@@ -281,15 +283,27 @@ class WaRealtimeService : Service() {
             dao.updateChatName(META_AI_BOT_JID, "Meta AI", overwrite = true)
         }
         if (!queryRustBridge) return
-        val lidChats = dao.getAllChatsOnce()
+        val lidJids = linkedSetOf<String>()
+        dao.getAllChatsOnce()
             .asSequence()
             .map { stripJidDevice(it.jid) }
             .filter { it.endsWith("@lid") }
-            .distinct()
-            .toList()
-        if (lidChats.isEmpty()) return
+            .forEach { lidJids.add(it) }
+        runCatching { dao.getDistinctLidGroupReceiptParticipants(200) }
+            .getOrDefault(emptyList())
+            .forEach { lidJids.add(stripJidDevice(it)) }
+        runCatching { dao.getDistinctLidMessageSenders(200) }
+            .getOrDefault(emptyList())
+            .forEach { lidJids.add(stripJidDevice(it)) }
+        runCatching { dao.getDistinctLidReactionActors(200) }
+            .getOrDefault(emptyList())
+            .forEach { lidJids.add(stripJidDevice(it)) }
+        runCatching { dao.getDistinctLidStatusSenders(200) }
+            .getOrDefault(emptyList())
+            .forEach { lidJids.add(stripJidDevice(it)) }
+        if (lidJids.isEmpty()) return
         val rawAliases = runCatching {
-            Whatsbridge.resolveLocalDmAliasesJson(lidChats.joinToString(","))
+            Whatsbridge.resolveLocalDmAliasesJson(lidJids.take(250).joinToString(","))
         }.getOrDefault("{}")
         val obj = runCatching { JSONObject(rawAliases) }.getOrNull() ?: return
         val keys = obj.keys()
@@ -327,6 +341,27 @@ class WaRealtimeService : Service() {
         return hasDigit
     }
 
+    private fun getAliasesForJid(rawJid: String): List<String> {
+        val clean = stripJidDevice(rawJid)
+        if (clean.isBlank()) return emptyList()
+        val aliases = LinkedHashSet<String>()
+        persistedLidToPn[clean]?.let { if (it.isNotBlank() && it != clean) aliases.add(it) }
+        chatAliasToCanonical[clean]?.let { if (it.isNotBlank() && it != clean) aliases.add(it) }
+        if (clean.endsWith("@s.whatsapp.net")) {
+            for ((lid, pn) in persistedLidToPn) {
+                if (pn == clean && lid.isNotBlank() && lid != clean) {
+                    aliases.add(lid)
+                }
+            }
+            for ((alias, canon) in chatAliasToCanonical) {
+                if (canon == clean && alias.isNotBlank() && alias != clean) {
+                    aliases.add(alias)
+                }
+            }
+        }
+        return aliases.toList()
+    }
+
     private suspend fun propagateStatusAndSenderName(
         rawJid: String,
         name: String,
@@ -334,9 +369,20 @@ class WaRealtimeService : Service() {
     ) {
         val jid = stripJidDevice(rawJid)
         if (jid.isBlank() || name.isBlank()) return
-        val user = jid.substringBefore("@")
-        dao.updateSenderNameForJid(jid, user, name)
-        dao.updateStatusSenderNameForJid(jid, user, name, overwrite = overwriteStatus)
+        val targets = buildSet {
+            add(jid)
+            addAll(getAliasesForJid(jid))
+        }
+        for (target in targets) {
+            val clean = stripJidDevice(target)
+            if (clean.isBlank()) continue
+            val user = clean.substringBefore("@")
+            dao.updateSenderNameForJid(clean, user, name)
+            dao.updateGroupReceiptParticipantName(clean, user, name)
+            dao.updateStatusSenderNameForJid(clean, user, name, overwrite = overwriteStatus)
+            dao.updatePresenceLogContactName(clean, user, name)
+            dao.updateProfileHistoryContactName(clean, user, name)
+        }
     }
 
     private suspend fun drainPendingReactions(messageId: String) {
@@ -855,6 +901,10 @@ class WaRealtimeService : Service() {
                 val st = json.optString("state", "DISCONNECTED")
                 val reason = json.optString("reason", "")
                 val own = json.optString("ownJid", _bridgeStatus.value.ownJid)
+                val ownLid = json.optString("ownLid", _bridgeStatus.value.ownLid)
+                if (own.endsWith("@s.whatsapp.net") && ownLid.endsWith("@lid")) {
+                    rememberAndPersistAlias(applicationContext, lidJid = ownLid, pnJid = own)
+                }
                 when (st) {
                     "CONNECTED" -> {
                         terminalSyncHalted = false
@@ -897,6 +947,7 @@ class WaRealtimeService : Service() {
                     isLoggedIn = nextLoggedIn,
                     connectionState = effectiveState,
                     ownJid = if (st == "LOGGED_OUT") "" else own,
+                    ownLid = if (st == "LOGGED_OUT") "" else ownLid,
                     latestQrCode = if (nextLoggedIn) null else _bridgeStatus.value.latestQrCode,
                     latestPairCode = if (nextLoggedIn) null else _bridgeStatus.value.latestPairCode,
                     lastError = errSummary ?: if (st == "CONNECTED") null else _bridgeStatus.value.lastError
@@ -1142,17 +1193,34 @@ class WaRealtimeService : Service() {
                         entity = entity.copy(chatJid = canonMsgChat)
                     }
                     val isGrpMsg = m.optBoolean("isGroup", entity.chatJid.endsWith("@g.us"))
+                    val altS = stripJidDevice(m.optString("altSenderJid"))
                     if (isGrpMsg && DeviceContactFallbackResolver.isGroupJidLikeIdentifier(entity.senderJid, entity.chatJid)) {
                         entity = entity.copy(senderJid = "")
+                    } else if (entity.senderJid.isNotBlank()) {
+                        val canonSender = canonicalizeAndMergeAlias(entity.senderJid, altS).ifBlank { stripJidDevice(entity.senderJid) }
+                        if (canonSender != entity.senderJid) {
+                            entity = entity.copy(senderJid = canonSender)
+                        }
                     }
-                    if (!entity.isFromMe && DeviceContactFallbackResolver.isServerNameMissing(entity.senderName, entity.senderJid)) {
-                        val altS = m.optString("altSenderJid")
+                    val rawQuotedSender = entity.quotedSender?.trim().orEmpty()
+                    if (rawQuotedSender.endsWith("@lid")) {
+                        val canonQuoted = resolveCanonicalDmJid(rawQuotedSender, "", persistedLidToPn)
+                        if (canonQuoted != rawQuotedSender) {
+                            entity = entity.copy(quotedSender = canonQuoted)
+                        }
+                    }
+                    if (!entity.isFromMe && DeviceContactFallbackResolver.isServerNameMissing(entity.senderName, entity.senderJid, altS)) {
                         val resolvedSName = resolveSenderNameLocally(entity.senderJid, altS, entity.senderName, entity.chatJid)
                         if (resolvedSName.isNotBlank()) {
                             entity = entity.copy(senderName = resolvedSName)
                         } else if (DeviceContactFallbackResolver.isGroupJidLikeIdentifier(entity.senderName, entity.chatJid)) {
                             entity = entity.copy(senderName = "")
                         }
+                    } else if (!entity.isFromMe && entity.senderJid.isNotBlank() &&
+                        DeviceContactFallbackResolver.isUsableDisplayName(entity.senderName, entity.senderJid, altS)
+                    ) {
+                        pushnameCache.putIfAbsent(entity.senderJid, entity.senderName.trim())
+                        if (altS.isNotBlank()) pushnameCache.putIfAbsent(altS, entity.senderName.trim())
                     }
                     if (!entity.isFromMe && (unreadByChat[entity.chatJid] ?: 0) == 0 && entity.deliveryStatus != "PLAYED") {
                         entity = entity.copy(deliveryStatus = "READ")
@@ -1347,41 +1415,68 @@ class WaRealtimeService : Service() {
         rawSenderName: String,
         chatJid: String
     ): String {
-        val cleanSender = senderJid.trim()
-        val cleanAlt = altSenderJid.trim()
+        val cleanSender = stripJidDevice(senderJid)
+        val cleanAlt = stripJidDevice(altSenderJid)
         val cleanRaw = rawSenderName.trim()
+        val allJids = linkedSetOf<String>()
+        if (cleanSender.isNotBlank()) {
+            allJids.add(cleanSender)
+            allJids.addAll(getAliasesForJid(cleanSender))
+        }
+        if (cleanAlt.isNotBlank()) {
+            allJids.add(cleanAlt)
+            allJids.addAll(getAliasesForJid(cleanAlt))
+        }
+        val pnCandidate = allJids.firstOrNull { it.endsWith("@s.whatsapp.net") }.orEmpty()
+        val effectivePrimary = pnCandidate.ifBlank { cleanSender }
+        val effectiveAlt = allJids.firstOrNull { it != effectivePrimary }.orEmpty().ifBlank { cleanAlt }
+
         if (DeviceContactFallbackResolver.isPreferPhonebookEnabled() &&
-            (cleanSender.isNotBlank() || cleanAlt.isNotBlank()) &&
-            !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(cleanSender, chatJid)
+            allJids.isNotEmpty() &&
+            !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(effectivePrimary, chatJid)
         ) {
-            val localName = DeviceContactFallbackResolver.lookupForParticipant(applicationContext, cleanSender, cleanAlt)
+            val localName = DeviceContactFallbackResolver.lookupForParticipant(
+                applicationContext,
+                effectivePrimary,
+                effectiveAlt
+            )
             if (!localName.isNullOrBlank() &&
                 !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(localName, chatJid) &&
-                DeviceContactFallbackResolver.isUsableDisplayName(localName, cleanSender, cleanAlt)
+                DeviceContactFallbackResolver.isUsableDisplayName(localName, effectivePrimary, effectiveAlt)
             ) {
                 return localName.trim()
             }
         }
         if (!DeviceContactFallbackResolver.isGroupJidLikeIdentifier(cleanRaw, chatJid) &&
-            DeviceContactFallbackResolver.isUsableDisplayName(cleanRaw, senderJid, altSenderJid)
+            DeviceContactFallbackResolver.isUsableDisplayName(cleanRaw, effectivePrimary, effectiveAlt)
         ) {
             return cleanRaw
         }
-        if (cleanSender.isBlank() && cleanAlt.isBlank()) return ""
+        if (allJids.isEmpty()) return ""
         if (DeviceContactFallbackResolver.isGroupJidLikeIdentifier(cleanSender, chatJid)) return ""
 
-        val candidates = listOfNotNull(
-            cleanSender.takeIf { it.isNotBlank() }?.let { pushnameCache[it] },
-            cleanAlt.takeIf { it.isNotBlank() }?.let { pushnameCache[it] },
-            cleanSender.takeIf { it.isNotBlank() }?.let { dao.getContact(it)?.name },
-            cleanAlt.takeIf { it.isNotBlank() }?.let { dao.getContact(it)?.name },
-            cleanSender.takeIf { it.isNotBlank() }?.let { dao.getChat(it)?.name },
-            cleanAlt.takeIf { it.isNotBlank() }?.let { dao.getChat(it)?.name },
-            DeviceContactFallbackResolver.lookupForParticipant(applicationContext, cleanSender, cleanAlt)
-        )
-        return candidates.firstOrNull {
-            !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(it, chatJid) &&
-                DeviceContactFallbackResolver.isUsableDisplayName(it, cleanSender, cleanAlt)
+        val candidates = ArrayList<String>(allJids.size * 3 + 1)
+        for (j in allJids) {
+            dao.getContact(j)?.takeIf { it.isSaved }?.name?.let { candidates.add(it) }
+        }
+        for (j in allJids) {
+            dao.getChat(j)?.takeIf { !it.isGroup }?.name?.let { candidates.add(it) }
+        }
+        for (j in allJids) {
+            pushnameCache[j]?.let { candidates.add(it) }
+        }
+        for (j in allJids) {
+            dao.getContact(j)?.name?.let { candidates.add(it) }
+        }
+        DeviceContactFallbackResolver.lookupForParticipant(
+            applicationContext,
+            effectivePrimary,
+            effectiveAlt
+        )?.let { candidates.add(it) }
+
+        return candidates.firstOrNull { cand ->
+            !DeviceContactFallbackResolver.isGroupJidLikeIdentifier(cand, chatJid) &&
+                allJids.all { j -> DeviceContactFallbackResolver.isUsableDisplayName(cand, j, effectiveAlt) }
         }?.trim().orEmpty()
     }
 
@@ -1469,9 +1564,21 @@ class WaRealtimeService : Service() {
         }
         val isSync = json.optBoolean("isSync", false)
         val isGrp = json.optBoolean("isGroup", msg.chatJid.endsWith("@g.us"))
-        val altSender = json.optString("altSenderJid")
+        val altSender = stripJidDevice(json.optString("altSenderJid"))
         if (isGrp && DeviceContactFallbackResolver.isGroupJidLikeIdentifier(msg.senderJid, msg.chatJid)) {
             msg = msg.copy(senderJid = "")
+        } else if (msg.senderJid.isNotBlank()) {
+            val canonicalSender = canonicalizeAndMergeAlias(msg.senderJid, altSender).ifBlank { stripJidDevice(msg.senderJid) }
+            if (canonicalSender != msg.senderJid) {
+                msg = msg.copy(senderJid = canonicalSender)
+            }
+        }
+        val rawQuotedSender = msg.quotedSender?.trim().orEmpty()
+        if (rawQuotedSender.endsWith("@lid")) {
+            val canonQuoted = resolveCanonicalDmJid(rawQuotedSender, "", persistedLidToPn)
+            if (canonQuoted != rawQuotedSender) {
+                msg = msg.copy(quotedSender = canonQuoted)
+            }
         }
         if (isGrp && !msg.isFromMe) {
             val resolvedSender = resolveSenderNameLocally(msg.senderJid, altSender, msg.senderName, msg.chatJid)
@@ -1480,6 +1587,13 @@ class WaRealtimeService : Service() {
             } else if (DeviceContactFallbackResolver.isGroupJidLikeIdentifier(msg.senderName, msg.chatJid)) {
                 msg = msg.copy(senderName = "")
             }
+        }
+        if (!msg.isFromMe && msg.senderJid.isNotBlank() &&
+            DeviceContactFallbackResolver.isUsableDisplayName(msg.senderName, msg.senderJid, altSender)
+        ) {
+            val trimmedSenderName = msg.senderName.trim()
+            pushnameCache.putIfAbsent(msg.senderJid, trimmedSenderName)
+            if (altSender.isNotBlank()) pushnameCache.putIfAbsent(altSender, trimmedSenderName)
         }
         val isActiveChat = isChatActivelyVisible(msg.chatJid)
         val shouldAutoRead = !isSync && isActiveChat && !msg.isFromMe &&
@@ -1597,9 +1711,18 @@ class WaRealtimeService : Service() {
         if (isGroup && !stealthCfg.notifyGroupEnabled) return
         if (!isGroup && !stealthCfg.notifyDmEnabled) return
 
-        val chatTitle = chat?.name?.takeIf { it.isNotBlank() }
-            ?: msg.senderName.takeIf { it.isNotBlank() && !isGroup }
-            ?: msg.chatJid.substringBefore("@")
+        val chatTitle = chat?.name?.takeIf {
+            DeviceContactFallbackResolver.isUsableDisplayName(it, msg.chatJid)
+        } ?: msg.senderName.takeIf {
+            !isGroup && DeviceContactFallbackResolver.isUsableDisplayName(it, msg.chatJid)
+        } ?: if (msg.chatJid.endsWith("@lid", ignoreCase = true)) {
+            ParticipantDisplayResolver.formatUnresolvedLidLabel(msg.chatJid)
+        } else if (msg.chatJid.endsWith("@s.whatsapp.net", ignoreCase = true)) {
+            DeviceContactFallbackResolver.formatIntlPhoneCompact(msg.chatJid.substringBefore("@"))
+                .ifBlank { msg.chatJid.substringBefore("@") }
+        } else {
+            msg.chatJid.substringBefore("@")
+        }
 
         val bodyPreview = when {
             msg.isViewOnce -> when (msg.msgType.uppercase()) {
@@ -1617,8 +1740,16 @@ class WaRealtimeService : Service() {
         }
 
         val senderLabel = if (isGroup) {
-            msg.senderName.takeIf { it.isNotBlank() }
-                ?: msg.senderJid.substringBefore("@").substringBefore(":").ifBlank { chatTitle }
+            resolveSenderNameLocally(msg.senderJid, "", msg.senderName, msg.chatJid)
+                .takeIf { it.isNotBlank() }
+                ?: if (msg.senderJid.endsWith("@lid", ignoreCase = true)) {
+                    ParticipantDisplayResolver.formatUnresolvedLidLabel(msg.senderJid)
+                } else if (msg.senderJid.endsWith("@s.whatsapp.net", ignoreCase = true)) {
+                    DeviceContactFallbackResolver.formatIntlPhoneCompact(msg.senderJid.substringBefore("@"))
+                        .ifBlank { msg.senderJid.substringBefore("@") }
+                } else {
+                    msg.senderJid.substringBefore("@").substringBefore(":").ifBlank { chatTitle }
+                }
         } else {
             chatTitle
         }
@@ -1780,14 +1911,32 @@ class WaRealtimeService : Service() {
         if (targetId.isBlank()) return
         val summary = json.optString("reactionSummary").trim()
         val emoji = json.optString("emoji")
-        val senderJid = json.optString("senderJid")
+        val rawSenderJid = stripJidDevice(json.optString("senderJid"))
+        val altSenderJid = stripJidDevice(json.optString("altSenderJid"))
+        val senderJid = canonicalizeAndMergeAlias(rawSenderJid, altSenderJid).ifBlank { rawSenderJid }
         val senderNameHint = json.optString("senderName").trim()
-        val isFromMe = json.optBoolean("isFromMe", false)
+        val status = _bridgeStatus.value
+        val isFromMe = json.optBoolean("isFromMe", false) ||
+            ParticipantDisplayResolver.isSelfParticipant(
+                rawJid = senderJid,
+                altJid = altSenderJid,
+                ownJid = status.ownJid,
+                ownLid = status.ownLid,
+                lidToPn = persistedLidToPn
+            )
         val ts = json.optLong("timestamp", System.currentTimeMillis())
         val rawChat = json.optString("chatJid")
         val rawAlt = json.optString("altChatJid")
         if (rawChat.isNotBlank() && rawAlt.isNotBlank()) {
             canonicalizeAndMergeAlias(rawChat, rawAlt)
+        }
+        if (!isFromMe && senderJid.isNotBlank() &&
+            DeviceContactFallbackResolver.isUsableDisplayName(senderNameHint, senderJid, altSenderJid)
+        ) {
+            pushnameCache[senderJid] = senderNameHint
+            if (rawSenderJid.isNotBlank()) pushnameCache[rawSenderJid] = senderNameHint
+            if (altSenderJid.isNotBlank()) pushnameCache[altSenderJid] = senderNameHint
+            propagateStatusAndSenderName(senderJid, senderNameHint, overwriteStatus = false)
         }
         val existing = dao.getMessage(targetId)
         if (existing == null) {
@@ -1869,12 +2018,25 @@ class WaRealtimeService : Service() {
         val resolvedMime = existing?.mimeType?.takeIf {
             it.isNotBlank() && !it.equals("application/x-view-once-stub", ignoreCase = true)
         } ?: "application/x-view-once-stub"
+        val rawChat = json.optString("chatJid").ifBlank { existing?.chatJid.orEmpty() }
+        val canonicalChat = canonicalizeAndMergeAlias(rawChat, json.optString("altChatJid")).ifBlank { rawChat }
+        val rawSender = stripJidDevice(json.optString("senderJid").ifBlank { existing?.senderJid.orEmpty() })
+        val altSender = stripJidDevice(json.optString("altSenderJid"))
+        val canonicalSender = canonicalizeAndMergeAlias(rawSender, altSender).ifBlank { rawSender }
+        val isFromMe = json.optBoolean("isFromMe", existing?.isFromMe ?: false)
+        val rawPush = json.optString("pushName").ifBlank { existing?.senderName.orEmpty() }
+        val resolvedSenderName = if (isFromMe) {
+            "You"
+        } else {
+            resolveSenderNameLocally(canonicalSender, altSender, rawPush, canonicalChat)
+                .ifBlank { rawPush.takeIf { DeviceContactFallbackResolver.isUsableDisplayName(it, canonicalSender, altSender) }.orEmpty() }
+        }
         val msg = MessageEntity(
             id = id,
-            chatJid = json.optString("chatJid").ifBlank { existing?.chatJid.orEmpty() },
-            senderJid = json.optString("senderJid").ifBlank { existing?.senderJid.orEmpty() },
-            senderName = json.optString("pushName").ifBlank { existing?.senderName.orEmpty() },
-            isFromMe = json.optBoolean("isFromMe", existing?.isFromMe ?: false),
+            chatJid = canonicalChat,
+            senderJid = canonicalSender,
+            senderName = resolvedSenderName,
+            isFromMe = isFromMe,
             timestamp = json.optLong("timestamp", existing?.timestamp ?: System.currentTimeMillis()),
             body = if (isUnavailableStub) "" else json.optString("reason", existing?.body.orEmpty()),
             msgType = resolvedType,
@@ -1887,7 +2049,7 @@ class WaRealtimeService : Service() {
         )
         dao.upsertIncomingMessageAndRefreshChat(
             message = msg,
-            chatNameHint = msg.senderName,
+            chatNameHint = if (!msg.chatJid.endsWith("@g.us") && !isFromMe) msg.senderName else "",
             isGroup = msg.chatJid.endsWith("@g.us"),
             incrementUnread = existing == null && !isChatActivelyVisible(msg.chatJid)
         )
@@ -1910,16 +2072,24 @@ class WaRealtimeService : Service() {
         if (existing != null && existing.msgType != "UNDECRYPTABLE") return
 
         val canonicalChat = canonicalizeAndMergeAlias(rawChatJid, json.optString("altChatJid"))
-        val senderJid = json.optString("senderJid")
+        val rawSender = stripJidDevice(json.optString("senderJid"))
+        val altSender = stripJidDevice(json.optString("altSenderJid"))
+        val senderJid = canonicalizeAndMergeAlias(rawSender, altSender).ifBlank { rawSender }
         val pushName = json.optString("pushName")
         val isFromMe = json.optBoolean("isFromMe", false)
         val ts = json.optLong("timestamp", System.currentTimeMillis())
+        val resolvedSenderName = if (isFromMe) {
+            "You"
+        } else {
+            resolveSenderNameLocally(senderJid, altSender, pushName, canonicalChat)
+                .ifBlank { pushName.takeIf { DeviceContactFallbackResolver.isUsableDisplayName(it, senderJid, altSender) }.orEmpty() }
+        }
 
         val msg = MessageEntity(
             id = id,
             chatJid = canonicalChat,
             senderJid = senderJid,
-            senderName = pushName,
+            senderName = resolvedSenderName,
             isFromMe = isFromMe,
             timestamp = ts,
             body = "Waiting for this message. This may take a while.",
@@ -1928,7 +2098,7 @@ class WaRealtimeService : Service() {
         )
         dao.upsertIncomingMessageAndRefreshChat(
             message = msg,
-            chatNameHint = if (!canonicalChat.endsWith("@g.us") && !isFromMe) pushName else "",
+            chatNameHint = if (!canonicalChat.endsWith("@g.us") && !isFromMe) resolvedSenderName else "",
             isGroup = canonicalChat.endsWith("@g.us"),
             incrementUnread = false
         )
@@ -2012,7 +2182,13 @@ class WaRealtimeService : Service() {
         val rawChat = json.optString("chatJid")
         val altChatJid = json.optString("altChatJid")
         val chatJid = canonicalizeAndMergeAlias(rawChat, altChatJid).ifBlank { rawChat }
-        val senderJid = json.optString("senderJid")
+        val rawSenderJid = stripJidDevice(json.optString("senderJid"))
+        val altSenderJid = stripJidDevice(json.optString("altSenderJid"))
+        val senderJid = if (rawSenderJid.isNotBlank()) {
+            canonicalizeAndMergeAlias(rawSenderJid, altSenderJid).ifBlank { rawSenderJid }
+        } else {
+            ""
+        }
         val receiptType = json.optString("receiptType", "DELIVERED")
         val rawReceiptTs = json.optLong("timestamp", 0L)
         val timestamp = when {
@@ -2028,6 +2204,11 @@ class WaRealtimeService : Service() {
         var maxMatchedTs = 0L
         val isStatusReadReceipt = chatJid == "status@broadcast" &&
             (receiptType == "READ_SELF" || receiptType == "PLAYED_SELF" || receiptType == "READ")
+        val resolvedReceiptName = if (chatJid.endsWith("@g.us") && senderJid.isNotBlank()) {
+            resolveSenderNameLocally(senderJid, altSenderJid, "", chatJid)
+        } else {
+            ""
+        }
         if (ids != null) {
             for (i in 0 until ids.length()) {
                 val id = ids.optString(i)
@@ -2044,11 +2225,11 @@ class WaRealtimeService : Service() {
                     maxMatchedTs = msgRow.timestamp
                 }
                 if (chatJid.endsWith("@g.us") && senderJid.isNotBlank()) {
-                    dao.upsertGroupReceipt(
+                    dao.upsertGroupReceiptMonotonic(
                         GroupReceiptEntity(
                             messageId = id,
                             participantJid = senderJid,
-                            participantName = pushnameCache[senderJid] ?: senderJid.substringBefore("@"),
+                            participantName = resolvedReceiptName,
                             status = receiptType,
                             timestamp = timestamp
                         )
@@ -2090,15 +2271,23 @@ class WaRealtimeService : Service() {
     }
 
     private suspend fun handlePresence(json: JSONObject) {
-        val rawJid = json.optString("jid")
-        val altJid = json.optString("altJid")
-        val jid = if (altJid.isNotBlank()) canonicalizeAndMergeAlias(rawJid, altJid) else (chatAliasToCanonical[rawJid] ?: rawJid)
+        val rawJid = stripJidDevice(json.optString("jid"))
+        val altJid = stripJidDevice(json.optString("altJid"))
+        val jid = canonicalizeAndMergeAlias(rawJid, altJid).ifBlank { rawJid }
         val isOnline = json.optBoolean("isOnline", false)
         val lastSeen = json.optLong("lastSeen", 0L)
         val ts = json.optLong("timestamp", System.currentTimeMillis())
         if (jid.isBlank()) return
         dao.updateChatPresenceOnline(jid, isOnline, lastSeen)
-        val name = dao.getChat(jid)?.name ?: pushnameCache[jid] ?: jid.substringBefore("@")
+        val resolvedName = resolveSenderNameLocally(jid, altJid, "", jid)
+        val name = resolvedName.ifBlank {
+            if (jid.endsWith("@s.whatsapp.net")) {
+                DeviceContactFallbackResolver.formatIntlPhoneCompact(jid.substringBefore("@"))
+                    .ifBlank { jid.substringBefore("@") }
+            } else {
+                ""
+            }
+        }
         dao.insertPresenceLog(
             PresenceLogEntity(
                 jid = jid,
@@ -2110,9 +2299,14 @@ class WaRealtimeService : Service() {
     }
 
     private suspend fun handleChatPresence(json: JSONObject) {
-        val rawChat = json.optString("chatJid")
-        val altChat = json.optString("altChatJid")
-        val chatJid = if (altChat.isNotBlank()) canonicalizeAndMergeAlias(rawChat, altChat) else (chatAliasToCanonical[rawChat] ?: rawChat)
+        val rawChat = stripJidDevice(json.optString("chatJid"))
+        val altChat = stripJidDevice(json.optString("altChatJid"))
+        val chatJid = canonicalizeAndMergeAlias(rawChat, altChat).ifBlank { rawChat }
+        val rawSender = stripJidDevice(json.optString("senderJid"))
+        val altSender = stripJidDevice(json.optString("altSenderJid"))
+        if (rawSender.isNotBlank() && altSender.isNotBlank()) {
+            canonicalizeAndMergeAlias(rawSender, altSender)
+        }
         val state = json.optString("state")
         val media = json.optString("media")
         val text = when {
@@ -2462,6 +2656,7 @@ class WaRealtimeService : Service() {
         }
         val callerName = listOfNotNull(
             callerChat?.name?.takeIf { it.isNotBlank() && !isNumericOrPhoneString(it) },
+            resolveSenderNameLocally(callerJid, rawAltJid, "", chatJid).takeIf { it.isNotBlank() },
             pushnameCache[callerJid],
             pushnameCache[rawAltJid],
             callerChat?.name?.takeIf { it.isNotBlank() }
@@ -2506,11 +2701,14 @@ class WaRealtimeService : Service() {
         val durationSec = json.optInt("durationSec", 0).coerceAtLeast(0)
         val isFromMe = json.optBoolean("isFromMe", false)
         val isGroup = json.optBoolean("isGroup", canonicalChat.endsWith("@g.us"))
-        val senderJid = stripJidDevice(json.optString("senderJid")).ifBlank { canonicalChat }
-        val senderName = if (senderJid == canonicalChat) {
-            pushnameCache[canonicalChat].orEmpty()
+        val rawSender = stripJidDevice(json.optString("senderJid")).ifBlank { canonicalChat }
+        val altSender = stripJidDevice(json.optString("altSenderJid"))
+        val senderJid = canonicalizeAndMergeAlias(rawSender, altSender).ifBlank { rawSender }
+        val senderName = if (isFromMe) {
+            "You"
         } else {
-            pushnameCache[senderJid].orEmpty().ifBlank { dao.getChat(senderJid)?.name.orEmpty() }
+            resolveSenderNameLocally(senderJid, altSender, "", canonicalChat)
+                .ifBlank { pushnameCache[senderJid].orEmpty() }
         }
         persistCallMessage(
             dao = dao,
@@ -2651,7 +2849,7 @@ class WaRealtimeService : Service() {
             }
         }
 
-        private fun rememberAndPersistAlias(context: Context, lidJid: String, pnJid: String) {
+        internal fun rememberAndPersistAlias(context: Context, lidJid: String, pnJid: String) {
             val cleanLid = lidJid.trim()
             val cleanPn = pnJid.trim()
             if (!cleanLid.endsWith("@lid") || !cleanPn.endsWith("@s.whatsapp.net")) return
@@ -3352,15 +3550,21 @@ class WaRealtimeService : Service() {
             return runCatching {
                 val method = Whatsbridge::class.java.getMethod("getGroupInfoJson", String::class.java)
                 val raw = method.invoke(null, groupJid) as? String ?: return emptySet()
-                val obj = JSONArray(raw).let { null } ?: JSONObject(raw)
+                val obj = JSONObject(raw)
                 val arr = obj.optJSONArray("participants") ?: return emptySet()
+                val svcCtx = instance?.applicationContext
                 buildSet {
                     for (i in 0 until arr.length()) {
                         val p = arr.optJSONObject(i) ?: continue
+                        val j = p.optString("jid").trim()
+                        val phone = p.optString("phoneJid").trim()
+                        if (svcCtx != null && j.endsWith("@lid") && phone.endsWith("@s.whatsapp.net")) {
+                            rememberAndPersistAlias(svcCtx, lidJid = j, pnJid = phone)
+                        } else if (svcCtx != null && phone.endsWith("@lid") && j.endsWith("@s.whatsapp.net")) {
+                            rememberAndPersistAlias(svcCtx, lidJid = phone, pnJid = j)
+                        }
                         if (p.optBoolean("isAdmin", false) || p.optBoolean("isSuperAdmin", false)) {
-                            val j = p.optString("jid").trim()
                             if (j.isNotBlank()) add(j)
-                            val phone = p.optString("phoneJid").trim()
                             if (phone.isNotBlank()) add(phone)
                         }
                     }
