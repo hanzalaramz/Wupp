@@ -49,6 +49,7 @@ import com.wa.beastclient.domain.accounts.AccountManager
 import java.util.concurrent.atomic.AtomicBoolean
 import com.wa.beastclient.domain.contacts.DeviceContactFallbackResolver
 import com.wa.beastclient.domain.contacts.ParticipantDisplayResolver
+import com.wa.beastclient.domain.mentions.UnreadMentionManager
 import com.wa.beastclient.domain.security.AppLockManager
 import com.wa.beastclient.domain.stealth.StealthMatrixManager
 import com.wa.beastclient.ui.components.isOwnStatusSender
@@ -425,6 +426,7 @@ class WaRealtimeService : Service() {
         EagerMediaVault.ensureDirectories(applicationContext)
         StealthMatrixManager.init(applicationContext)
         AppLockManager.init(applicationContext)
+        UnreadMentionManager.init(applicationContext)
         CallStateManager.init(applicationContext)
         SoundPoolManager.init(applicationContext)
 
@@ -1237,6 +1239,37 @@ class WaRealtimeService : Service() {
             }
 
             dao.insertHistorySyncBatch(chatsList, msgList)
+            val statusSnap = _bridgeStatus.value
+            if (unreadByChat.isNotEmpty()) {
+                val syncedMsgsByGroup = msgList
+                    .asSequence()
+                    .filter { it.chatJid.endsWith("@g.us") && !it.isFromMe }
+                    .groupBy { it.chatJid }
+                for ((gJid, unread) in unreadByChat) {
+                    if (!gJid.endsWith("@g.us")) continue
+                    if (unread <= 0) {
+                        UnreadMentionManager.clearChatMentions(gJid)
+                    } else if (!isChatActivelyVisible(gJid)) {
+                        val recentUnread = syncedMsgsByGroup[gJid]
+                            .orEmpty()
+                            .sortedByDescending { it.timestamp }
+                            .take(unread.coerceAtMost(50))
+                        for (m in recentUnread) {
+                            if (UnreadMentionManager.doesMessageMentionMe(
+                                    chatJid = gJid,
+                                    mentionsCsv = m.mentionsCsv,
+                                    isFromMe = m.isFromMe,
+                                    ownJid = statusSnap.ownJid,
+                                    ownLid = statusSnap.ownLid,
+                                    lidToPn = persistedLidToPn
+                                )
+                            ) {
+                                UnreadMentionManager.recordUnreadMention(gJid, m.id, m.timestamp)
+                            }
+                        }
+                    }
+                }
+            }
             dao.deleteEmptyUnknownMessages()
             DeviceContactFallbackResolver.backfillMissingContactNames(applicationContext, dao)
             dao.cleanupEmptyProtocolChats()
@@ -1651,9 +1684,24 @@ class WaRealtimeService : Service() {
             requestSingleAvatarIfNeeded(msg.chatJid)
         }
         val preExistingChatTs = dao.getChat(msg.chatJid)?.lastMessageTimestamp ?: 0L
+        if (isGrp && insertedNew && !isSync && !msg.isFromMe) {
+            val statusSnap = _bridgeStatus.value
+            if (UnreadMentionManager.doesMessageMentionMe(
+                    chatJid = msg.chatJid,
+                    mentionsCsv = msg.mentionsCsv,
+                    isFromMe = false,
+                    ownJid = statusSnap.ownJid,
+                    ownLid = statusSnap.ownLid,
+                    lidToPn = persistedLidToPn
+                )
+            ) {
+                UnreadMentionManager.recordUnreadMention(msg.chatJid, msg.id, msg.timestamp)
+            }
+        }
         if (isActiveChat || (msg.isFromMe && (!isSync || msg.timestamp >= preExistingChatTs - 1000L))) {
             dao.clearLocalUnread(msg.chatJid)
             if (msg.isFromMe) {
+                UnreadMentionManager.markMentionsSeenUpTo(msg.chatJid, msg.timestamp)
                 val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 runCatching { mgr?.cancel(notificationIdForChat(msg.chatJid)) }
             }
@@ -1893,6 +1941,7 @@ class WaRealtimeService : Service() {
         if (StealthMatrixManager.config.value.antiDeleteEnabled) {
             dao.markMessageRevoked(targetId, revokedAt)
         } else {
+            UnreadMentionManager.removeMention(existing.chatJid, targetId)
             deleteMessagePermanentlyInternal(applicationContext, dao, targetId)
         }
     }
@@ -2252,6 +2301,7 @@ class WaRealtimeService : Service() {
             targets.forEach { target ->
                 dao.clearLocalUnread(target)
                 dao.markIncomingReadUpTo(target, readCutoffTs, timestamp)
+                UnreadMentionManager.markMentionsSeenUpTo(target, readCutoffTs)
                 runCatching { mgr?.cancel(notificationIdForChat(target)) }
             }
         }
@@ -2544,6 +2594,7 @@ class WaRealtimeService : Service() {
                     val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                     targets.forEach { t ->
                         dao.clearLocalUnread(t)
+                        UnreadMentionManager.clearChatMentions(t)
                         runCatching { mgr?.cancel(notificationIdForChat(t)) }
                     }
                 } else {
@@ -2563,7 +2614,14 @@ class WaRealtimeService : Service() {
                 )
                 val latestTs = targets.mapNotNull { dao.getLatestMessageForChat(it)?.timestamp }.maxOrNull() ?: 0L
                 val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-                targets.forEach { t -> runCatching { mgr?.cancel(notificationIdForChat(t)) } }
+                targets.forEach { t ->
+                    if (lastMsgTsMs > 0L) {
+                        UnreadMentionManager.markMentionsSeenUpTo(t, lastMsgTsMs)
+                    } else {
+                        UnreadMentionManager.clearChatMentions(t)
+                    }
+                    runCatching { mgr?.cancel(notificationIdForChat(t)) }
+                }
 
                 if (kind == "DELETE_CHAT" && !(lastMsgTsMs > 0L && latestTs > lastMsgTsMs + 1000L)) {
                     targets.forEach { t ->
@@ -3472,7 +3530,7 @@ class WaRealtimeService : Service() {
                 val offline = StealthMatrixManager.config.value.offlineMode
                 val privacy = StealthMatrixManager.getEffectivePrivacy(dao, chatJid)
                 if (privacy.sendReadReceipts && !offline) {
-                    markChatReadExplicitly(appCtx, chatJid)
+                    markChatReadExplicitly(appCtx, chatJid, clearUnreadMentions = false)
                 } else {
                     dao.clearLocalUnread(chatJid)
                 }
@@ -4583,7 +4641,11 @@ class WaRealtimeService : Service() {
             isLoggedIn: Boolean
         ): Boolean = !isAlreadyViewed && !offlineMode && !isOwnOrSystemSender && isLoggedIn
 
-        suspend fun markChatReadExplicitly(context: Context, chatJid: String): Result<Int> =
+        suspend fun markChatReadExplicitly(
+            context: Context,
+            chatJid: String,
+            clearUnreadMentions: Boolean = true
+        ): Result<Int> =
             withContext(Dispatchers.IO) {
                 runCatching {
                     val dao = WaUiDatabase.getInstance(context).waDao()
@@ -4594,6 +4656,9 @@ class WaRealtimeService : Service() {
                     val combinedTuples = (recentTuples + unreadTuples).distinctBy { it.id }.take(25)
                     dao.markIncomingLocallyRead(chatJid)
                     dao.clearLocalUnread(chatJid)
+                    if (clearUnreadMentions) {
+                        UnreadMentionManager.clearChatMentions(chatJid)
+                    }
                     if (combinedTuples.isNotEmpty() && runCatching { Whatsbridge.isLoggedIn() }.getOrDefault(false)) {
                         val isGroup = chatJid.endsWith("@g.us")
                         combinedTuples.groupBy { if (isGroup) it.senderJid else "" }.forEach { (sender, list) ->
@@ -4735,6 +4800,7 @@ class WaRealtimeService : Service() {
                     val latest = dao.getLatestMessageForChat(jid)
 
                     runCatching { mgr?.cancel(notificationIdForChat(jid)) }
+                    UnreadMentionManager.clearChatMentions(jid)
                     dao.deleteMessagesForChat(jid)
                     dao.deleteChatRow(jid)
 
@@ -5448,6 +5514,7 @@ class WaRealtimeService : Service() {
 
                 EagerMediaVault.ensureDirectories(appCtx)
                 StealthMatrixManager.reloadForActiveAccount(appCtx)
+                UnreadMentionManager.reloadForActiveAccount()
                 CustomStickerStore.getInstance(appCtx).reloadForActiveAccount()
                 StickerFavoritesStore.getInstance(appCtx).reloadForActiveAccount()
                 com.wa.beastclient.domain.scheduling.ScheduledMessageManager.reloadForActiveAccount(appCtx)

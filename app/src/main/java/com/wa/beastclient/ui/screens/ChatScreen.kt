@@ -662,6 +662,84 @@ fun ChatScreen(
             }
         }
     }
+    val unreadMentionsByChat by viewModel.unreadMentionsByChat.collectAsState()
+    val unreadMentionsForChat = remember(unreadMentionsByChat, chatJid) {
+        unreadMentionsByChat[chatJid].orEmpty()
+    }
+    val jumpToMentionMessage: (String) -> Unit = { rawMentionId ->
+        val mid = rawMentionId.trim()
+        if (mid.isNotEmpty()) {
+            activeJumpJob?.cancel()
+            activeJumpJob = scope.launch {
+                val immediateIdx = findLoadedQuotedItemIndex(pagedItems.itemSnapshotList, mid)
+                if (immediateIdx >= 0) {
+                    if (abs(immediateIdx - listState.firstVisibleItemIndex) <= 35) {
+                        listState.animateScrollToItem(immediateIdx)
+                    } else {
+                        listState.scrollToItem(immediateIdx)
+                    }
+                    highlightedMessageId = mid
+                    viewModel.markMentionSeen(chatJid, mid)
+                    return@launch
+                }
+
+                val existsInChat = viewModel.findMessageExistsInChat(chatJid, mid)
+                if (!existsInChat) {
+                    viewModel.markMentionSeen(chatJid, mid)
+                    return@launch
+                }
+
+                var foundIdx = -1
+                var step = 0
+                while (step < 40) {
+                    val prevCount = pagedItems.itemCount
+                    if (prevCount > 0) {
+                        pagedItems[prevCount - 1]
+                    }
+                    withTimeoutOrNull(2000L) {
+                        snapshotFlow { pagedItems.itemSnapshotList to pagedItems.loadState.append }
+                            .first { (snap, appendState) ->
+                                findLoadedQuotedItemIndex(snap, mid) >= 0 ||
+                                    snap.size > prevCount ||
+                                    (appendState is LoadState.NotLoading && appendState.endOfPaginationReached)
+                            }
+                    }
+                    foundIdx = findLoadedQuotedItemIndex(pagedItems.itemSnapshotList, mid)
+                    if (foundIdx >= 0) break
+                    val appendState = pagedItems.loadState.append
+                    if (appendState is LoadState.NotLoading &&
+                        appendState.endOfPaginationReached &&
+                        pagedItems.itemCount == prevCount
+                    ) {
+                        break
+                    }
+                    step++
+                }
+
+                if (foundIdx >= 0) {
+                    if (abs(foundIdx - listState.firstVisibleItemIndex) <= 35) {
+                        listState.animateScrollToItem(foundIdx)
+                    } else {
+                        listState.scrollToItem(foundIdx)
+                    }
+                    highlightedMessageId = mid
+                }
+                viewModel.markMentionSeen(chatJid, mid)
+            }
+        }
+    }
+    LaunchedEffect(chatJid, unreadMentionsForChat, listState) {
+        if (unreadMentionsForChat.isEmpty()) return@LaunchedEffect
+        val pendingIds = unreadMentionsForChat.mapTo(HashSet()) { it.messageId }
+        snapshotFlow {
+            listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? String }
+        }.collect { visibleKeys ->
+            val seen = visibleKeys.filter { it in pendingIds }
+            if (seen.isNotEmpty()) {
+                viewModel.markMentionsSeen(chatJid, seen)
+            }
+        }
+    }
     var initialUnreadCount by remember(chatJid) { mutableStateOf<Int?>(null) }
     LaunchedEffect(chatJid, chat?.unreadCount) {
         if (initialUnreadCount == null && chat != null) {
@@ -683,8 +761,11 @@ fun ChatScreen(
         val prevId = lastLatestMsgId
         lastLatestMsgId = newest.id
         if (prevId == null) {
+            val firstUnreadMention = unreadMentionsForChat.firstOrNull()
             val unread = initialUnreadCount ?: chat?.unreadCount ?: 0
-            if (unread > 1 && pagedItems.itemCount > 0) {
+            if (firstUnreadMention != null && pagedItems.itemCount > 0) {
+                jumpToMentionMessage(firstUnreadMention.messageId)
+            } else if (unread > 1 && pagedItems.itemCount > 0) {
                 val targetIndex = (unread - 1).coerceIn(0, pagedItems.itemCount - 1)
                 listState.scrollToItem(targetIndex)
             } else if (listState.firstVisibleItemIndex != 0 || listState.firstVisibleItemScrollOffset != 0) {
@@ -2955,30 +3036,91 @@ fun ChatScreen(
                     }
                 }
 
-                if (showScrollToBottom && actionMenuTarget == null) {
-                    val scrollOrbInteraction = remember { MutableInteractionSource() }
-                    Box(
+                val showMentionJumpOrb = unreadMentionsForChat.isNotEmpty() && actionMenuTarget == null
+                val showScrollOrb = showScrollToBottom && actionMenuTarget == null
+                if (showMentionJumpOrb || showScrollOrb) {
+                    Column(
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
-                            .padding(end = 12.dp, bottom = 12.dp)
-                            .size(38.dp)
-                            .expressivePressScale(scrollOrbInteraction, pressedScale = 0.88f)
-                            .clip(CircleShape)
-                            .background(
-                                if (colors.isDark) Color(0xD9202529) else Color(0xEBFFFFFF)
-                            )
-                            .clickable(
-                                interactionSource = scrollOrbInteraction,
-                                indication = null
-                            ) { scope.launch { listState.animateScrollToItem(0) } },
-                        contentAlignment = Alignment.Center
+                            .padding(end = 12.dp, bottom = 12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.KeyboardDoubleArrowDown,
-                            contentDescription = "Scroll to latest message",
-                            tint = colors.textPrimary.copy(alpha = 0.90f),
-                            modifier = Modifier.size(21.dp)
-                        )
+                        if (showMentionJumpOrb) {
+                            val mentionOrbInteraction = remember { MutableInteractionSource() }
+                            Box(
+                                modifier = Modifier.size(44.dp),
+                                contentAlignment = Alignment.BottomCenter
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .expressivePressScale(mentionOrbInteraction, pressedScale = 0.88f)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (colors.isDark) Color(0xD9202529) else Color(0xEBFFFFFF)
+                                        )
+                                        .clickable(
+                                            interactionSource = mentionOrbInteraction,
+                                            indication = null
+                                        ) {
+                                            val nextTarget = unreadMentionsForChat.firstOrNull()
+                                            if (nextTarget != null) {
+                                                jumpToMentionMessage(nextTarget.messageId)
+                                            }
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.AlternateEmail,
+                                        contentDescription = "Jump to unread mention",
+                                        tint = colors.brightGreen,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                if (unreadMentionsForChat.size > 1) {
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .clip(RoundedCornerShape(9.dp))
+                                            .background(colors.brightGreen)
+                                            .padding(horizontal = 5.dp, vertical = 1.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = if (unreadMentionsForChat.size > 99) "99+" else unreadMentionsForChat.size.toString(),
+                                            color = colors.brightGreen.contrastingContentColor(),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        if (showScrollOrb) {
+                            val scrollOrbInteraction = remember { MutableInteractionSource() }
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .expressivePressScale(scrollOrbInteraction, pressedScale = 0.88f)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (colors.isDark) Color(0xD9202529) else Color(0xEBFFFFFF)
+                                    )
+                                    .clickable(
+                                        interactionSource = scrollOrbInteraction,
+                                        indication = null
+                                    ) { scope.launch { listState.animateScrollToItem(0) } },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.KeyboardDoubleArrowDown,
+                                    contentDescription = "Scroll to latest message",
+                                    tint = colors.textPrimary.copy(alpha = 0.90f),
+                                    modifier = Modifier.size(21.dp)
+                                )
+                            }
+                        }
                     }
                 }
                 }

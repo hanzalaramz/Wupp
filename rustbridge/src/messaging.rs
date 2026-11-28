@@ -262,7 +262,7 @@ pub async fn normalize_message(
     }
 
     let (quoted_id, raw_quoted_sender, quoted_body, mentions_csv, eph_sec) =
-        extract_context_fields(raw_msg, None);
+        extract_context_fields(raw_msg, None, &chat_jid);
     let quoted_sender = if raw_quoted_sender.ends_with("@lid") {
         let (canon_q, _) = resolve_dm_chat_pair_local(runtime, &raw_quoted_sender, &[]).await;
         canon_q
@@ -417,6 +417,7 @@ fn extract_text_or_caption(msg: &wa::Message) -> String {
 fn extract_context_fields(
     msg: &wa::Message,
     ephemeral_opt: Option<u32>,
+    chat_jid: &str,
 ) -> (String, String, String, String, i64) {
     let Some(ctx) = msg.context_info() else {
         return (
@@ -455,12 +456,28 @@ fn extract_context_fields(
             }
         })
         .unwrap_or_default();
-    let mentions = ctx
-        .mentioned_jid
-        .iter()
-        .map(|j| canonical_jid_str(j))
-        .collect::<Vec<_>>()
-        .join(",");
+    let mut mention_list: Vec<String> = Vec::with_capacity(ctx.mentioned_jid.len() + 2);
+    for j in &ctx.mentioned_jid {
+        let c = canonical_jid_str(j);
+        if !c.is_empty() && !mention_list.contains(&c) {
+            mention_list.push(c);
+        }
+    }
+    for gm in &ctx.group_mentions {
+        if let Some(gj) = gm.group_jid.as_deref() {
+            let c = canonical_jid_str(gj);
+            if !c.is_empty() && !mention_list.contains(&c) {
+                mention_list.push(c);
+            }
+        }
+    }
+    if (ctx.non_jid_mentions.unwrap_or(0) & 1) != 0 && chat_jid.ends_with("@g.us") {
+        let c = canonical_jid_str(chat_jid);
+        if !c.is_empty() && !mention_list.contains(&c) {
+            mention_list.push(c);
+        }
+    }
+    let mentions = mention_list.join(",");
     let exp = ephemeral_opt.or(ctx.expiration).unwrap_or(0) as i64;
     (q_id, q_sender, q_body, mentions, exp)
 }
