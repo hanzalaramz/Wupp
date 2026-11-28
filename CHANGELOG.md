@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### ✨ Features
+- Added a green `@` badge in the chat list for unread group mentions (including muted groups and `@everyone`), with jump-to-mention and a floating `@` button inside the chat (#247).
+
 ### 🛠️ Fixes
 - Fixed group Message Info, reactions, group member lists, and other screens showing raw numeric IDs instead of contact names or phone numbers (#248).
 

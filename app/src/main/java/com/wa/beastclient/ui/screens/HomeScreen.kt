@@ -72,6 +72,7 @@ import androidx.compose.material.icons.automirrored.rounded.CallReceived
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AdminPanelSettings
+import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.BatteryChargingFull
@@ -213,6 +214,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import com.wa.beastclient.domain.drafts.ChatDraftManager
+import com.wa.beastclient.domain.mentions.UnreadMentionManager
 import com.wa.beastclient.domain.appearance.HomeAppearanceConfig
 import com.wa.beastclient.domain.appearance.HomeAppearanceManager
 import com.wa.beastclient.domain.appearance.HomeBadgeStyle
@@ -3538,6 +3540,8 @@ private fun ChatListRow(
 ) {
     val chatDrafts by ChatDraftManager.drafts.collectAsState()
     val draftText = chatDrafts[chat.jid].orEmpty()
+    val unreadMentionsByChat by UnreadMentionManager.unreadMentionsByChat.collectAsState()
+    val hasUnreadMention = chat.isGroup && !unreadMentionsByChat[chat.jid].isNullOrEmpty()
     val colors = LocalWaColors.current
     val mono = LocalWaMonoFamily.current
     val homeAccent = homeAppearance.accentStyle.resolve(colors.isDark)
@@ -3766,6 +3770,14 @@ private fun ChatListRow(
                             contentDescription = "Pinned",
                             tint = colors.textSecondary,
                             modifier = Modifier.size(15.dp)
+                        )
+                    }
+                    if (hasUnreadMention) {
+                        Icon(
+                            imageVector = Icons.Rounded.AlternateEmail,
+                            contentDescription = "Unread mention",
+                            tint = homeAccent,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                     if (chat.unreadCount > 0) {
@@ -5127,6 +5139,8 @@ private fun CommunityGroupRow(
     val colors = LocalWaColors.current
     val homeAppearance by HomeAppearanceManager.config.collectAsState()
     val homeAccent = homeAppearance.accentStyle.resolve(colors.isDark)
+    val unreadMentionsByChat by UnreadMentionManager.unreadMentionsByChat.collectAsState()
+    val hasUnreadMention = chat.isGroup && !unreadMentionsByChat[chat.jid].isNullOrEmpty()
     val title = if (chat.isDefaultSubgroup && (chat.name.isBlank() || chat.name == chat.jid.substringBefore("@"))) {
         "Announcements"
     } else {
@@ -5210,7 +5224,7 @@ private fun CommunityGroupRow(
                     )
                 }
             }
-            if (subtitle.isNotBlank() || chat.unreadCount > 0) {
+            if (subtitle.isNotBlank() || chat.unreadCount > 0 || hasUnreadMention) {
                 Spacer(modifier = Modifier.height(2.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -5224,8 +5238,17 @@ private fun CommunityGroupRow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
+                    if (hasUnreadMention) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            imageVector = Icons.Rounded.AlternateEmail,
+                            contentDescription = "Unread mention",
+                            tint = homeAccent,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                     if (chat.unreadCount > 0) {
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Box(
                             modifier = Modifier
                                 .size(20.dp)

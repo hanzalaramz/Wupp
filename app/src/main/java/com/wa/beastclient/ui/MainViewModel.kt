@@ -45,6 +45,8 @@ import com.wa.beastclient.data.media.isStickerMatchedByFavoriteKeys
 import com.wa.beastclient.domain.accounts.AccountManager
 import com.wa.beastclient.domain.appearance.HomeAppearanceManager
 import com.wa.beastclient.domain.drafts.ChatDraftManager
+import com.wa.beastclient.domain.mentions.UnreadMentionEntry
+import com.wa.beastclient.domain.mentions.UnreadMentionManager
 import com.wa.beastclient.domain.scheduling.ScheduledMessage
 import com.wa.beastclient.domain.scheduling.ScheduledMessageManager
 import com.wa.beastclient.domain.accounts.WuppAccount
@@ -200,6 +202,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val stealthConfig: StateFlow<GlobalStealthConfig> = StealthMatrixManager.config
     val chatDrafts: StateFlow<Map<String, String>> = ChatDraftManager.drafts
+    val unreadMentionsByChat: StateFlow<Map<String, List<UnreadMentionEntry>>> =
+        UnreadMentionManager.unreadMentionsByChat
     val appLockConfig: StateFlow<AppLockConfig> = AppLockManager.config
     val isAppLocked: StateFlow<Boolean> = AppLockManager.isLocked
     val bridgeStatus: StateFlow<BridgeStatus> = WaRealtimeService.bridgeStatus
@@ -252,6 +256,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         AccountManager.init(appContext)
         ChatDraftManager.init(appContext)
+        UnreadMentionManager.init(appContext)
         HomeAppearanceManager.init(appContext)
         StealthMatrixManager.init(appContext)
         AppLockManager.init(appContext)
@@ -288,6 +293,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _bulkVerifyOutput.value = null
                 AppLockManager.setLockedChatsRevealed(false)
                 ChatDraftManager.reloadForActiveAccount()
+                UnreadMentionManager.reloadForActiveAccount()
                 _selectedFilter.value = HomeFilterChip.ALL
                 _selectedGroupsFilter.value = HomeFilterChip.ALL
                 _participantMeta.value = emptyMap()
@@ -992,6 +998,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun saveChatDraft(chatJid: String, text: String) = ChatDraftManager.saveDraft(chatJid, text)
 
+    fun markMentionSeen(chatJid: String, messageId: String) =
+        UnreadMentionManager.markMentionSeen(chatJid, messageId)
+
+    fun markMentionsSeen(chatJid: String, messageIds: Collection<String>) =
+        UnreadMentionManager.markMentionsSeen(chatJid, messageIds)
+
+    fun clearChatMentions(chatJid: String) =
+        UnreadMentionManager.clearChatMentions(chatJid)
+
     fun toggleFavoriteChat(chat: ChatEntity) {
         viewModelScope.launch(Dispatchers.IO) {
             dao.updateFavorite(chat.jid, !chat.isFavorite)
@@ -1009,6 +1024,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearChatMessages(chatJid: String) {
         viewModelScope.launch(Dispatchers.IO) {
+            UnreadMentionManager.clearChatMentions(chatJid)
             dao.deleteMessagesForChat(chatJid)
             dao.updateChatPreviewAfterClear(chatJid, "", "TEXT", System.currentTimeMillis(), 0)
         }
@@ -1160,7 +1176,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (jids.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             val count = if (unread) 1 else 0
-            jids.forEach { dao.updateUnreadCount(it, count) }
+            jids.forEach { jid ->
+                dao.updateUnreadCount(jid, count)
+                if (!unread) {
+                    UnreadMentionManager.clearChatMentions(jid)
+                }
+            }
         }
     }
 
