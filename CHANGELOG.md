@@ -6,6 +6,7 @@
 - Added a green `@` badge in the chat list for unread group mentions (including muted groups and `@everyone`), with jump-to-mention and a floating `@` button inside the chat (#247).
 
 ### 🛠️ Fixes
+- Fixed deleted status viewer and full-screen media headers breaking into vertical one-letter-per-line text and overlapping content (#246).
 - Fixed group Message Info, reactions, group member lists, and other screens showing raw numeric IDs instead of contact names or phone numbers (#248).
 
 ## [0.3.11] - 2026-11-27

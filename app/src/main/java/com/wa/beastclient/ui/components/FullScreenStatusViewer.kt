@@ -654,44 +654,25 @@ private fun StatusGroupPage(
                         .weight(1f)
                         .padding(horizontal = 10.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        val headerTitle = if (group.isOwn) {
-                            stringResource(R.string.status_my_status)
-                        } else {
-                            group.senderName.ifBlank { current.senderName }
-                        }
-                        Text(
-                            text = headerTitle,
-                            color = Color.White,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        if (current.isRevoked) {
-                            Text(
-                                text = formatDeletedLabel(
-                                    deletedAtMs = current.revokedAt,
-                                    fallbackTimestampMs = current.timestamp,
-                                    includeSeconds = LocalWuppShowSeconds.current,
-                                    use24Hour = LocalWuppUse24Hour.current
-                                ),
-                                color = Color(0xFFFF6B6B),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier
-                                    .background(Color(0xFF44181A), RoundedCornerShape(6.dp))
-                                    .padding(horizontal = 6.dp, vertical = 1.dp)
-                            )
-                        }
+                    val headerTitle = if (group.isOwn) {
+                        stringResource(R.string.status_my_status)
+                    } else {
+                        group.senderName.ifBlank { current.senderName }
                     }
+                    Text(
+                        text = headerTitle,
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                     Text(
                         text = formatStatusRelativeTime(current.timestamp, LocalWuppUse24Hour.current),
                         color = Color(0xFFD1D7DB),
-                        fontSize = 12.sp
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 if (!group.isOwn) {
@@ -724,7 +705,9 @@ private fun StatusGroupPage(
                             text = if (markedViewedLocally) "Viewed" else "Mark viewed",
                             color = if (markedViewedLocally) Color(0xFF25D366) else Color.White,
                             fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }
@@ -781,6 +764,32 @@ private fun StatusGroupPage(
                             )
                         }
                     }
+                }
+            }
+            if (current.isRevoked) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 52.dp, end = 16.dp, top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = formatDeletedLabel(
+                            deletedAtMs = current.revokedAt,
+                            fallbackTimestampMs = current.timestamp,
+                            includeSeconds = LocalWuppShowSeconds.current,
+                            use24Hour = LocalWuppUse24Hour.current
+                        ),
+                        color = Color(0xFFFF6B6B),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .background(Color(0xD944181A), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                    )
                 }
             }
         }
